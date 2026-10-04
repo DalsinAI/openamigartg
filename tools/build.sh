@@ -1,7 +1,7 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. Open RTG, MIT licence (LICENSE).
+# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
-# Open RTG's tools, with the os32 stove (bebbo's m68k-amigaos-gcc, NDK 3.2).
+# OpenRTG's tools, with the os32 stove (bebbo's m68k-amigaos-gcc, NDK 3.2).
 #   tools/build.sh [OUT_DIR]     (default build/)
 # STOVE: the amiga-gcc install (holding prefix/bin); or CC: the compiler.
 set -eu

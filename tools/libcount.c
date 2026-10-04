@@ -1,7 +1,7 @@
-/* Copyright (c) 2026 Dalsin Limited. Open RTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT */
-/* LibCount: how often each function of some libraries is called, for Open
- * RTG's phase 0 (DESIGN.md): which graphics,
+/* LibCount: how often each function of some libraries is called, for OpenRTG
+ *'s phase 0 (DESIGN.md): which graphics,
  * intuition, layers and RTG calls Workbench and programs really make, so
  * openrtg.library takes over the busy ones first.
  *
@@ -25,7 +25,7 @@
 #include <proto/dos.h>
 #include <string.h>
 
-static const char ver[] __attribute__((used)) = "$VER: LibCount 1.0 (4.10.2026) Open RTG";
+static const char ver[] __attribute__((used)) = "$VER: LibCount 1.0 (4.10.2026) OpenRTG";
 
 #define MAXLIBS 12
 #define FIRST_LVO 30                 /* after Open, Close, Expunge and the reserved vector */

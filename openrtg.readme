@@ -1,0 +1,33 @@
+Short:        Open RTG system with OpenGPU and Warp3D
+Uploader:     (Dale fills this in at upload time)
+Author:       Dale Kirkwood (Dalsin Limited)
+Type:         driver/video
+Version:      0.1
+Architecture: m68k-amigaos >= 3.2.0
+Distribution: Aminet
+
+OpenRTG is a free RTG (retargetable graphics) system for AmigaOS 3.x:
+openrtg.library opens screens on graphics cards and draws on them, beside an
+installed Picasso96, with one of the two active at a time.
+
+Planned, as the design in DESIGN.md sets out:
+- several monitors as standard (two RTG monitors and AGA), up to four;
+- OpenGPU, one acceleration layer for 2D, compositing, 3D and batched maths,
+  with a driver for each chip and the CPU as fallback;
+- Warp3D built in, through one hardware driver for every chip OpenGPU drives;
+- an OS 4 look for windows on Workbench, as OS-friendly resident patches;
+- one GadTools prefs editor for monitors, screen modes, colours and the look;
+- OS 4's RTG calls by name, so code moves between OS 3 and OS 4;
+- Picasso96 card drivers work under it, so real cards (Picasso IV, CyberVision
+  64, ZZ9000) and a PiStorm's RTG keep working.
+
+Status: this archive is the design and LibCount, the measuring tool of phase 0
+(also on Aminet as dev/debug/libcount). openrtg.library is in development;
+AmigaChrome (an Amiga for the PC) runs the first several-monitor setup today.
+
+Free software under the MIT licence, Copyright (c) 2026 Dalsin Limited. Use
+it, change it, fork it and ship it; keep the copyright notice and the licence
+with every copy. If you build on it, please say it is based on OpenRTG by
+Dalsin Limited.
+
+Source: https://github.com/DalsinAI/openamigartg

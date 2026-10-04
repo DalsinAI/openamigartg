@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 Dalsin Limited. Open RTG, MIT licence (LICENSE).
+# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 """LibCount's report with names: each library's function offsets named from
 the NDK's FD files, sorted by calls, as a Markdown table.
