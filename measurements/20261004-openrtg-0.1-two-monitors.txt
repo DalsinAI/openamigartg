@@ -1,0 +1,151 @@
+openrtg.library 0.1 and C:OpenRTG 0.1 on an AmigaOS 3.2.3 scratch copy (AmigaChrome,
+AC090 A1200, two ACRTG boards), 4 October 2026, run from S:User-Startup:
+
+---- openrtg-test-1.txt
+openrtg.library 0.1: 2 RTG monitors
+Monitor 1: ACRTG at $50000000, 36 modes listed
+Monitor 2: ACRTG at $51000000, 36 modes listed
+---- openrtg-test-2.txt
+openrtg.library 0.1: 2 RTG monitors
+Monitor 1: ACRTG at $50000000, 36 modes listed
+  $50011000  OpenRTG.1: 640x480 8-bit
+  $50011001  OpenRTG.1: 640x480 16-bit
+  $50011002  OpenRTG.1: 640x480 32-bit
+  $50011004  OpenRTG.1: 800x600 8-bit
+  $50011005  OpenRTG.1: 800x600 16-bit
+  $50011006  OpenRTG.1: 800x600 32-bit
+  $50011008  OpenRTG.1: 1024x768 8-bit
+  $50011009  OpenRTG.1: 1024x768 16-bit
+  $5001100A  OpenRTG.1: 1024x768 32-bit
+  $5001100C  OpenRTG.1: 1280x720 8-bit
+  $5001100D  OpenRTG.1: 1280x720 16-bit
+  $5001100E  OpenRTG.1: 1280x720 32-bit
+  $50011010  OpenRTG.1: 1280x800 8-bit
+  $50011011  OpenRTG.1: 1280x800 16-bit
+  $50011012  OpenRTG.1: 1280x800 32-bit
+  $50011014  OpenRTG.1: 1280x1024 8-bit
+  $50011015  OpenRTG.1: 1280x1024 16-bit
+  $50011016  OpenRTG.1: 1280x1024 32-bit
+  $50011018  OpenRTG.1: 1366x768 8-bit
+  $50011019  OpenRTG.1: 1366x768 16-bit
+  $5001101A  OpenRTG.1: 1366x768 32-bit
+  $5001101C  OpenRTG.1: 1440x900 8-bit
+  $5001101D  OpenRTG.1: 1440x900 16-bit
+  $5001101E  OpenRTG.1: 1440x900 32-bit
+  $50011020  OpenRTG.1: 1600x900 8-bit
+  $50011021  OpenRTG.1: 1600x900 16-bit
+  $50011022  OpenRTG.1: 1600x900 32-bit
+  $50011024  OpenRTG.1: 1680x1050 8-bit
+  $50011025  OpenRTG.1: 1680x1050 16-bit
+  $50011026  OpenRTG.1: 1680x1050 32-bit
+  $50011028  OpenRTG.1: 1920x1080 8-bit
+  $50011029  OpenRTG.1: 1920x1080 16-bit
+  $5001102A  OpenRTG.1: 1920x1080 32-bit
+  $5001102C  OpenRTG.1: 1920x1200 8-bit
+  $5001102D  OpenRTG.1: 1920x1200 16-bit
+  $5001102E  OpenRTG.1: 1920x1200 32-bit
+---- openrtg-test-3.txt
+openrtg.library 0.1: 2 RTG monitors
+Monitor 2: now listing All (96 modes)
+Monitor 2: ACRTG at $51000000, 96 modes listed
+openrtg.library 0.1: 2 RTG monitors
+Monitor 2: ACRTG at $51000000, 96 modes listed
+  $50021038  OpenRTG.2: 320x200 8-bit  (All)
+  $50021039  OpenRTG.2: 320x200 16-bit  (All)
+  $5002103A  OpenRTG.2: 320x200 32-bit  (All)
+  $5002103C  OpenRTG.2: 320x240 8-bit  (All)
+  $5002103D  OpenRTG.2: 320x240 16-bit  (All)
+  $5002103E  OpenRTG.2: 320x240 32-bit  (All)
+  $50021040  OpenRTG.2: 320x256 8-bit  (All)
+  $50021041  OpenRTG.2: 320x256 16-bit  (All)
+  $50021042  OpenRTG.2: 320x256 32-bit  (All)
+  $50021044  OpenRTG.2: 320x400 8-bit  (All)
+  $50021045  OpenRTG.2: 320x400 16-bit  (All)
+  $50021046  OpenRTG.2: 320x400 32-bit  (All)
+  $50021048  OpenRTG.2: 320x480 8-bit  (All)
+  $50021049  OpenRTG.2: 320x480 16-bit  (All)
+  $5002104A  OpenRTG.2: 320x480 32-bit  (All)
+  $5002104C  OpenRTG.2: 320x512 8-bit  (All)
+  $5002104D  OpenRTG.2: 320x512 16-bit  (All)
+  $5002104E  OpenRTG.2: 320x512 32-bit  (All)
+  $50021050  OpenRTG.2: 400x300 8-bit  (All)
+  $50021051  OpenRTG.2: 400x300 16-bit  (All)
+  $50021052  OpenRTG.2: 400x300 32-bit  (All)
+  $50021054  OpenRTG.2: 512x384 8-bit  (All)
+  $50021055  OpenRTG.2: 512x384 16-bit  (All)
+  $50021056  OpenRTG.2: 512x384 32-bit  (All)
+  $50021058  OpenRTG.2: 640x200 8-bit  (All)
+  $50021059  OpenRTG.2: 640x200 16-bit  (All)
+  $5002105A  OpenRTG.2: 640x200 32-bit  (All)
+  $5002105C  OpenRTG.2: 640x256 8-bit  (All)
+  $5002105D  OpenRTG.2: 640x256 16-bit  (All)
+  $5002105E  OpenRTG.2: 640x256 32-bit  (All)
+  $50021060  OpenRTG.2: 640x400 8-bit  (All)
+  $50021061  OpenRTG.2: 640x400 16-bit  (All)
+  $50021062  OpenRTG.2: 640x400 32-bit  (All)
+  $50021000  OpenRTG.2: 640x480 8-bit
+  $50021001  OpenRTG.2: 640x480 16-bit
+  $50021002  OpenRTG.2: 640x480 32-bit
+  $50021064  OpenRTG.2: 640x512 8-bit  (All)
+  $50021065  OpenRTG.2: 640x512 16-bit  (All)
+  $50021066  OpenRTG.2: 640x512 32-bit  (All)
+  $50021068  OpenRTG.2: 720x480 8-bit  (All)
+  $50021069  OpenRTG.2: 720x480 16-bit  (All)
+  $5002106A  OpenRTG.2: 720x480 32-bit  (All)
+  $5002106C  OpenRTG.2: 720x576 8-bit  (All)
+  $5002106D  OpenRTG.2: 720x576 16-bit  (All)
+  $5002106E  OpenRTG.2: 720x576 32-bit  (All)
+  $50021070  OpenRTG.2: 800x480 8-bit  (All)
+  $50021071  OpenRTG.2: 800x480 16-bit  (All)
+  $50021072  OpenRTG.2: 800x480 32-bit  (All)
+  $50021004  OpenRTG.2: 800x600 8-bit
+  $50021005  OpenRTG.2: 800x600 16-bit
+  $50021006  OpenRTG.2: 800x600 32-bit
+  $50021074  OpenRTG.2: 1024x384 8-bit  (All)
+  $50021075  OpenRTG.2: 1024x384 16-bit  (All)
+  $50021076  OpenRTG.2: 1024x384 32-bit  (All)
+  $50021078  OpenRTG.2: 1024x600 8-bit  (All)
+  $50021079  OpenRTG.2: 1024x600 16-bit  (All)
+  $5002107A  OpenRTG.2: 1024x600 32-bit  (All)
+  $50021008  OpenRTG.2: 1024x768 8-bit
+  $50021009  OpenRTG.2: 1024x768 16-bit
+  $5002100A  OpenRTG.2: 1024x768 32-bit
+  $5002107C  OpenRTG.2: 1152x864 8-bit  (All)
+  $5002107D  OpenRTG.2: 1152x864 16-bit  (All)
+  $5002107E  OpenRTG.2: 1152x864 32-bit  (All)
+  $5002100C  OpenRTG.2: 1280x720 8-bit
+  $5002100D  OpenRTG.2: 1280x720 16-bit
+  $5002100E  OpenRTG.2: 1280x720 32-bit
+  $50021010  OpenRTG.2: 1280x800 8-bit
+  $50021011  OpenRTG.2: 1280x800 16-bit
+  $50021012  OpenRTG.2: 1280x800 32-bit
+  $50021080  OpenRTG.2: 1280x960 8-bit  (All)
+  $50021081  OpenRTG.2: 1280x960 16-bit  (All)
+  $50021082  OpenRTG.2: 1280x960 32-bit  (All)
+  $50021014  OpenRTG.2: 1280x1024 8-bit
+  $50021015  OpenRTG.2: 1280x1024 16-bit
+  $50021016  OpenRTG.2: 1280x1024 32-bit
+  $50021018  OpenRTG.2: 1366x768 8-bit
+  $50021019  OpenRTG.2: 1366x768 16-bit
+  $5002101A  OpenRTG.2: 1366x768 32-bit
+  $5002101C  OpenRTG.2: 1440x900 8-bit
+  $5002101D  OpenRTG.2: 1440x900 16-bit
+  $5002101E  OpenRTG.2: 1440x900 32-bit
+  $50021020  OpenRTG.2: 1600x900 8-bit
+  $50021021  OpenRTG.2: 1600x900 16-bit
+  $50021022  OpenRTG.2: 1600x900 32-bit
+  $50021084  OpenRTG.2: 1600x1200 8-bit  (All)
+  $50021085  OpenRTG.2: 1600x1200 16-bit  (All)
+  $50021086  OpenRTG.2: 1600x1200 32-bit  (All)
+  $50021024  OpenRTG.2: 1680x1050 8-bit
+  $50021025  OpenRTG.2: 1680x1050 16-bit
+  $50021026  OpenRTG.2: 1680x1050 32-bit
+  $50021028  OpenRTG.2: 1920x1080 8-bit
+  $50021029  OpenRTG.2: 1920x1080 16-bit
+  $5002102A  OpenRTG.2: 1920x1080 32-bit
+  $5002102C  OpenRTG.2: 1920x1200 8-bit
+  $5002102D  OpenRTG.2: 1920x1200 16-bit
+  $5002102E  OpenRTG.2: 1920x1200 32-bit
+---- openrtg-test-4.txt
+openrtg.library 0.1: 2 RTG monitors
+OpenRTG: there is no monitor 3.
