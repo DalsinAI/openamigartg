@@ -1,6 +1,6 @@
 Short:        Counts the calls programs make to libs
-Uploader:     (Dale fills this in at upload time)
-Author:       Dale Kirkwood (Dalsin Limited)
+Uploader:     (We fill this in at upload time)
+Author:       Dalsin Limited
 Type:         dev/debug
 Version:      1.0
 Architecture: m68k-amigaos >= 2.0.4
