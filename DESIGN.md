@@ -408,6 +408,39 @@ Workbench and every program speed up without the CPU emulating drawing loops.
 - **On OS 4 too:** the same library for PPC, so programs that use it move
   between OS 3 and OS 4 with a recompile.
 
+### Compute for TLS: AmiSSL's maths through OpenGPU
+
+Dale, 4 October 2026: "consider a patch for AmiSSL that drives its key
+generation via OpenGPU style, rather than the CPU driving the calculations".
+
+AmiSSL 5 is OpenSSL 3.6.2, and OpenSSL 3 takes its algorithms from
+*providers*. AmiSSL's 68k SDK exposes `OSSL_PROVIDER_add_builtin` and
+`OSSL_PROVIDER_load` (through `amisslext`). So no binary patch is needed:
+
+- **An `opengpu` provider** offers the costly parts of TLS:
+  - key exchange: X25519, P-256 and P-384;
+  - signatures: RSA, ECDSA and Ed25519;
+  - bulk ciphers: AES-GCM and ChaCha20-Poly1305;
+  - hashes: SHA-256 and SHA-384;
+  - random numbers from the host's entropy (an Amiga has little of its own).
+
+  Each goes to OpenGPU as a compute batch, with the same fences.
+- **Where the maths runs:**
+  - on AmigaChrome, the PC (through `ACRTG.gpu`'s ring);
+  - on a PiStorm, the Pi's ARM cores, with their crypto extensions;
+  - on a real Amiga, nowhere new: the provider steps aside and AmiSSL's own
+    code runs as today.
+- **Our programs first.** OpenMail's and OpenBrowser's shared network layer
+  registers the provider when it opens AmiSSL, so their TLS handshakes stop
+  waiting on the 68k.
+- **Every AmiSSL program next.** The clean route is upstream: AmiSSL
+  (open source) learns to load providers from `LIBS:`, and we offer it the
+  change. An OS-friendly patch on AmiSSL's open call, adding the provider to
+  each new context, is the fallback if upstream says no.
+- **Keys stay on the machine.** They pass from the Amiga to its own host (the
+  same PC, or the PiStorm's Pi), never over a network. The host side uses a
+  constant-time library (the PC's OpenSSL or libsodium).
+
 ## 6. Warp3D, built in
 
 Dale, 4 October 2026: "we want Warp3D baked in to the design". 3D is part of
