@@ -3,7 +3,7 @@
  *
  * The display database's mode table (modes.h).
  *
- * Standard and All (Dale, 4 October 2026: "display modes should be reported
+ * Standard and All (We, 4 October 2026: "display modes should be reported
  * in our next prefs as standard and all, standard being the popular PC
  * modes"). Every size has one place in SIZES for good, and a ModeID is built
  * from that place and the depth, so a ModeID means the same mode under
