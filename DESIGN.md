@@ -374,15 +374,21 @@ Workbench and every program speed up without the CPU emulating drawing loops.
   - the CPU, built in;
   - later, as Dale said: `VideoCore.gpu` for the PiStorm's 3D, and drivers
     for real cards' chips (Permedia2, ViRGE, Voodoo) where their documents
-    allow. Linux's and Mesa's drivers are GPL, so they are references only.
+    allow. Linux's drivers are GPL, so they are references only; Mesa's
+    are MIT and may be used, keeping their notices.
 - **Who calls it:** `openrtg.library`'s drawing on RTG bitmaps (the busy
   calls phase 0 measured), CompositeTags and the MorphOS alpha calls, the
   window look's gradients and shadows, Warp3D through one hardware driver,
   `W3D_OpenGPU.library`, for every chip with an OpenGPU driver, MiniGL, and
   maths libraries.
 - **For programs:** the 2D, compositing and compute batches are public, being
-  what OS 3 lacks; our own applications use them first. 3D programs keep to
-  Warp3D and MiniGL, so there is no rival 3D API.
+  what OS 3 lacks; our own applications use them first. 3D programs use
+  Warp3D and MiniGL (classic games), or Mesa's OpenGL and GLES for ports
+  (Dale, 4 October 2026: SDL 2, SDL 3 and Mesa "that lean into our open
+  capabilities"). Mesa runs on OpenGPU too: on AmigaChrome its `virgl`
+  driver's stream goes through OpenGPU's ring to the host's GPU. So OpenGPU
+  stays the one acceleration layer under every 3D API (amigachrome
+  `docs/architecture/OPEN_SDL_MESA_DESIGN.md`).
 - **It doesn't replace the Picasso96 drivers.** `ACRTG.card` and
   `ACRTG.chip` still serve Picasso96 and OS 4. `ACRTG.chip` and `ACRTG.gpu`
   share the board's register code.
