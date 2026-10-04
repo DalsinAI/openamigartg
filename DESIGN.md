@@ -479,6 +479,16 @@ dragging and compositing are board work, not CPU copies.
 
 ## 8. The window look
 
+**Moved to OpenGadTools** (Dale, 4 October 2026, "yes opengadtools"). The
+look patch and its prefs page now live in `DalsinAI/opengadtools`, because
+they work on any screen, AGA included. OpenRTG keeps only what needs RTG:
+smooth true-colour gradients, and with compositing (section 7) drop shadows
+and transparency, which OpenGadTools' look asks OpenRTG for when the screen
+is an RTG one. The OpenRTG prefs app still shows the Window look page as one
+of its pages, so there is still one editor; the page's code is
+OpenGadTools'. The rest of this section is the look as designed, now
+OpenGadTools' to build.
+
 The OS 4.1 feel for windows on Workbench and on every other screen:
 
 - **Title bars** in a gradient: a colour ramp on the active window, a grey
@@ -573,7 +583,7 @@ listed in the install log, and the uninstaller puts it all back.
 | 3 | OpenGPU: `opengpu.library` with its CPU fallback, `ACRTG.gpu` over protocol v3 (64 MiB boards, one ring, the runtime's rasterizer), `AGA.gpu`; drawing on RTG bitmaps through it; the pointer per monitor; the pass-through switched in the runtime and locked to the beam | Workbench, MultiView and a few programs draw correctly and fast; the rasterizer's golden images pass |
 | 4 | `cybergraphics.library` and `Picasso96API.library`; OS 4's RTG calls in `openrtg.library`, with the `openrtg/` and `os4` headers | Programs written for either open screens and draw; an OS 4 example using CompositeTags and LockBitMapTags builds for 68k unchanged and runs |
 | 5 | `Warp3D.library`, `W3D_OpenGPU.library` and `W3D_OpenRTG.library` on every monitor, the blitter's 3D on monitor 0; OpenGPU's compute batches; then MiniGL | Warp3D demos and a Warp3D game run, on monitor 1 and on monitor 2 |
-| 6 | The window look: the images through sysiclass, then frames and title bars; resident; `C:OpenRTG LOOK` beside Picasso96 | Workbench's windows on OS 3.2.3 have the OS 4 feel on an AGA and an RTG screen; Classic look is pixel for pixel intuition's |
+| 6 | (Moved to OpenGadTools, 4 Oct.) OpenRTG's part of the look: true-colour gradients, then shadows and transparency once compositing exists. Was: the window look: the images through sysiclass, then frames and title bars; resident; `C:OpenRTG LOOK` beside Picasso96 | Workbench's windows on OS 3.2.3 have the OS 4 feel on an AGA and an RTG screen; Classic look is pixel for pixel intuition's |
 | 7 | The OpenRTG prefs app | Monitors, screen modes, colours, the look and 3D set from one editor; ScreenMode and Palette prefs agree with it |
 | 8 | AROS: several boards through its own RTG; OS 4.1 on the Sam460: ACRTG on PCI with the PPC `ACRTG.chip` and OpenGPU; `VideoCore.gpu` for the PiStorm's 3D, and real cards' `.gpu` drivers as testers' hardware allows; the look as a decorator; an Installer package that offers to replace the classic editors and turn off other look patches, and an uninstaller | AROS shows two RTG monitors; OpenRTG installs from its Installer and uninstalls back to the classic editors |
 | 9 | OS 4 and MorphOS behaviours: OpenGPU's COMPOSITE and the alpha calls; screen dragging on RTG; the pointer across monitors; then compositing of windows | Transparent windows with shadows; an RTG screen dragged down shows the one behind; the pointer crosses monitors |
