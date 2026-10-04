@@ -1,6 +1,6 @@
-<!-- Open RTG's design, written in AmigaChrome's development tree on 4 October 2026. Where it mentions AmigaChrome's instances (Instance-23, the scratch copy), its capsule shelf or its runtime, those are the machines and records it was built and measured on. Copyright (c) 2026 Dalsin Limited, MIT licence (LICENSE). -->
+<!-- OpenRTG's design, written in AmigaChrome's development tree on 4 October 2026. Where it mentions AmigaChrome's instances (Instance-23, the scratch copy), its capsule shelf or its runtime, those are the machines and records it was built and measured on. Copyright (c) 2026 Dalsin Limited, MIT licence (LICENSE). -->
 
-# Open RTG
+# OpenRTG
 
 Our own RTG system for AmigaOS 3.x: retargetable graphics, Warp3D and
 several monitors, built for AmigaChrome's ACRTG boards and open source.
@@ -9,7 +9,9 @@ Dale, 4 October 2026: "Build our own rtg library drivers and preferences app.
 Support for warp3d and multi monitors as standard." His decisions the same
 day:
 
-- The product is **Open RTG**; the library is **`openrtg.library`**, its own
+- The product is **OpenRTG** (Dale's naming: products drop "Amiga", repos
+  carry it, so the repository is `DalsinAI/openamigartg`); the library is
+  **`openrtg.library`**, its own
   name, so it can sit beside an installed Picasso96. One of the two is active
   at a time.
 - **Two RTG monitors and the AGA chipset** are standard on an instance; more
@@ -22,14 +24,14 @@ day:
 - **MIT licence, with the credit kept** (Dale, 4 October 2026: "I want anyone
   to be able to run with it, fork it etc"; "credit to us though"). Copyright
   Dalsin Limited; the notice travels with every copy and fork, and forks are
-  asked to say they are based on Open RTG.
+  asked to say they are based on OpenRTG.
 - Later the same day: "a patch or intuition library that gives the windows on
   Workbench etc more of an OS 4 feel", which "should become resident after it
   loads", "a clean OS compatible change and leveraging RTG", "with a prefs app
   written in GadTools to unify the screen mode, colors etc". That is the
   window look (section 8) and the one prefs app (section 9).
 
-Earlier decisions it builds on: Open RTG approved on 2 October, starting with
+Earlier decisions it builds on: OpenRTG approved on 2 October, starting with
 a spike that measures what Workbench, MUI and a game call; ACRTG, the board, from the 28 September design
 (`capjumps/20260928_AmigaChrome_ACRTG_DualMonitor_Capsule.zip`): the RTG
 monitors sit beside the AGA chipset, never switched into one picture.
@@ -39,20 +41,20 @@ monitors sit beside the AGA chipset, never switched into one picture.
 | Part | Where | What it does |
 | --- | --- | --- |
 | ACRTG boards | the runtime (`native/acrtg.c`) | One Zorro III board per RTG monitor: video RAM, modes, blits, the pointer, and (protocol v3, 64 MiB) one command ring for 2D and 3D, drawn by the runtime's rasterizer. |
-| `ACRTG.card`, `ACRTG.chip` | `LIBS:Picasso96/`, and `Kickstart/` on OS 4 | The board's driver, split and named as OS 4.1's are (section 3), so Picasso96, Open RTG and OS 4 use the same one. |
+| `ACRTG.card`, `ACRTG.chip` | `LIBS:Picasso96/`, and `Kickstart/` on OS 4 | The board's driver, split and named as OS 4.1's are (section 3), so Picasso96, OpenRTG and OS 4 use the same one. |
 | `openrtg.library` | `LIBS:` | The RTG system: finds the boards, puts their modes in the display database, opens screens on them, draws on RTG bitmaps with the boards' blitter, one pointer per monitor. |
-| `C:OpenRTG` | `S:Startup-Sequence` | Starts Open RTG before Workbench when it is the chosen RTG system, and puts the compatibility libraries in the library list. |
+| `C:OpenRTG` | `S:Startup-Sequence` | Starts OpenRTG before Workbench when it is the chosen RTG system, and puts the compatibility libraries in the library list. |
 | `cybergraphics.library` | `LIBS:OpenRTG/` | The CyberGraphX API (GetCyberMapAttr, LockBitMapTagList, Read/Write/FillPixelArray, BestCModeIDTagList and the rest) over `openrtg.library`. |
 | `Picasso96API.library` | `LIBS:OpenRTG/` | The Picasso96 API (p96AllocBitMap, p96GetBitMapAttr, p96OpenScreenTags, p96LockBitMap, p96WritePixelArray, p96BestModeIDTags and the rest) over `openrtg.library`. |
 | `opengpu.library` | `LIBS:`, drivers in `LIBS:OpenGPU/` | One acceleration layer for 2D, compositing, 3D and batched maths (section 5): chip drivers (`ACRTG.gpu`, `AGA.gpu`, later VideoCore and real cards), CPU fallback per operation. On AmigaChrome its commands run on the host. |
 | `Warp3D.library` | `LIBS:OpenRTG/` | The Warp3D V4 API, part of every install, over OpenGPU through `W3D_OpenGPU.library`. |
 | AmigaChrome SDK, Amiga half | ACBuild's stoves, and an archive | Headers, FD and SFD files, autodocs, link libraries and examples for `openrtg.library` (with the OS 4-named calls and the `os4` header), the Warp3D driver interface, ACNet and `accontrol.device`. It sits beside the OS's own kit (NDK 3.2, the AROS SDK, the OS 4.1 SDK) and never replaces it. |
 | The window look | in `openrtg.library` | The OS 4 feel for windows and screens: title bars, frames and border gadgets, on AGA and RTG screens alike. Resident once loaded. |
-| `Open RTG` prefs | `SYS:Prefs/` | One GadTools editor for monitors, screen modes, colours and the window look, plus the pointer and 3D settings. `ENVARC:Sys/openrtg.prefs`, and the OS's own prefs files for what the OS already has. |
+| `OpenRTG` prefs | `SYS:Prefs/` | One GadTools editor for monitors, screen modes, colours and the window look, plus the pointer and 3D settings. `ENVARC:Sys/openrtg.prefs`, and the OS's own prefs files for what the OS already has. |
 
 The compatibility libraries and Warp3D live in `LIBS:OpenRTG/` and are added
 to the library list by `C:OpenRTG`, so files Picasso96 installed in `LIBS:`
-stay where they are and are simply not used while Open RTG is active.
+stay where they are and are simply not used while OpenRTG is active.
 
 ## 2. Several monitors
 
@@ -73,7 +75,7 @@ RAM, mode, pointer); a bitmap belongs to one board.
   monitors (the formats differ; classic Intuition does not do that drag).
 - **Picasso96 too:** `ACRTG.card` claims the next unclaimed board, so
   Picasso96 can drive two boards with two monitor files. This is the first
-  step and is testable before Open RTG exists.
+  step and is testable before OpenRTG exists.
 
 ### AGA as a pseudo card
 
@@ -84,7 +86,7 @@ A1200 the chipset is monitor 0, listed and handled like the ACRTG boards:
   a card that cannot be taken out, with the same display choices as the RTG
   cards (in the instance window, a window of its own), and monitor 1's
   pass-through as where it goes when it shares a picture.
-- **In Open RTG:** a pseudo card driver, `AGA.card`, puts the chipset in
+- **In OpenRTG:** a pseudo card driver, `AGA.card`, puts the chipset in
   the same monitor list as the boards. So the prefs' Monitors page, the
   monitor layout, the pointer crossing from monitor to monitor and the
   Workbench monitor choice treat it as one more monitor. Its native modes
@@ -123,7 +125,7 @@ no capture. For monitor 1 set to pass-through:
 
 - **One picture, switched by the board.** The runtime puts the AGA picture
   or the RTG picture into monitor 1's frame, following the card's switch
-  (SetSwitch, and under Open RTG the front screen), so the page never
+  (SetSwitch, and under OpenRTG the front screen), so the page never
   changes layout and the switch is seamless.
 - **Locked to the beam.** The switched head is sent at the chipset's own
   rate (50 Hz PAL, 60 Hz NTSC) with the timed frames, so scrolling stays
@@ -153,17 +155,17 @@ follow it:
 
 | File | Part | Built for |
 | --- | --- | --- |
-| `ACRTG.card` | Zorro III: finds the ACRTG boards, one per monitor, and their memory | OS 3 (Picasso96 and Open RTG), OS 4.1 Classic, AROS |
+| `ACRTG.card` | Zorro III: finds the ACRTG boards, one per monitor, and their memory | OS 3 (Picasso96 and OpenRTG), OS 4.1 Classic, AROS |
 | `ACRTG.chip` | The board's registers: modes, blits, the pointer sprite, the command ring | The same source for 68k and PPC: OS 3, OS 4.1, AROS |
 | `DEVS:Monitors/ACRTG` | The monitor file: one per board, with the board number | OS 3 and OS 4 |
 | `ACRTG.gpu` | OpenGPU's driver for the board: the command ring | `LIBS:OpenGPU/`, OS 3 and OS 4 |
 | `W3D_OpenGPU.library` | Warp3D's hardware driver for any chip OpenGPU drives (section 5) | `LIBS:Warp3D/HWdrivers/`, OS 3 and OS 4 |
-| `W3D_OpenRTG.library` | Warp3D's graphics system driver for Open RTG's bitmaps | `LIBS:Warp3D/GFXdrivers/`, OS 3 |
+| `W3D_OpenRTG.library` | Warp3D's graphics system driver for OpenRTG's bitmaps | `LIBS:Warp3D/GFXdrivers/`, OS 3 |
 
-- **One driver everywhere.** Open RTG loads `.card` and `.chip` drivers
+- **One driver everywhere.** OpenRTG loads `.card` and `.chip` drivers
   through the same board interface (BoardInfo) that Picasso96 and OS 4.1
-  use. So `ACRTG.chip` is one driver for Picasso96, Open RTG and OS 4, and
-  Open RTG can load other boards' drivers later.
+  use. So `ACRTG.chip` is one driver for Picasso96, OpenRTG and OS 4, and
+  OpenRTG can load other boards' drivers later.
 - **OS 4 out of the box.** On the Sam460 board, ACRTG becomes a PCI device
   with the same registers. OS 4.1's own `PCIGraphics.card` finds it and our
   PPC `ACRTG.chip` drives it, so OS 4 gets AmigaChrome's monitors, pointer
@@ -197,14 +199,14 @@ recompile:
 - **The rest of the stack matches too:** Warp3D (section 6), MiniGL later,
   the iconify gadget (OS 3.2 has it), and the window look.
 - **And the other way** (Dale: "or ports to OS 4"): a program written for
-  Open RTG on OS 3 uses the same calls OS 4's graphics.library has, so
+  OpenRTG on OS 3 uses the same calls OS 4's graphics.library has, so
   moving it to OS 4 is a recompile. On OS 4 the `openrtg/` header sends the
   calls to `IGraphics`. Our own applications use these calls, so they move
   to OS 4 the same way.
 
 ### Real Amigas and PiStorm
 
-Open RTG is an Amiga product first. AmigaChrome's boards make it fast, but
+OpenRTG is an Amiga product first. AmigaChrome's boards make it fast, but
 nothing in it may need them:
 
 - **Other boards' drivers.** Because `openrtg.library` loads Picasso96
@@ -216,7 +218,7 @@ nothing in it may need them:
 - **No host needed.** Everything ACRTG does on the host (blits, the
   command ring, COMPOSITE, the rasterizer) also has a 68k path: BoardInfo's
   `...Default` routines for Picasso96's 2D, and OpenGPU's CPU code for
-  everything Open RTG draws, 3D included. It is slow on a real 68030 but quick on a PiStorm, where Emu68
+  everything OpenRTG draws, 3D included. It is slow on a real 68030 but quick on a PiStorm, where Emu68
   runs 68k code at hundreds of MIPS. Chip drivers come later (VideoCore's
   3D on the PiStorm is the first worth doing).
 - **Early start without our ROM.** On a real Amiga `C:OpenRTG` comes first
@@ -234,7 +236,7 @@ nothing in it may need them:
 ## 4. openrtg.library
 
 On OS 3.x the display database, screens and drawing belong to graphics.library
-and intuition.library, which know only the chipset. Open RTG does what
+and intuition.library, which know only the chipset. OpenRTG does what
 Picasso96 and CyberGraphX do: it adds the boards' modes and takes over the
 calls that touch RTG bitmaps, passing everything else to the original code.
 
@@ -280,7 +282,7 @@ calls that touch RTG bitmaps, passing everything else to the original code.
   template, line, sprite, 3D) with the ACRTG driver built in.
 
 **OS-friendly patching** (Dale, 4 October 2026: "it must be an OS friendly
-patching solution"). Every patch Open RTG makes, for RTG and for the window
+patching solution"). Every patch OpenRTG makes, for RTG and for the window
 look, keeps these rules:
 
 - Public library functions only, replaced with `SetFunction()` under
@@ -301,13 +303,13 @@ look, keeps these rules:
 - Where the OS offers a way in, it is used instead of a patch: sysiclass's
   dispatcher for the images, the display database's own calls for the modes,
   the prefs files IPrefs already reads. OS 3.2's intuition has an API for
-  Picasso96 (IntuitionControlA, screen dragging), but it is private; Open RTG
+  Picasso96 (IntuitionControlA, screen dragging), but it is private; OpenRTG
   uses it only if its documentation can be had.
 
 **Starting early** (Dale, the same day: "with early RTG enabling as
 possible"). The goal is that the boot shell and Workbench open on the RTG
 monitor from the first moment. Today Workbench opens on AGA and moves to RTG
-when LoadMonDrvs and IPrefs run; Open RTG should not make that switch.
+when LoadMonDrvs and IPrefs run; OpenRTG should not make that switch.
 
 1. **Before DOS, from the ACRTG board's own ROM.** The first board's boot
    ROM already carries a RomTag (RTF_COLDSTART) that Kickstart 3.2.3 and AROS
@@ -315,7 +317,7 @@ when LoadMonDrvs and IPrefs run; Open RTG should not make that switch.
    `InitResident()`, exec's public way to start a module, so Picasso96 needs
    no disk for it. The same RomTag starts `openrtg.library` and its driver.
    Only the first board has the ROM, so it runs once. The mode at boot is
-   the one Open RTG prefs last saved. The board keeps it, because `ENVARC:`
+   the one OpenRTG prefs last saved. The board keeps it, because `ENVARC:`
    cannot be read before DOS; the runtime holds it per instance, as a
    monitor keeps its settings.
 2. **Without the board's ROM** (a board fitted without one): `C:OpenRTG` comes
@@ -340,7 +342,7 @@ easy speed up of the UI without emulation. Yes, let's adopt. We can create
 [driver] cards for PiStorm 3D etc later." And: "It should allow a maths
 library to call OpenGPU."
 
-`opengpu.library` is the acceleration layer everything in Open RTG draws
+`opengpu.library` is the acceleration layer everything in OpenRTG draws
 through. On AmigaChrome its commands are carried out by the host, so
 Workbench and every program speed up without the CPU emulating drawing loops.
 
@@ -390,7 +392,7 @@ Workbench and every program speed up without the CPU emulating drawing loops.
 ## 6. Warp3D, built in
 
 Dale, 4 October 2026: "we want Warp3D baked in to the design". 3D is part of
-the board and of every Open RTG install from the start, not a card or a
+the board and of every OpenRTG install from the start, not a card or a
 package added later.
 
 - **Every ACRTG board has the 3D unit.** There is no separate 3D card: the
@@ -441,7 +443,7 @@ Wazp3D and AROS's Warp3D are references only: their code is not copied.
 ## 7. OS 4 and MorphOS behaviours
 
 Dale, 4 October 2026: "We want more OS 4 behaviours or MorphOS". Where RTG
-went after OS 3.x, as goals for Open RTG on OS 3.x:
+went after OS 3.x, as goals for OpenRTG on OS 3.x:
 
 | Behaviour | From | How |
 | --- | --- | --- |
@@ -449,7 +451,7 @@ went after OS 3.x, as goals for Open RTG on OS 3.x:
 | Alpha blending and scaled blits for programs | OS 4 graphics.library `CompositeTagList`; MorphOS cybergraphics `BltBitMapAlpha`, `BltBitMapRastPortAlpha`, `WritePixelArrayAlpha`, `ProcessPixelArray` | A board COMPOSITE command (source, destination, alpha, scale, filter); `openrtg.library` exports CompositeTags, and our cybergraphics.library the MorphOS alpha calls. |
 | Screen dragging on RTG, with the screen behind showing | OS 4, MorphOS | The board shows more than one screen per monitor: the front screen at its drag offset over the ones behind, composed by the board, not copied by the CPU. |
 | The pointer moves from monitor to monitor | OS 4.1 multi-monitor, MorphOS | Monitors have a layout (left of, right of); the pointer leaving one monitor's edge enters the next, whose front screen becomes active. |
-| A screen mode per monitor, Workbench on any monitor | OS 4, MorphOS | Open RTG prefs, per monitor. |
+| A screen mode per monitor, Workbench on any monitor | OS 4, MorphOS | OpenRTG prefs, per monitor. |
 | Modern 3D after Warp3D V4 | OS 4 Warp3D Nova, MorphOS TinyGL | Later, on the same rasterizer and command ring. |
 
 The board protocol leaves room for these from Phase 1 on: surfaces
@@ -486,7 +488,7 @@ How it stays a clean, OS-compatible change:
   original. No private structure is touched.
 - **Frames and title bars through the drawing layer.** OS 3.x intuition has
   no public decoration hook (IntuitionControlA's hooks are private). So these
-  are drawn where Open RTG already sits, in its drawing layer (section 4).
+  are drawn where OpenRTG already sits, in its drawing layer (section 4).
   It recognises intuition filling a window's border (the layer's window, the
   title bar's box, FILLPEN or INACTIVEFILLPEN) and draws the look there
   instead. On an RTG screen that is one board command (a gradient fill).
@@ -509,7 +511,7 @@ the OS's own editors have. Its pages:
 | Page | What it sets | Where it is kept |
 | --- | --- | --- |
 | Monitors | Which monitors are on, their order and layout (left of, right of), which one Workbench opens on | `openrtg.prefs` |
-| Screen mode | Each monitor's Workbench mode: size, depth, refresh. The list shows Standard modes (the popular PC resolutions) or All, by a switch above it; the same switch sets which modes the monitor offers programs | `screenmode.prefs` (the OS's own, so ScreenMode prefs and Open RTG never disagree) and `openrtg.prefs` for monitors 2 to 4 and the Standard or All choice |
+| Screen mode | Each monitor's Workbench mode: size, depth, refresh. The list shows Standard modes (the popular PC resolutions) or All, by a switch above it; the same switch sets which modes the monitor offers programs | `screenmode.prefs` (the OS's own, so ScreenMode prefs and OpenRTG never disagree) and `openrtg.prefs` for monitors 2 to 4 and the Standard or All choice |
 | Colours | The palette and the 13 DrawInfo pens, BARCONTOURPEN included | `palette.prefs` (the OS's own) |
 | Window look | OS 4 or classic; the title bar colours (active and inactive), title alignment, gadget style; shadows and transparency on RTG | `openrtg.prefs` |
 | Pointer and 3D | The pointer on each monitor; Warp3D settings | `openrtg.prefs` |
@@ -524,9 +526,9 @@ recommended answer):
 
 | Found | Same job as | The Installer offers |
 | --- | --- | --- |
-| `SYS:Prefs/ScreenMode` | Screen mode page | Replace: the original goes to `SYS:Storage/Prefs/`, and a ScreenMode icon in its place opens Open RTG at that page |
+| `SYS:Prefs/ScreenMode` | Screen mode page | Replace: the original goes to `SYS:Storage/Prefs/`, and a ScreenMode icon in its place opens OpenRTG at that page |
 | `SYS:Prefs/Palette` | Colours page | The same |
-| `Picasso96Mode` | Monitors and Screen mode pages | Move it to `SYS:Storage/Prefs/` when Open RTG becomes the active RTG system |
+| `Picasso96Mode` | Monitors and Screen mode pages | Move it to `SYS:Storage/Prefs/` when OpenRTG becomes the active RTG system |
 | VisualPrefs, SysIHack, MagicFrames, Birdie and other look patches (in `WBStartup` or the startup scripts) | The window look | Turn them off (the WBStartup icon to `WBStartup/Storage/`, the startup line commented out), since two patches drawing the same images fight |
 
 Nothing is deleted: everything moved goes to a `Storage` drawer and is
@@ -538,13 +540,13 @@ listed in the install log, and the uninstaller puts it all back.
 | --- | --- | --- |
 | 0 | LibCount (`openrtg/tools`): counts of graphics, intuition, layers and RTG library calls | Done 4 Oct for Workbench and MultiView on Picasso96 ("What programs call" below); a MUI program and a game still to measure |
 | 1 | Several ACRTG boards; a window per monitor in Cradle; two as standard; `acrtg.card` claims the next unclaimed board | Picasso96 on OS 3.2.3 shows Workbench on monitor 1 and another screen on monitor 2, AGA on its own |
-| 2 | `openrtg.library`: boards, display database, screens; `C:OpenRTG`; started early from the boot ROM; the driver split into `ACRTG.card` and `ACRTG.chip`; AGA as the pseudo card `AGA.card` (monitor 0) | OS 3.2.3 without Picasso96 boots straight to Workbench on an Open RTG monitor, with no switch from AGA |
+| 2 | `openrtg.library`: boards, display database, screens; `C:OpenRTG`; started early from the boot ROM; the driver split into `ACRTG.card` and `ACRTG.chip`; AGA as the pseudo card `AGA.card` (monitor 0) | OS 3.2.3 without Picasso96 boots straight to Workbench on an OpenRTG monitor, with no switch from AGA |
 | 3 | OpenGPU: `opengpu.library` with its CPU fallback, `ACRTG.gpu` over protocol v3 (64 MiB boards, one ring, the runtime's rasterizer), `AGA.gpu`; drawing on RTG bitmaps through it; the pointer per monitor; the pass-through switched in the runtime and locked to the beam | Workbench, MultiView and a few programs draw correctly and fast; the rasterizer's golden images pass |
 | 4 | `cybergraphics.library` and `Picasso96API.library`; OS 4's RTG calls in `openrtg.library`, with the `openrtg/` and `os4` headers | Programs written for either open screens and draw; an OS 4 example using CompositeTags and LockBitMapTags builds for 68k unchanged and runs |
 | 5 | `Warp3D.library`, `W3D_OpenGPU.library` and `W3D_OpenRTG.library` on every monitor, the blitter's 3D on monitor 0; OpenGPU's compute batches; then MiniGL | Warp3D demos and a Warp3D game run, on monitor 1 and on monitor 2 |
 | 6 | The window look: the images through sysiclass, then frames and title bars; resident; `C:OpenRTG LOOK` beside Picasso96 | Workbench's windows on OS 3.2.3 have the OS 4 feel on an AGA and an RTG screen; Classic look is pixel for pixel intuition's |
-| 7 | The Open RTG prefs app | Monitors, screen modes, colours, the look and 3D set from one editor; ScreenMode and Palette prefs agree with it |
-| 8 | AROS: several boards through its own RTG; OS 4.1 on the Sam460: ACRTG on PCI with the PPC `ACRTG.chip` and OpenGPU; `VideoCore.gpu` for the PiStorm's 3D, and real cards' `.gpu` drivers as testers' hardware allows; the look as a decorator; an Installer package that offers to replace the classic editors and turn off other look patches, and an uninstaller | AROS shows two RTG monitors; Open RTG installs from its Installer and uninstalls back to the classic editors |
+| 7 | The OpenRTG prefs app | Monitors, screen modes, colours, the look and 3D set from one editor; ScreenMode and Palette prefs agree with it |
+| 8 | AROS: several boards through its own RTG; OS 4.1 on the Sam460: ACRTG on PCI with the PPC `ACRTG.chip` and OpenGPU; `VideoCore.gpu` for the PiStorm's 3D, and real cards' `.gpu` drivers as testers' hardware allows; the look as a decorator; an Installer package that offers to replace the classic editors and turn off other look patches, and an uninstaller | AROS shows two RTG monitors; OpenRTG installs from its Installer and uninstalls back to the classic editors |
 | 9 | OS 4 and MorphOS behaviours: OpenGPU's COMPOSITE and the alpha calls; screen dragging on RTG; the pointer across monitors; then compositing of windows | Transparent windows with shadows; an RTG screen dragged down shows the one behind; the pointer crosses monitors |
 
 ### What programs call (phase 0, 4 October 2026)
@@ -589,7 +591,7 @@ What it means for the order of the work:
 
 - **The display database comes first** (phase 2). Programs ask it
   constantly; MultiView walks every mode (NextDisplayInfo, ModeNotAvailable)
-  when it opens. Open RTG's answers must be fast, from a table built once.
+  when it opens. OpenRTG's answers must be fast, from a table built once.
 - **Then the core drawing** (phase 3, through OpenGPU): RectFill and
   BltPattern (the fills under every window), BltBitMap, BltTemplate and Text,
   Draw and Move, area fills.

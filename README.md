@@ -1,4 +1,4 @@
-# Open RTG
+# OpenRTG
 
 Our own RTG system for AmigaOS 3.x: `openrtg.library`, OpenGPU, Warp3D,
 several monitors, the window look and one prefs app. It is for real Amigas
@@ -16,18 +16,21 @@ is next.
 
 ## Licence and credit
 
-Open RTG is free software under the MIT licence (`LICENSE`): anyone may use
+OpenRTG is free software under the MIT licence (`LICENSE`): anyone may use
 it, change it, fork it and ship it, commercially too (Dale, 4 October 2026:
 "I want anyone to be able to run with it, fork it etc").
 
-Open RTG was created by Dale Kirkwood at Dalsin Limited, for AmigaChrome.
+OpenRTG was created by Dale Kirkwood at Dalsin Limited, for AmigaChrome.
 The licence's one condition carries that credit: the copyright notice
 ("Copyright (c) 2026 Dalsin Limited") and the licence text must stay with
 every copy and every fork. We also ask, as a courtesy rather than a
 condition, that a fork or a port say in its documentation or About window
-that it is based on Open RTG by Dalsin Limited.
+that it is based on OpenRTG by Dalsin Limited.
 
 ## What is here
+
+- `openrtg.readme`, `tools/libcount.readme`: the Aminet readmes (Dale fills
+  in the uploader at upload time).
 
 - `tools/libcount.c`: LibCount, phase 0's measuring tool. It counts the calls
   to every function of the libraries it is given, with OS-friendly

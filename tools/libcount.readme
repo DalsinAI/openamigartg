@@ -1,0 +1,31 @@
+Short:        Counts the calls programs make to libs
+Uploader:     (Dale fills this in at upload time)
+Author:       Dale Kirkwood (Dalsin Limited)
+Type:         dev/debug
+Version:      1.0
+Architecture: m68k-amigaos >= 2.0.4
+Distribution: Aminet
+
+LibCount counts how often each function of the libraries you name is called,
+while you use the machine, then prints one line per function: library, offset
+and count.
+
+  LibCount graphics.library intuition.library layers.library SECONDS 30 TO
+  RAM:counts
+
+Each function gets a 12-byte stub that adds one and jumps on to the original,
+put in with SetFunction() under Forbid() with the caches cleared. At the end a
+stub comes out only if nothing patched that function after it; otherwise it
+stays and keeps passing calls through. Ctrl-C ends the count early.
+
+libcount_report.py (Python 3, on a PC) names the offsets from the NDK's FD
+files and sorts them into a table.
+
+It was written to find which graphics, intuition and layers calls Workbench
+and programs really make on an RTG screen, for OpenRTG.
+
+Free software under the MIT licence, Copyright (c) 2026 Dalsin Limited. Use
+it, change it, fork it and ship it; keep the copyright notice and the licence
+with every copy.
+
+Source: https://github.com/DalsinAI/openamigartg (tools/)
