@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 Dalsin Limited. Open RTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT */
 /* LibCount: how often each function of some libraries is called, for Open
- * RTG's phase 0 (docs/architecture/OPEN_RTG_DESIGN.md): which graphics,
+ * RTG's phase 0 (DESIGN.md): which graphics,
  * intuition, layers and RTG calls Workbench and programs really make, so
  * openrtg.library takes over the busy ones first.
  *
