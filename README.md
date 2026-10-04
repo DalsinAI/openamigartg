@@ -50,6 +50,17 @@ that it is based on OpenRTG by Dalsin Limited.
   popular PC sizes; All: with the Amiga-shaped ones), each in 8, 16 and
   32-bit, and gives their ModeIDs. The library answers NextDisplayInfo,
   FindDisplayInfo and BestModeIDA from it. Plain C, with no Amiga headers.
+- `library/openrtg_lib.c`: `openrtg.library` 0.1. It finds the ACRTG
+  boards, one per RTG monitor (the serial number is the monitor), and builds
+  each monitor's mode table once. Its calls (`include/proto/openrtg.h`,
+  `library/openrtg_lib.sfd`) give the monitor count, each listed mode, a mode
+  by ModeID, the best mode for a size, the Standard or All choice, and a
+  board's address. It doesn't claim the boards yet; Picasso96's acrtg.card
+  drives them until OpenRTG opens screens of its own.
+- `tools/openrtg_cmd.c`: `C:OpenRTG`. `OpenRTG` lists the monitors;
+  `OpenRTG MODES [MONITOR n]` lists their modes; `OpenRTG ALL|STANDARD
+  [MONITOR n]` switches the list.
+- `library/build.sh`: builds both with the os32 stove.
 - `tests/run.sh`: the host tests (`tests/test_modes.c`), plus a check that
   the library's C builds for the 68k with the stove.
 - `measurements/`: LibCount's raw counts from the OS 3.2.3 scratch copy with
