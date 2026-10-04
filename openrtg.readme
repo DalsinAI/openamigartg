@@ -1,6 +1,6 @@
 Short:        Open RTG system with OpenGPU and Warp3D
-Uploader:     (Dale fills this in at upload time)
-Author:       Dale Kirkwood (Dalsin Limited)
+Uploader:     (We fill this in at upload time)
+Author:       Dalsin Limited
 Type:         driver/video
 Version:      0.1
 Architecture: m68k-amigaos >= 3.2.0

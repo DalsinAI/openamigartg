@@ -5,11 +5,11 @@
 Our own RTG system for AmigaOS 3.x: retargetable graphics, Warp3D and
 several monitors, built for AmigaChrome's ACRTG boards and open source.
 
-Dale, 4 October 2026: "Build our own rtg library drivers and preferences app.
+We, 4 October 2026: "Build our own rtg library drivers and preferences app.
 Support for warp3d and multi monitors as standard." His decisions the same
 day:
 
-- The product is **OpenRTG** (Dale's naming: products drop "Amiga", repos
+- The product is **OpenRTG** (Our naming: products drop "Amiga", repos
   carry it, so the repository is `DalsinAI/openamigartg`); the library is
   **`openrtg.library`**, its own
   name, so it can sit beside an installed Picasso96. One of the two is active
@@ -20,8 +20,8 @@ day:
   **`Picasso96API.library`**, so existing programs work.
 - Windows and prefs are GadTools (OS 3.x applications use GadTools or MUI).
 - **It must work on real Amigas and on PiStorms**, not only in AmigaChrome
-  (Dale, 4 October 2026). See "Real Amigas and PiStorm" in section 3.
-- **MIT licence, with the credit kept** (Dale, 4 October 2026: "I want anyone
+  (We, 4 October 2026). See "Real Amigas and PiStorm" in section 3.
+- **MIT licence, with the credit kept** (We, 4 October 2026: "I want anyone
   to be able to run with it, fork it etc"; "credit to us though"). Copyright
   Dalsin Limited; the notice travels with every copy and fork, and forks are
   asked to say they are based on OpenRTG.
@@ -79,7 +79,7 @@ RAM, mode, pointer); a bitmap belongs to one board.
 
 ### AGA as a pseudo card
 
-Dale, 4 October 2026: "AGA should exist as pseudo cards on A1200s". On an
+We, 4 October 2026: "AGA should exist as pseudo cards on A1200s". On an
 A1200 the chipset is monitor 0, listed and handled like the ACRTG boards:
 
 - **In Cradle's Hardware:** the displays list starts with "AGA (built in)",
@@ -96,7 +96,7 @@ A1200 the chipset is monitor 0, listed and handled like the ACRTG boards:
   once did, so a program written for RTG opens on monitor 0 as well. On our
   machine the runtime converts chunky to planar as the board's blitter does;
   elsewhere the CPU does it.
-- **The blitter as a crude 3D chip** (Dale, the same day). `AGA.gpu` is
+- **The blitter as a crude 3D chip** (We, the same day). `AGA.gpu` is
   OpenGPU's driver for the blitter (section 5), and Warp3D reaches it
   through `W3D_OpenGPU.library` on monitor 0. Triangles are drawn into the
   bitplanes with the blitter's line mode and area fill, flat-shaded, sorted
@@ -106,7 +106,7 @@ A1200 the chipset is monitor 0, listed and handled like the ACRTG boards:
 
 ### Pass-through: one monitor for AGA and RTG
 
-Dale, 4 October 2026: "pass through, have a look at recent PiStorm with AGA
+We, 4 October 2026: "pass through, have a look at recent PiStorm with AGA
 emulation". What the PiStorm world does now:
 
 - **Framethrower** (a board in the Denise socket) feeds the native picture
@@ -142,7 +142,7 @@ their own.
 
 ## 3. The drivers, named and split the OS 4 way
 
-Dale, 4 October 2026: "make sure we can benefit from the driver too, like
+We, 4 October 2026: "make sure we can benefit from the driver too, like
 OS 4 is more AmigaChrome friendly straight out of the box, and use similar
 to OS 4 naming, i.e. .card". OS 4.1 splits a graphics driver into a bus part
 and a chip part: `Kickstart/PCIGraphics.card` finds the boards and
@@ -180,7 +180,7 @@ follow it:
   `ACRTG.card` plus `ACRTG.chip`. The Installer replaces it, and the
   uninstaller puts the old one back.
 
-**Porting from OS 4** (Dale, the same day: "ideally so it makes porting
+**Porting from OS 4** (We, the same day: "ideally so it makes porting
 from OS 4 easier"). OS 4.1's graphics.library has the RTG calls OS 4
 programs use; on OS 3 nothing does. `openrtg.library` offers them with
 OS 4's names, arguments and tag values, so OS 4 code needs only a
@@ -198,7 +198,7 @@ recompile:
   call to `openrtg.library`.
 - **The rest of the stack matches too:** Warp3D (section 6), MiniGL later,
   the iconify gadget (OS 3.2 has it), and the window look.
-- **And the other way** (Dale: "or ports to OS 4"): a program written for
+- **And the other way** (We: "or ports to OS 4"): a program written for
   OpenRTG on OS 3 uses the same calls OS 4's graphics.library has, so
   moving it to OS 4 is a recompile. On OS 4 the `openrtg/` header sends the
   calls to `IGraphics`. Our own applications use these calls, so they move
@@ -229,7 +229,7 @@ nothing in it may need them:
   a real card is the card's own switch, which SetSwitch already drives.
 - **CPU:** 68020 or better, as Picasso96 needs; a PiStorm with Emu68 counts
   as a 68040.
-- **Testing:** our runtime first, then real hardware. Dale or testers run a
+- **Testing:** our runtime first, then real hardware. We or testers run a
   phase on a real Amiga with a Picasso96 card and on a PiStorm before it is
   called done there.
 
@@ -246,7 +246,7 @@ calls that touch RTG bitmaps, passing everything else to the original code.
   the monitors. Phase 0 found these the busiest calls of all (MultiView asked
   about 3,800 times in 30 seconds), so the answers come from a table built
   once per monitor, never worked out per call.
-- **Standard and All modes** (Dale, 4 October 2026: "display modes should be
+- **Standard and All modes** (We, 4 October 2026: "display modes should be
   reported in our next prefs as standard and all, standard being the popular
   PC modes"). Each monitor offers either:
   - **Standard** (the default): the popular PC resolutions the board can show,
@@ -294,7 +294,7 @@ calls that touch RTG bitmaps, passing everything else to the original code.
 - **Boards:** a small driver interface (find, init, mode, pan, fill, copy,
   template, line, sprite, 3D) with the ACRTG driver built in.
 
-**OS-friendly patching** (Dale, 4 October 2026: "it must be an OS friendly
+**OS-friendly patching** (We, 4 October 2026: "it must be an OS friendly
 patching solution"). Every patch OpenRTG makes, for RTG and for the window
 look, keeps these rules:
 
@@ -319,7 +319,7 @@ look, keeps these rules:
   Picasso96 (IntuitionControlA, screen dragging), but it is private; OpenRTG
   uses it only if its documentation can be had.
 
-**Starting early** (Dale, the same day: "with early RTG enabling as
+**Starting early** (We, the same day: "with early RTG enabling as
 possible"). The goal is that the boot shell and Workbench open on the RTG
 monitor from the first moment. Today Workbench opens on AGA and moves to RTG
 when LoadMonDrvs and IPrefs run; OpenRTG should not make that switch.
@@ -343,7 +343,7 @@ when LoadMonDrvs and IPrefs run; OpenRTG should not make that switch.
 Still to measure on the copy: how the Workbench screen's first mode can be
 the RTG one without intuition's private calls.
 
-**Boot to RTG, as a resident option** (Dale, 4 October 2026: "OpenRTG should
+**Boot to RTG, as a resident option** (We, 4 October 2026: "OpenRTG should
 have a resident option to boot to RTG", and "that could be a real win and
 reason for folks to move into our ecosystem"):
 - **The command:** `C:OpenRTG RESIDENT` makes `openrtg.library` reset-resident
@@ -361,7 +361,7 @@ program and a game call, and how often (Phase 0).
 
 ## 5. OpenGPU: one layer for drawing, compositing, 3D and compute
 
-Dale, 4 October 2026: "Is there value in offering an opengpu.library that
+We, 4 October 2026: "Is there value in offering an opengpu.library that
 lets drawing functions go via the graphics chip's GPU if it has one? A
 wrapper for Warp3D, but I suspect a better unifier." Then: "For us it allows
 easy speed up of the UI without emulation. Yes, let's adopt. We can create
@@ -398,7 +398,7 @@ Workbench and every program speed up without the CPU emulating drawing loops.
   - `AGA.gpu`: the blitter (fills, copies, lines, area fill), the "crude 3D
     chip" of section 2;
   - the CPU, built in;
-  - later, as Dale said: `VideoCore.gpu` for the PiStorm's 3D, and drivers
+  - later, as we said: `VideoCore.gpu` for the PiStorm's 3D, and drivers
     for real cards' chips (Permedia2, ViRGE, Voodoo) where their documents
     allow. Linux's drivers are GPL, so they are references only; Mesa's
     are MIT and may be used, keeping their notices.
@@ -410,7 +410,7 @@ Workbench and every program speed up without the CPU emulating drawing loops.
 - **For programs:** the 2D, compositing and compute batches are public, being
   what OS 3 lacks; our own applications use them first. 3D programs use
   Warp3D and MiniGL (classic games), or Mesa's OpenGL and GLES for ports
-  (Dale, 4 October 2026: SDL 2, SDL 3 and Mesa "that lean into our open
+  (We, 4 October 2026: SDL 2, SDL 3 and Mesa "that lean into our open
   capabilities"). Mesa runs on OpenGPU too: on AmigaChrome its `virgl`
   driver's stream goes through OpenGPU's ring to the host's GPU. So OpenGPU
   stays the one acceleration layer under every 3D API (amigachrome
@@ -423,7 +423,7 @@ Workbench and every program speed up without the CPU emulating drawing loops.
 
 ### Compute for TLS: AmiSSL's maths through OpenGPU
 
-Dale, 4 October 2026: "consider a patch for AmiSSL that drives its key
+We, 4 October 2026: "consider a patch for AmiSSL that drives its key
 generation via OpenGPU style, rather than the CPU driving the calculations".
 
 AmiSSL 5 is OpenSSL 3.6.2, and OpenSSL 3 takes its algorithms from
@@ -456,7 +456,7 @@ AmiSSL 5 is OpenSSL 3.6.2, and OpenSSL 3 takes its algorithms from
 
 ## 6. Warp3D, built in
 
-Dale, 4 October 2026: "we want Warp3D baked in to the design". 3D is part of
+We, 4 October 2026: "we want Warp3D baked in to the design". 3D is part of
 the board and of every OpenRTG install from the start, not a card or a
 package added later.
 
@@ -507,7 +507,7 @@ Wazp3D and AROS's Warp3D are references only: their code is not copied.
 
 ## 7. OS 4 and MorphOS behaviours
 
-Dale, 4 October 2026: "We want more OS 4 behaviours or MorphOS". Where RTG
+We, 4 October 2026: "We want more OS 4 behaviours or MorphOS". Where RTG
 went after OS 3.x, as goals for OpenRTG on OS 3.x:
 
 | Behaviour | From | How |
@@ -525,7 +525,7 @@ dragging and compositing are board work, not CPU copies.
 
 ## 8. The window look
 
-**Moved to OpenGadTools** (Dale, 4 October 2026, "yes opengadtools"). The
+**Moved to OpenGadTools** (We, 4 October 2026, "yes opengadtools"). The
 look patch and its prefs page now live in `DalsinAI/opengadtools`, because
 they work on any screen, AGA included. OpenRTG keeps only what needs RTG:
 smooth true-colour gradients, and with compositing (section 7) drop shadows
@@ -594,7 +594,7 @@ the OS's own editors have. Its pages:
 What the OS already has a prefs file for stays in that file, written in the
 OS's own format, and IPrefs applies it as usual.
 
-**Zune's look comes from here too.** Dale, 4 October 2026: Zune's prefs,
+**Zune's look comes from here too.** We, 4 October 2026: Zune's prefs,
 "for our world, would be captured, controlled etc in our look and feel prefs
 patch / prefs tool". `zunemaster.library` (OpenMUI, AROS's Zune on OS 3.2.x)
 reads its look from `ENV:zune/global.prefs`. Each program's own
@@ -604,7 +604,7 @@ backgrounds), so Zune programs match Intuition and GadTools. Zune's own
 editor, `SYS:Prefs/Zune`, is not installed as a separate tool. Per-program
 settings, if offered, are a page here as well.
 
-**The Installer and the classic editors.** Dale, 4 October 2026: the
+**The Installer and the classic editors.** We, 4 October 2026: the
 Installer "offers to replace [or] remove classic prefs apps doing the same
 job". It lists what it found and asks, item by item (Novice users get the
 recommended answer):
@@ -693,14 +693,14 @@ What it means for the order of the work:
   (golden images), as `acrtg_test.c` does now.
 - The Amiga: a test program per phase on the sandboxed OS 3.2.3 copy, with
   screenshots of each monitor; Picasso96 stays the reference to compare with.
-- Never on Dale's validation instance (Instance-23) until a phase passes on
+- Never on our validation instance (Instance-23) until a phase passes on
   the copy.
 - Real hardware: a real Amiga with a Picasso96 card, and a PiStorm with
   Emu68, for every phase that ships to Amiga users.
 
 ## 12. To revisit
 
-- **AGA first, on the appliance** (Dale, 4 October 2026: "when we do
+- **AGA first, on the appliance** (We, 4 October 2026: "when we do
   appliance style deployment, AGA first is something to revisit"). Today the
   display order puts AGA first: Workbench opens on AGA and moves to RTG when
   LoadMonDrvs and IPrefs run, and AGA is monitor 0. On the appliance (one PC
