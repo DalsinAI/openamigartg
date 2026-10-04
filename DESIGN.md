@@ -262,6 +262,19 @@ calls that touch RTG bitmaps, passing everything else to the original code.
   sizes and doubles with a second monitor. A program that asks for a size
   not in the list (BestModeIDA) still gets the nearest mode the board has,
   so nothing that worked before stops working.
+- **ModeIDs** (`library/modes.c`, 4 October 2026):
+  - **Monitor part:** monitor n's ModeIDs share `0x500n1000`, so
+    graphics.library's `MONITOR_ID_MASK` keeps them on one monitor.
+  - **Low twelve bits:** the size's place in one master table times four,
+    plus the format: 8-bit CLUT, 16-bit or 32-bit.
+  - **Stable IDs:** a ModeID means the same size and depth under Standard and
+    All, so saved prefs stay valid when the choice changes. Sizes are only
+    ever added at the end of the table.
+  - **Lookup:** FindDisplayInfo answers for every mode the board shows,
+    listed or not, so a saved All-only ModeID still works while Standard is
+    chosen. NextDisplayInfo walks only the listed ones.
+  - **Picasso96:** OpenRTG and Picasso96 are never active together, so their
+    ModeIDs never meet.
 - **Screens:** OpenScreen on an RTG ModeID allocates its bitmap in the board's
   video RAM; LoadView, MakeVPort, MrgCop, ScrollVPort, ChangeVPBitMap and
   ScreenToFront show the right screen on each board and leave the chipset to
@@ -556,7 +569,7 @@ listed in the install log, and the uninstaller puts it all back.
 | --- | --- | --- |
 | 0 | LibCount (`openrtg/tools`): counts of graphics, intuition, layers and RTG library calls | Done 4 Oct for Workbench and MultiView on Picasso96 ("What programs call" below); a MUI program and a game still to measure |
 | 1 | Several ACRTG boards; a window per monitor in Cradle; two as standard; `acrtg.card` claims the next unclaimed board | Picasso96 on OS 3.2.3 shows Workbench on monitor 1 and another screen on monitor 2, AGA on its own |
-| 2 | `openrtg.library`: boards, display database, screens; `C:OpenRTG`; started early from the boot ROM; the driver split into `ACRTG.card` and `ACRTG.chip`; AGA as the pseudo card `AGA.card` (monitor 0) | OS 3.2.3 without Picasso96 boots straight to Workbench on an OpenRTG monitor, with no switch from AGA |
+| 2 | (Started 4 Oct: the display database's mode table, `library/modes.c`, with host tests.) `openrtg.library`: boards, display database, screens; `C:OpenRTG`; started early from the boot ROM; the driver split into `ACRTG.card` and `ACRTG.chip`; AGA as the pseudo card `AGA.card` (monitor 0) | OS 3.2.3 without Picasso96 boots straight to Workbench on an OpenRTG monitor, with no switch from AGA |
 | 3 | OpenGPU: `opengpu.library` with its CPU fallback, `ACRTG.gpu` over protocol v3 (64 MiB boards, one ring, the runtime's rasterizer), `AGA.gpu`; drawing on RTG bitmaps through it; the pointer per monitor; the pass-through switched in the runtime and locked to the beam | Workbench, MultiView and a few programs draw correctly and fast; the rasterizer's golden images pass |
 | 4 | `cybergraphics.library` and `Picasso96API.library`; OS 4's RTG calls in `openrtg.library`, with the `openrtg/` and `os4` headers | Programs written for either open screens and draw; an OS 4 example using CompositeTags and LockBitMapTags builds for 68k unchanged and runs |
 | 5 | `Warp3D.library`, `W3D_OpenGPU.library` and `W3D_OpenRTG.library` on every monitor, the blitter's 3D on monitor 0; OpenGPU's compute batches; then MiniGL | Warp3D demos and a Warp3D game run, on monitor 1 and on monitor 2 |
