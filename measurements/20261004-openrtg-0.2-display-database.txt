@@ -1,0 +1,110 @@
+openrtg.library 0.2 and C:OpenRTG 0.2 on an AmigaOS 3.2.3 scratch copy (AmigaChrome, AC090
+A1200, two ACRTG boards, Picasso96 running), 4 October 2026, from S:User-Startup.
+LISTDB walks graphics.library's display database (NextDisplayInfo, FindDisplayInfo,
+GetDisplayInfoData, ModeNotAvailable) as ScreenMode prefs does.
+
+---- 1-before
+openrtg.library 0.1: 2 RTG monitors
+Monitor 1: ACRTG at $50000000, 36 modes listed
+Monitor 2: ACRTG at $51000000, 36 modes listed
+  ...
+The display database lists 320 modes.
+---- 2-activate
+openrtg.library 0.1: 2 RTG monitors
+Monitor 1: ACRTG at $50000000, 36 modes listed
+Monitor 2: ACRTG at $51000000, 36 modes listed
+OpenRTG: the display database now lists OpenRTG's modes.
+---- 3-after
+openrtg.library 0.1: 2 RTG monitors
+Monitor 1: ACRTG at $50000000, 36 modes listed
+Monitor 2: ACRTG at $51000000, 36 modes listed
+  ...
+  $50011000  OpenRTG.1: 640x480 8-bit       640x480, depth 8
+  $50011001  OpenRTG.1: 640x480 16-bit      640x480, depth 16
+  $50011002  OpenRTG.1: 640x480 32-bit      640x480, depth 24
+  $50011004  OpenRTG.1: 800x600 8-bit       800x600, depth 8
+  $50011005  OpenRTG.1: 800x600 16-bit      800x600, depth 16
+  $50011006  OpenRTG.1: 800x600 32-bit      800x600, depth 24
+  $50011008  OpenRTG.1: 1024x768 8-bit      1024x768, depth 8
+  $50011009  OpenRTG.1: 1024x768 16-bit     1024x768, depth 16
+  $5001100A  OpenRTG.1: 1024x768 32-bit     1024x768, depth 24
+  $5001100C  OpenRTG.1: 1280x720 8-bit      1280x720, depth 8
+  $5001100D  OpenRTG.1: 1280x720 16-bit     1280x720, depth 16
+  $5001100E  OpenRTG.1: 1280x720 32-bit     1280x720, depth 24
+  $50011010  OpenRTG.1: 1280x800 8-bit      1280x800, depth 8
+  $50011011  OpenRTG.1: 1280x800 16-bit     1280x800, depth 16
+  $50011012  OpenRTG.1: 1280x800 32-bit     1280x800, depth 24
+  $50011014  OpenRTG.1: 1280x1024 8-bit     1280x1024, depth 8
+  $50011015  OpenRTG.1: 1280x1024 16-bit    1280x1024, depth 16
+  $50011016  OpenRTG.1: 1280x1024 32-bit    1280x1024, depth 24
+  $50011018  OpenRTG.1: 1366x768 8-bit      1366x768, depth 8
+  $50011019  OpenRTG.1: 1366x768 16-bit     1366x768, depth 16
+  $5001101A  OpenRTG.1: 1366x768 32-bit     1366x768, depth 24
+  $5001101C  OpenRTG.1: 1440x900 8-bit      1440x900, depth 8
+  $5001101D  OpenRTG.1: 1440x900 16-bit     1440x900, depth 16
+  $5001101E  OpenRTG.1: 1440x900 32-bit     1440x900, depth 24
+  $50011020  OpenRTG.1: 1600x900 8-bit      1600x900, depth 8
+  $50011021  OpenRTG.1: 1600x900 16-bit     1600x900, depth 16
+  $50011022  OpenRTG.1: 1600x900 32-bit     1600x900, depth 24
+  $50011024  OpenRTG.1: 1680x1050 8-bit     1680x1050, depth 8
+  $50011025  OpenRTG.1: 1680x1050 16-bit    1680x1050, depth 16
+  $50011026  OpenRTG.1: 1680x1050 32-bit    1680x1050, depth 24
+  $50011028  OpenRTG.1: 1920x1080 8-bit     1920x1080, depth 8
+  $50011029  OpenRTG.1: 1920x1080 16-bit    1920x1080, depth 16
+  $5001102A  OpenRTG.1: 1920x1080 32-bit    1920x1080, depth 24
+  $5001102C  OpenRTG.1: 1920x1200 8-bit     1920x1200, depth 8
+  $5001102D  OpenRTG.1: 1920x1200 16-bit    1920x1200, depth 16
+  $5001102E  OpenRTG.1: 1920x1200 32-bit    1920x1200, depth 24
+  $50021000  OpenRTG.2: 640x480 8-bit       640x480, depth 8
+  $50021001  OpenRTG.2: 640x480 16-bit      640x480, depth 16
+  $50021002  OpenRTG.2: 640x480 32-bit      640x480, depth 24
+  $50021004  OpenRTG.2: 800x600 8-bit       800x600, depth 8
+  $50021005  OpenRTG.2: 800x600 16-bit      800x600, depth 16
+  $50021006  OpenRTG.2: 800x600 32-bit      800x600, depth 24
+  $50021008  OpenRTG.2: 1024x768 8-bit      1024x768, depth 8
+  $50021009  OpenRTG.2: 1024x768 16-bit     1024x768, depth 16
+  $5002100A  OpenRTG.2: 1024x768 32-bit     1024x768, depth 24
+  $5002100C  OpenRTG.2: 1280x720 8-bit      1280x720, depth 8
+  $5002100D  OpenRTG.2: 1280x720 16-bit     1280x720, depth 16
+  $5002100E  OpenRTG.2: 1280x720 32-bit     1280x720, depth 24
+  $50021010  OpenRTG.2: 1280x800 8-bit      1280x800, depth 8
+  $50021011  OpenRTG.2: 1280x800 16-bit     1280x800, depth 16
+  $50021012  OpenRTG.2: 1280x800 32-bit     1280x800, depth 24
+  $50021014  OpenRTG.2: 1280x1024 8-bit     1280x1024, depth 8
+  $50021015  OpenRTG.2: 1280x1024 16-bit    1280x1024, depth 16
+  $50021016  OpenRTG.2: 1280x1024 32-bit    1280x1024, depth 24
+  $50021018  OpenRTG.2: 1366x768 8-bit      1366x768, depth 8
+  $50021019  OpenRTG.2: 1366x768 16-bit     1366x768, depth 16
+  $5002101A  OpenRTG.2: 1366x768 32-bit     1366x768, depth 24
+  $5002101C  OpenRTG.2: 1440x900 8-bit      1440x900, depth 8
+  $5002101D  OpenRTG.2: 1440x900 16-bit     1440x900, depth 16
+  $5002101E  OpenRTG.2: 1440x900 32-bit     1440x900, depth 24
+  $50021020  OpenRTG.2: 1600x900 8-bit      1600x900, depth 8
+  $50021021  OpenRTG.2: 1600x900 16-bit     1600x900, depth 16
+  $50021022  OpenRTG.2: 1600x900 32-bit     1600x900, depth 24
+  $50021024  OpenRTG.2: 1680x1050 8-bit     1680x1050, depth 8
+  $50021025  OpenRTG.2: 1680x1050 16-bit    1680x1050, depth 16
+  $50021026  OpenRTG.2: 1680x1050 32-bit    1680x1050, depth 24
+  $50021028  OpenRTG.2: 1920x1080 8-bit     1920x1080, depth 8
+  $50021029  OpenRTG.2: 1920x1080 16-bit    1920x1080, depth 16
+  $5002102A  OpenRTG.2: 1920x1080 32-bit    1920x1080, depth 24
+  $5002102C  OpenRTG.2: 1920x1200 8-bit     1920x1200, depth 8
+  $5002102D  OpenRTG.2: 1920x1200 16-bit    1920x1200, depth 16
+  $5002102E  OpenRTG.2: 1920x1200 32-bit    1920x1200, depth 24
+The display database lists 392 modes.
+---- 4-refuse
+openrtg.library 0.1: 2 RTG monitors
+Monitor 1: ACRTG at $50000000, 36 modes listed
+Monitor 2: ACRTG at $51000000, 36 modes listed
+OpenRTG: Picasso96 is running. OpenRTG and Picasso96 don't run together; turn Picasso96's monitors off first.
+---- 5-off
+openrtg.library 0.1: 2 RTG monitors
+Monitor 1: ACRTG at $50000000, 36 modes listed
+Monitor 2: ACRTG at $51000000, 36 modes listed
+OpenRTG: the display database no longer lists OpenRTG's modes.
+---- 6-off
+openrtg.library 0.1: 2 RTG monitors
+Monitor 1: ACRTG at $50000000, 36 modes listed
+Monitor 2: ACRTG at $51000000, 36 modes listed
+  ...
+The display database lists 320 modes.

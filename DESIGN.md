@@ -343,6 +343,19 @@ when LoadMonDrvs and IPrefs run; OpenRTG should not make that switch.
 Still to measure on the copy: how the Workbench screen's first mode can be
 the RTG one without intuition's private calls.
 
+**Boot to RTG, as a resident option** (Dale, 4 October 2026: "OpenRTG should
+have a resident option to boot to RTG", and "that could be a real win and
+reason for folks to move into our ecosystem"):
+- **The command:** `C:OpenRTG RESIDENT` makes `openrtg.library` reset-resident
+  with OS 3.2's `LoadModule`; `C:OpenRTG RESIDENT OFF` takes it out again.
+- **On boards with the ACRTG ROM,** nothing is needed: the board's RomTag
+  starts OpenRTG before DOS.
+- **Either way,** the boot shell and Workbench come up on the RTG monitor from
+  the first moment, with no AGA screen first and no flick at LoadMonDrvs.
+  That is a first impression people notice, and a reason to choose OpenRTG.
+- **It needs the display database (done in 0.2) and OpenRTG's own screens**
+  (the rest of phase 2).
+
 The first measurement decides the order: which of these Workbench, a MUI
 program and a game call, and how often (Phase 0).
 
@@ -612,7 +625,7 @@ listed in the install log, and the uninstaller puts it all back.
 | --- | --- | --- |
 | 0 | LibCount (`openrtg/tools`): counts of graphics, intuition, layers and RTG library calls | Done 4 Oct for Workbench and MultiView on Picasso96 ("What programs call" below); a MUI program and a game still to measure |
 | 1 | Several ACRTG boards; a window per monitor in Cradle; two as standard; `acrtg.card` claims the next unclaimed board | Picasso96 on OS 3.2.3 shows Workbench on monitor 1 and another screen on monitor 2, AGA on its own |
-| 2 | (Started 4 Oct: the mode table, `library/modes.c`, with host tests; `openrtg.library` 0.1 and `C:OpenRTG` find both boards and list their modes on OS 3.2.3, `measurements/20261004-openrtg-0.1-two-monitors.txt`.) `openrtg.library`: boards, display database, screens; `C:OpenRTG`; started early from the boot ROM; the driver split into `ACRTG.card` and `ACRTG.chip`; AGA as the pseudo card `AGA.card` (monitor 0) | OS 3.2.3 without Picasso96 boots straight to Workbench on an OpenRTG monitor, with no switch from AGA |
+| 2 | (Started 4 Oct: the mode table, `library/modes.c`, with host tests; `openrtg.library` 0.1 and `C:OpenRTG` find both boards and list their modes on OS 3.2.3, `measurements/20261004-openrtg-0.1-two-monitors.txt`; 0.2 puts OpenRTG's modes in the display database, `measurements/20261004-openrtg-0.2-display-database.txt`.) `openrtg.library`: boards, display database, screens; `C:OpenRTG`; started early from the boot ROM; the driver split into `ACRTG.card` and `ACRTG.chip`; AGA as the pseudo card `AGA.card` (monitor 0) | OS 3.2.3 without Picasso96 boots straight to Workbench on an OpenRTG monitor, with no switch from AGA |
 | 3 | OpenGPU: `opengpu.library` with its CPU fallback, `ACRTG.gpu` over protocol v3 (64 MiB boards, one ring, the runtime's rasterizer), `AGA.gpu`; drawing on RTG bitmaps through it; the pointer per monitor; the pass-through switched in the runtime and locked to the beam | Workbench, MultiView and a few programs draw correctly and fast; the rasterizer's golden images pass |
 | 4 | `cybergraphics.library` and `Picasso96API.library`; OS 4's RTG calls in `openrtg.library`, with the `openrtg/` and `os4` headers | Programs written for either open screens and draw; an OS 4 example using CompositeTags and LockBitMapTags builds for 68k unchanged and runs |
 | 5 | `Warp3D.library`, `W3D_OpenGPU.library` and `W3D_OpenRTG.library` on every monitor, the blitter's 3D on monitor 0; OpenGPU's compute batches; then MiniGL | Warp3D demos and a Warp3D game run, on monitor 1 and on monitor 2 |
