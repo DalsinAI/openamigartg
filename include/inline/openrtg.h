@@ -5,9 +5,13 @@
 #define _INLINE_OPENRTG_H
 #ifndef __INLINE_MACROS_H
 #include <inline/macros.h>
+#define ORTG_DisplayDatabase(on) \
+    LP1(0x42, LONG, ORTG_DisplayDatabase, ULONG, on, d0, , OPENRTG_BASE_NAME)
 #endif
 #ifndef OPENRTG_BASE_NAME
 #define OPENRTG_BASE_NAME OpenRTGBase
+#define ORTG_DisplayDatabase(on) \
+    LP1(0x42, LONG, ORTG_DisplayDatabase, ULONG, on, d0, , OPENRTG_BASE_NAME)
 #endif
 #define ORTG_MonitorCount() \
     LP0(0x1e, ULONG, ORTG_MonitorCount, , OPENRTG_BASE_NAME)
@@ -21,4 +25,6 @@
     LP2(0x36, LONG, ORTG_SetModeList, ULONG, monitor, d0, ULONG, all, d1, , OPENRTG_BASE_NAME)
 #define ORTG_BoardAddress(monitor) \
     LP1(0x3c, APTR, ORTG_BoardAddress, ULONG, monitor, d0, , OPENRTG_BASE_NAME)
+#define ORTG_DisplayDatabase(on) \
+    LP1(0x42, LONG, ORTG_DisplayDatabase, ULONG, on, d0, , OPENRTG_BASE_NAME)
 #endif
