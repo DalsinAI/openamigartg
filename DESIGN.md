@@ -513,11 +513,21 @@ the OS's own editors have. Its pages:
 | Monitors | Which monitors are on, their order and layout (left of, right of), which one Workbench opens on | `openrtg.prefs` |
 | Screen mode | Each monitor's Workbench mode: size, depth, refresh. The list shows Standard modes (the popular PC resolutions) or All, by a switch above it; the same switch sets which modes the monitor offers programs | `screenmode.prefs` (the OS's own, so ScreenMode prefs and OpenRTG never disagree) and `openrtg.prefs` for monitors 2 to 4 and the Standard or All choice |
 | Colours | The palette and the 13 DrawInfo pens, BARCONTOURPEN included | `palette.prefs` (the OS's own) |
-| Window look | OS 4 or classic; the title bar colours (active and inactive), title alignment, gadget style; shadows and transparency on RTG | `openrtg.prefs` |
+| Window look | OS 4 or classic; the title bar colours (active and inactive), title alignment, gadget style; shadows and transparency on RTG; the same look for Zune programs | `openrtg.prefs`, and `ENV:zune/global.prefs` for Zune |
 | Pointer and 3D | The pointer on each monitor; Warp3D settings | `openrtg.prefs` |
 
 What the OS already has a prefs file for stays in that file, written in the
 OS's own format, and IPrefs applies it as usual.
+
+**Zune's look comes from here too.** Dale, 4 October 2026: Zune's prefs,
+"for our world, would be captured, controlled etc in our look and feel prefs
+patch / prefs tool". `zunemaster.library` (OpenMUI, AROS's Zune on OS 3.2.x)
+reads its look from `ENV:zune/global.prefs`. Each program's own
+`ENV:zune/<program>.prefs` is watched and applied live. The Window look page
+writes `global.prefs` from the same choices (frames, colours, fonts,
+backgrounds), so Zune programs match Intuition and GadTools. Zune's own
+editor, `SYS:Prefs/Zune`, is not installed as a separate tool. Per-program
+settings, if offered, are a page here as well.
 
 **The Installer and the classic editors.** Dale, 4 October 2026: the
 Installer "offers to replace [or] remove classic prefs apps doing the same
