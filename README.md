@@ -57,9 +57,19 @@ that it is based on OpenRTG by Dalsin Limited.
   by ModeID, the best mode for a size, the Standard or All choice, and a
   board's address. It doesn't claim the boards yet; Picasso96's acrtg.card
   drives them until OpenRTG opens screens of its own.
-- `tools/openrtg_cmd.c`: `C:OpenRTG`. `OpenRTG` lists the monitors;
-  `OpenRTG MODES [MONITOR n]` lists their modes; `OpenRTG ALL|STANDARD
-  [MONITOR n]` switches the list.
+- `library/displaydb.c`: the display database (0.2). graphics.library's
+  NextDisplayInfo, FindDisplayInfo, GetDisplayInfoData and ModeNotAvailable
+  answer for OpenRTG's ModeIDs from the mode table, chained OS-friendly and
+  passing everything else through.
+- `tools/openrtg_cmd.c`: `C:OpenRTG`.
+  - `OpenRTG` lists the monitors.
+  - `OpenRTG MODES [MONITOR n]` lists their modes.
+  - `OpenRTG ALL|STANDARD [MONITOR n]` switches the list.
+  - `OpenRTG ACTIVATE [FORCE] | OFF` puts OpenRTG's modes in the display
+    database, or takes them out. It refuses while Picasso96 runs; FORCE is
+    for tests only.
+  - `OpenRTG LISTDB` lists every mode the display database has, as ScreenMode
+    prefs sees them.
 - `library/build.sh`: builds both with the os32 stove.
 - `tests/run.sh`: the host tests (`tests/test_modes.c`), plus a check that
   the library's C builds for the 68k with the stove.

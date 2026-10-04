@@ -13,4 +13,5 @@ BOOL ORTG_GetMode(ULONG modeID, struct OpenRTGMode *mode)(d0,a0)
 ULONG ORTG_BestMode(ULONG monitor, ULONG width, ULONG height, ULONG depth)(d0,d1,d2,d3)
 LONG ORTG_SetModeList(ULONG monitor, ULONG all)(d0,d1)
 APTR ORTG_BoardAddress(ULONG monitor)(d0)
+LONG ORTG_DisplayDatabase(ULONG on)(d0)
 ==end
