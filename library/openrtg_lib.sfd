@@ -1,0 +1,16 @@
+==id $Id: openrtg_lib.sfd 0.1 (4.10.2026) $
+* "openrtg.library"
+==base _OpenRTGBase
+==basetype struct Library *
+==libname openrtg.library
+==bias 30
+==public
+==include <exec/types.h>
+==include <openrtg/openrtg.h>
+ULONG ORTG_MonitorCount()()
+ULONG ORTG_NextMode(ULONG monitor, ULONG previous)(d0,d1)
+BOOL ORTG_GetMode(ULONG modeID, struct OpenRTGMode *mode)(d0,a0)
+ULONG ORTG_BestMode(ULONG monitor, ULONG width, ULONG height, ULONG depth)(d0,d1,d2,d3)
+LONG ORTG_SetModeList(ULONG monitor, ULONG all)(d0,d1)
+APTR ORTG_BoardAddress(ULONG monitor)(d0)
+==end
