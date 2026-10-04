@@ -45,6 +45,13 @@ that it is based on OpenRTG by Dalsin Limited.
   and NDK 3.2: set `STOVE` to the toolchain's install folder (the one holding
   `prefix/bin`), or `CC` to the compiler itself. Output goes to `build/`.
   `libcount_report.py` reads the NDK's FD files; give their folder with `--fd`.
+- `library/modes.c`, `library/modes.h`: phase 2's first part, the display
+  database's mode table. It builds each monitor's modes once (Standard: the
+  popular PC sizes; All: with the Amiga-shaped ones), each in 8, 16 and
+  32-bit, and gives their ModeIDs. The library answers NextDisplayInfo,
+  FindDisplayInfo and BestModeIDA from it. Plain C, with no Amiga headers.
+- `tests/run.sh`: the host tests (`tests/test_modes.c`), plus a check that
+  the library's C builds for the 68k with the stove.
 - `measurements/`: LibCount's raw counts from the OS 3.2.3 scratch copy with
   Picasso96, 4 October 2026: Workbench for 45 seconds, and MultiView showing
   a true-colour PNG for 30. The design's phase 0 section reads them.
