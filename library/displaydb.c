@@ -18,7 +18,9 @@
 #include <graphics/displayinfo.h>
 #include <graphics/monitor.h>
 #include <graphics/modeid.h>
+#include <graphics/gfxbase.h>
 #include <proto/exec.h>
+#include <proto/graphics.h>
 
 #include "modes.h"
 #include "displaydb.h"
@@ -108,7 +110,7 @@ static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag)
     switch (tag) {
     case DTAG_DISP:
         len = sizeof r.d;
-        r.d.PropertyFlags = DIPF_IS_WB | DIPF_IS_SPRITES | DIPF_IS_FOREIGN;
+        r.d.PropertyFlags = DIPF_IS_WB | DIPF_IS_SPRITES;   /* not foreign: intuition moves the pointer with MoveSprite, which OpenRTG takes */
         r.d.Resolution.x = r.d.Resolution.y = 22;
         r.d.PixelSpeed = 1;
         r.d.NumStdSprites = 1;
@@ -169,8 +171,15 @@ int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
     tables = t;
     if (!patched) {
         if (!on) return 1;
+        /* Each monitor's MonitorSpec starts as a copy of the default
+         * monitor's: graphics and intuition call its functions (ms_transform,
+         * ms_translate, ms_scale and the overscan ones) for any mode. */
+        struct GfxBase *GfxBase = (struct GfxBase *)gfx;
+        struct MonitorSpec *def = OpenMonitor(NULL, 0);
         for (int n = 1; n <= ORTG_MAX_MONITORS; n++) {
             char *s = mspec_name[n];
+            if (def) mspec[n] = *def;
+            mspec[n].ms_Node.xln_Succ = mspec[n].ms_Node.xln_Pred = NULL;
             const char *p = "OpenRTG.";
             int i = 0;
             while (*p) s[i++] = *p++;
@@ -178,6 +187,7 @@ int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
             s[i] = 0;
             mspec[n].ms_Node.xln_Name = s;
         }
+        if (def) CloseMonitor(def);
         Forbid();
         old_next = (next_fn)SetFunction(gfx, -732, (APTR)next_patch);
         old_find = (find_fn)SetFunction(gfx, -726, (APTR)find_patch);
