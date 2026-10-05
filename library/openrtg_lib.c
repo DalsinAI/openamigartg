@@ -19,11 +19,12 @@
 
 #include "modes.h"
 #include "displaydb.h"
+#include "screens.h"
 #include "../include/openrtg/openrtg.h"
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 2
+#define LIB_REVISION 3
 
 /* The ACRTG board (amigachrome's common/protocol/acrtg.h): Zorro III,
  * Dalsin (0xDA15; 2011 before 1 October 2026), product 9; video RAM at
@@ -52,7 +53,7 @@ struct ExecBase *SysBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.2 (4.10.2026) OpenRTG, Dalsin Limited\r\n";
+static const char lib_id[] = "openrtg.library 0.3 (5.10.2026) OpenRTG, Dalsin Limited\r\n";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));
@@ -66,11 +67,12 @@ static ULONG ORTG_BestMode(REG(d0, ULONG monitor), REG(d1, ULONG width), REG(d2,
 static LONG ORTG_SetModeList(REG(d0, ULONG monitor), REG(d1, ULONG all), REG(a6, struct OpenRTGBase *base));
 static APTR ORTG_BoardAddress(REG(d0, ULONG monitor), REG(a6, struct OpenRTGBase *base));
 static LONG ORTG_DisplayDatabase(REG(d0, ULONG on), REG(a6, struct OpenRTGBase *base));
+static LONG ORTG_Screens(REG(d0, ULONG on), REG(a6, struct OpenRTGBase *base));
 
 static const APTR lib_vectors[] = {
     (APTR)lib_open, (APTR)lib_close, (APTR)lib_expunge, (APTR)lib_null,
     (APTR)ORTG_MonitorCount, (APTR)ORTG_NextMode, (APTR)ORTG_GetMode,
-    (APTR)ORTG_BestMode, (APTR)ORTG_SetModeList, (APTR)ORTG_BoardAddress, (APTR)ORTG_DisplayDatabase, (APTR)-1,
+    (APTR)ORTG_BestMode, (APTR)ORTG_SetModeList, (APTR)ORTG_BoardAddress, (APTR)ORTG_DisplayDatabase, (APTR)ORTG_Screens, (APTR)-1,
 };
 static const struct { ULONG size; const APTR *vectors; APTR data; APTR init; } lib_inittable = {
     sizeof(struct OpenRTGBase), lib_vectors, NULL, (APTR)lib_init,
@@ -206,4 +208,17 @@ static LONG ORTG_DisplayDatabase(REG(d0, ULONG on), REG(a6, struct OpenRTGBase *
     if (!base->gfx || (on && !base->monitors)) return 0;
     if (on) base->patched = 1;
     return ortg_displaydb(base->gfx, base->table, on ? 1 : 0);
+}
+
+/* OpenRTG's own screens (screens.c): a screen on an OpenRTG ModeID gets a
+ * chunky bitmap in its board's video RAM and the board shows it, with no
+ * Picasso96. The display database must be on. Once on, it stays. */
+static LONG ORTG_Screens(REG(d0, ULONG on), REG(a6, struct OpenRTGBase *base))
+{
+    APTR boards[ORTG_MAX_MONITORS + 1];
+    if (!on) return 0;
+    if (!base->gfx || !base->monitors) return 0;
+    for (int n = 0; n <= ORTG_MAX_MONITORS; n++) boards[n] = base->board[n] ? base->board[n]->cd_BoardAddr : NULL;
+    base->patched = 1;
+    return ortg_screens_on(base->gfx, base->table, boards);
 }

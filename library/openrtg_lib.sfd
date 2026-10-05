@@ -14,4 +14,5 @@ ULONG ORTG_BestMode(ULONG monitor, ULONG width, ULONG height, ULONG depth)(d0,d1
 LONG ORTG_SetModeList(ULONG monitor, ULONG all)(d0,d1)
 APTR ORTG_BoardAddress(ULONG monitor)(d0)
 LONG ORTG_DisplayDatabase(ULONG on)(d0)
+LONG ORTG_Screens(ULONG on)(d0)
 ==end

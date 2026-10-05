@@ -27,4 +27,6 @@
     LP1(0x3c, APTR, ORTG_BoardAddress, ULONG, monitor, d0, , OPENRTG_BASE_NAME)
 #define ORTG_DisplayDatabase(on) \
     LP1(0x42, LONG, ORTG_DisplayDatabase, ULONG, on, d0, , OPENRTG_BASE_NAME)
+#define ORTG_Screens(on) \
+    LP1(0x48, LONG, ORTG_Screens, ULONG, on, d0, , OPENRTG_BASE_NAME)
 #endif

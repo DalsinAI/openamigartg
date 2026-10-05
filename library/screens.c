@@ -1,0 +1,1106 @@
+/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+ * SPDX-License-Identifier: MIT
+ *
+ * OpenRTG's own screens (DESIGN.md, section 4: Screens, Bitmaps, Drawing).
+ *
+ * A screen opened on an OpenRTG ModeID gets a chunky bitmap in its board's
+ * video RAM, and the board shows it: no Picasso96. graphics.library knows
+ * only planar bitmaps, so the calls that draw (the busiest ones phase 0
+ * measured) learn chunky bitmaps here: on an OpenRTG bitmap they draw with
+ * the CPU, through the layer's clip rectangles as graphics does; on any
+ * other bitmap they go to graphics untouched.
+ *
+ * Step 1 (5 October 2026): 8-bit (CLUT) screens. 16 and 32-bit screens,
+ * the pointer and the board's blitter come next; OpenGPU after that.
+ *
+ * An OpenRTG bitmap is a struct BitMap with Depth 8, BytesPerRow the row's
+ * bytes, every plane pointer at the chunky pixels, and pad and Planes[7]
+ * marking it, so a program that reads plane 0 sees pixels rather than a
+ * crash. ortg_is() is the test every patch makes first.
+ *
+ * OS-friendly as displaydb.c is: SetFunction() under Forbid(); each patch
+ * passes what isn't its own to the vector it replaced; patches stay.
+ */
+#include <exec/types.h>
+#include <exec/execbase.h>
+#include <exec/memory.h>
+#include <graphics/gfx.h>
+#include <graphics/gfxbase.h>
+#include <graphics/rastport.h>
+#include <graphics/clip.h>
+#include <graphics/layers.h>
+#include <graphics/text.h>
+#include <graphics/view.h>
+#include <graphics/sprite.h>
+#include <intuition/intuition.h>
+#include <intuition/intuitionbase.h>
+#include <intuition/screens.h>
+#include <utility/tagitem.h>
+#include <proto/exec.h>
+#include <proto/graphics.h>
+#include <proto/utility.h>
+
+#include "modes.h"
+#include "screens.h"
+
+#define REG(r, decl) register decl __asm(#r)
+
+struct GfxBase *GfxBase;
+struct IntuitionBase *IntuitionBase;
+struct Library *UtilityBase;
+
+/* ---- tracing to the serial port (ORTG_TRACE) ---- */
+
+#define ORTG_TRACE 1
+#if ORTG_TRACE
+static void ser(const char *t)
+{
+    while (*t) {
+        register UBYTE c __asm("d0") = (UBYTE)*t++;
+        __asm volatile ("move.l a6,-(sp)\n\tmove.l 4.w,a6\n\tjsr -516(a6)\n\tmove.l (sp)+,a6" : "+d"(c) : : "d1", "a0", "a1", "cc", "memory");
+    }
+}
+static void serx(const char *t, ULONG v)
+{
+    char b[12];
+    ser(t);
+    for (int i = 0; i < 8; i++) b[i] = "0123456789abcdef"[(v >> (28 - 4 * i)) & 15];
+    b[8] = '\r'; b[9] = '\n'; b[10] = 0;
+    ser(b);
+}
+#else
+#define ser(t) ((void)0)
+#define serx(t, v) ((void)0)
+#endif
+
+/* ---- the boards ----------------------------------------------------------------------- */
+
+#define VRAM_AT   0x00010000UL
+#define VRAM_SIZE 0x00FE0000UL
+#define REGS_AT   0x00FF0000UL
+#define R_WIDTH 0x10
+#define R_HEIGHT 0x14
+#define R_FORMAT 0x18
+#define R_PAN_X 0x24
+#define R_PAN_Y 0x28
+#define R_CLOCK 0x2C
+#define R_COMMIT 0x48
+#define R_RESULT 0x4C
+#define R_ARG_A 0x60
+#define R_ARG_B 0x64
+#define R_PAL_INDEX 0x80
+#define R_PAL_RGB 0x84
+#define R_SPR_CTRL 0x90
+#define R_SPR_X 0x94
+#define R_SPR_Y 0x98
+#define R_SPR_HOT 0x9C
+#define R_SPR_SIZE 0xA0
+#define R_SPR_DATA 0xA4
+#define R_SPR_COLOR 0xA8
+#define C_MODE 1
+#define C_PAN 6
+#define C_DISPLAY 7
+#define FMT_CLUT 1
+
+static UBYTE *board[ORTG_MAX_MONITORS + 1];               /* each monitor's board, or NULL */
+static struct ortg_mode_table **tables;
+
+static void reg(int n, ULONG off, ULONG v) { *(volatile ULONG *)(board[n] + REGS_AT + off) = v; }
+
+/* What each monitor shows now. */
+static struct { struct ortg_bitmap *bm; UWORD w, h; } shown[ORTG_MAX_MONITORS + 1];
+
+/* ---- video RAM: first fit in fixed blocks ------------------------------------------- */
+
+#define BLOCKS 128
+static struct { ULONG off, size; UBYTE used, monitor; } blk[BLOCKS];
+static int nblk;
+
+static LONG vram_alloc(int monitor, ULONG size)
+{
+    int i;
+    ULONG off = 0;
+    size = (size + 63) & ~63UL;
+    /* the lowest gap on this monitor's board that fits */
+    for (;;) {
+        int clash = -1;
+        for (i = 0; i < nblk; i++)
+            if (blk[i].used && blk[i].monitor == monitor && off < blk[i].off + blk[i].size && blk[i].off < off + size) { clash = i; break; }
+        if (clash < 0) break;
+        off = blk[clash].off + blk[clash].size;
+    }
+    if (off + size > VRAM_SIZE) return -1;
+    for (i = 0; i < BLOCKS; i++)
+        if (!blk[i].used) {
+            blk[i].off = off; blk[i].size = size; blk[i].used = 1; blk[i].monitor = (UBYTE)monitor;
+            if (i >= nblk) nblk = i + 1;
+            return (LONG)off;
+        }
+    return -1;
+}
+
+static void vram_free(int monitor, ULONG off)
+{
+    for (int i = 0; i < nblk; i++)
+        if (blk[i].used && blk[i].monitor == monitor && blk[i].off == off) { blk[i].used = 0; return; }
+}
+
+/* ---- OpenRTG bitmaps ---------------------------------------------------------------- */
+
+#define ORTG_PAD 0x4F52                                  /* "OR" */
+
+/* The OpenRTG bitmap a BitMap is, or is a copy of: intuition copies a
+ * screen's custom bitmap into the Screen's own BitMap, so a copy (same
+ * marks, same pixels) counts as the bitmap. */
+static struct ortg_bitmap *ortg_of(struct BitMap *bm)
+{
+    struct ortg_bitmap *o;
+    if (!bm || bm->pad != ORTG_PAD) return NULL;
+    o = (struct ortg_bitmap *)bm->Planes[7];
+    return o && o->magic == ORTG_BM_MAGIC && o->mem == bm->Planes[0] ? o : NULL;
+}
+
+int ortg_is(struct BitMap *bm) { return ortg_of(bm) != NULL; }
+
+/* An 8-bit chunky bitmap: in monitor's video RAM when monitor > 0 (and it fits), else in fast RAM. */
+struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear)
+{
+    struct ortg_bitmap *o = AllocVec(sizeof *o, MEMF_ANY | MEMF_CLEAR);
+    ULONG stride = (w + 63) & ~63UL;
+    if (!o) return NULL;
+    o->magic = ORTG_BM_MAGIC;
+    o->width = (UWORD)w; o->height = (UWORD)h; o->stride = stride;
+    if (monitor > 0 && monitor <= ORTG_MAX_MONITORS && board[monitor]) {
+        LONG off = vram_alloc(monitor, stride * h);
+        if (off >= 0) {
+            o->monitor = (UBYTE)monitor; o->vram_off = (ULONG)off;
+            o->mem = board[monitor] + VRAM_AT + off;
+        }
+    }
+    if (!o->mem) {
+        o->monitor = 0;
+        if (!(o->mem = AllocVec(stride * h, MEMF_ANY | (clear ? MEMF_CLEAR : 0)))) { FreeVec(o); return NULL; }
+        clear = 0;
+    }
+    if (clear) for (ULONG i = 0; i < stride * h; i++) o->mem[i] = 0;
+    o->bm.BytesPerRow = (UWORD)stride;
+    o->bm.Rows = (UWORD)h;
+    o->bm.Depth = 8;
+    o->bm.pad = ORTG_PAD;
+    for (int p = 0; p < 7; p++) o->bm.Planes[p] = o->mem;
+    o->bm.Planes[7] = (PLANEPTR)o;
+    return o;
+}
+
+void ortg_free(struct ortg_bitmap *o)
+{
+    if (!o) return;
+    for (int n = 1; n <= ORTG_MAX_MONITORS; n++)
+        if (shown[n].bm == o) shown[n].bm = NULL;
+    if (o->monitor) vram_free(o->monitor, o->vram_off);
+    else FreeVec(o->mem);
+    o->magic = 0;
+    FreeVec(o);
+}
+
+/* ---- pixels: what a pen and a draw mode do to a byte ----------------------------------- */
+
+struct pens { UBYTE a, b, mode, mask; };
+
+static void pens_of(struct RastPort *rp, struct pens *p)
+{
+    p->a = rp->FgPen; p->b = rp->BgPen; p->mode = rp->DrawMode; p->mask = rp->Mask;
+    if (p->mode & INVERSVID) { UBYTE t = p->a; p->a = p->b; p->b = t; }
+}
+
+/* One pixel where a source bit is `on`. */
+static inline void plot(UBYTE *d, const struct pens *p, int on)
+{
+    if (p->mode & COMPLEMENT) { if (on) *d ^= p->mask; return; }
+    if (on) *d = (UBYTE)((*d & ~p->mask) | (p->a & p->mask));
+    else if (p->mode & JAM2) *d = (UBYTE)((*d & ~p->mask) | (p->b & p->mask));
+}
+
+/* ---- clipping: an operation on every visible piece of a RastPort's box -------------- */
+
+/* fn gets the target bitmap, the box in it (inclusive), and dx, dy: the bitmap
+ * position of RastPort coordinate (0, 0). */
+typedef void (*piece_fn)(void *ctx, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy);
+
+/* 0 when the RastPort isn't on an OpenRTG bitmap (the caller goes to graphics). */
+static int pieces(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, piece_fn fn, void *ctx)
+{
+    struct Layer *l = rp->Layer;
+    struct ortg_bitmap *scr = ortg_of(rp->BitMap);
+    if (!scr) return 0;
+    if (x0 > x1 || y0 > y1) return 1;
+    if (!l) {
+        if (x0 < 0) x0 = 0;
+        if (y0 < 0) y0 = 0;
+        if (x1 >= scr->width) x1 = scr->width - 1;
+        if (y1 >= scr->height) y1 = scr->height - 1;
+        if (x0 <= x1 && y0 <= y1) fn(ctx, scr, x0, y0, x1, y1, 0, 0);
+        return 1;
+    }
+    ObtainSemaphore(&l->Lock);                    /* LockLayerRom: its argument is in a5 */
+    {
+        LONG ox = l->bounds.MinX - l->Scroll_X, oy = l->bounds.MinY - l->Scroll_Y;
+        LONG sx0 = x0 + ox, sy0 = y0 + oy, sx1 = x1 + ox, sy1 = y1 + oy;
+        struct ClipRect *cr;
+        for (cr = l->ClipRect; cr; cr = cr->Next) {
+            LONG a0 = sx0 > cr->bounds.MinX ? sx0 : cr->bounds.MinX, b0 = sy0 > cr->bounds.MinY ? sy0 : cr->bounds.MinY;
+            LONG a1 = sx1 < cr->bounds.MaxX ? sx1 : cr->bounds.MaxX, b1 = sy1 < cr->bounds.MaxY ? sy1 : cr->bounds.MaxY;
+            if (a0 > a1 || b0 > b1) continue;
+            if (!cr->obscured) {
+                if (a0 < 0) a0 = 0;
+                if (b0 < 0) b0 = 0;
+                if (a1 >= scr->width) a1 = scr->width - 1;
+                if (b1 >= scr->height) b1 = scr->height - 1;
+                if (a0 <= a1 && b0 <= b1) fn(ctx, scr, a0, b0, a1, b1, ox, oy);
+            } else if (cr->BitMap) {
+                /* smart refresh: the hidden part lives in a bitmap of its own,
+                 * its x origin aligned to 16 pixels as layers allocates it */
+                struct ortg_bitmap *bb = ortg_of(cr->BitMap);
+                LONG bx = cr->bounds.MinX & 15, by = 0;
+                LONG tx = bx - cr->bounds.MinX, ty = by - cr->bounds.MinY;
+                if (bb) fn(ctx, bb, a0 + tx, b0 + ty, a1 + tx, b1 + ty, ox + tx, oy + ty);
+            }
+        }
+    }
+    ReleaseSemaphore(&l->Lock);
+    return 1;
+}
+
+/* ---- the operations ------------------------------------------------------------------ */
+
+/* A fill with the RastPort's pen, its area pattern and its mode. */
+struct fill_ctx { struct pens p; UWORD *ptrn; int ptsz; int ptoff_y; };
+
+static void fill_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
+{
+    struct fill_ctx *f = c;
+    for (LONG y = y0; y <= y1; y++) {
+        UBYTE *row = bm->mem + y * bm->stride;
+        if (!f->ptrn) {
+            if (!(f->p.mode & COMPLEMENT) && f->p.mask == 0xFF) {
+                UBYTE v = f->p.a;
+                for (LONG x = x0; x <= x1; x++) row[x] = v;
+            } else
+                for (LONG x = x0; x <= x1; x++) plot(row + x, &f->p, 1);
+        } else {
+            /* the pattern's rows repeat every ptsz rows of the RastPort */
+            UWORD bits = f->ptrn[(UWORD)(y - dy) & (f->ptsz - 1)];
+            for (LONG x = x0; x <= x1; x++)
+                plot(row + x, &f->p, (bits >> (15 - ((x - dx) & 15))) & 1);
+        }
+    }
+}
+
+/* A one-bit template: bit set, the A pen; clear, the B pen in JAM2. */
+struct tmpl_ctx { struct pens p; const UBYTE *src; LONG src_x, mod; LONG at_x, at_y; };
+
+static void tmpl_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
+{
+    struct tmpl_ctx *t = c;
+    for (LONG y = y0; y <= y1; y++) {
+        const UBYTE *s = t->src + (y - dy - t->at_y) * t->mod;
+        UBYTE *row = bm->mem + y * bm->stride;
+        for (LONG x = x0; x <= x1; x++) {
+            LONG bit = t->src_x + (x - dx - t->at_x);
+            plot(row + x, &t->p, (s[bit >> 3] >> (7 - (bit & 7))) & 1);
+        }
+    }
+}
+
+/* ---- pixels of a planar bitmap, and the minterm ------------------------------------ */
+
+static UBYTE planar_pen(struct BitMap *bm, LONG x, LONG y)
+{
+    UBYTE v = 0;
+    ULONG off = y * bm->BytesPerRow + (x >> 3);
+    UBYTE bit = 0x80 >> (x & 7);
+    for (int p = 0; p < bm->Depth && p < 8; p++) {
+        PLANEPTR pl = bm->Planes[p];
+        if (pl == (PLANEPTR)-1) v |= 1 << p;
+        else if (pl && (pl[off] & bit)) v |= 1 << p;
+    }
+    return v;
+}
+
+static void planar_set(struct BitMap *bm, LONG x, LONG y, UBYTE v, UBYTE mask)
+{
+    ULONG off = y * bm->BytesPerRow + (x >> 3);
+    UBYTE bit = 0x80 >> (x & 7);
+    for (int p = 0; p < bm->Depth && p < 8; p++) {
+        PLANEPTR pl = bm->Planes[p];
+        if (!(mask & (1 << p)) || !pl || pl == (PLANEPTR)-1) continue;
+        if (v & (1 << p)) pl[off] |= bit; else pl[off] &= ~bit;
+    }
+}
+
+/* BltBitMap's minterm on bytes: B the source, C the destination. */
+static inline UBYTE minterm(UBYTE m, UBYTE s, UBYTE d)
+{
+    UBYTE r = 0;
+    if (m & 0x80) r |= s & d;
+    if (m & 0x40) r |= s & ~d;
+    if (m & 0x20) r |= ~s & d;
+    if (m & 0x10) r |= ~s & ~d;
+    return r;
+}
+
+/* A rectangle from any bitmap to an OpenRTG one, or from an OpenRTG one to
+ * a planar one; overlapping copies within one bitmap are ordered so the
+ * source is read before it is written. */
+static void blit(struct BitMap *src, LONG sx, LONG sy, struct BitMap *dst, LONG dx, LONG dy, LONG w, LONG h, UBYTE m, UBYTE mask,
+                 const UBYTE *cookie, LONG cookie_x, LONG cookie_y, LONG cookie_mod)
+{
+    struct ortg_bitmap *os = ortg_of(src), *od = ortg_of(dst);
+    int same = os && os == od;
+    int down = !(same && sy < dy), right = !(same && sy == dy && sx < dx);
+    for (LONG j = 0; j < h; j++) {
+        LONG yy = down ? j : h - 1 - j;
+        for (LONG i = 0; i < w; i++) {
+            LONG xx = right ? i : w - 1 - i;
+            UBYTE s, d, r;
+            if (cookie) {
+                LONG bit = cookie_x + xx;
+                if (!((cookie[(cookie_y + yy) * cookie_mod + (bit >> 3)] >> (7 - (bit & 7))) & 1)) continue;
+            }
+            s = os ? os->mem[(sy + yy) * os->stride + sx + xx] : planar_pen(src, sx + xx, sy + yy);
+            if (od) {
+                UBYTE *p = od->mem + (dy + yy) * od->stride + dx + xx;
+                d = *p;
+                r = cookie ? s : minterm(m, s, d);
+                *p = (UBYTE)((d & ~mask) | (r & mask));
+            } else {
+                d = planar_pen(dst, dx + xx, dy + yy);
+                r = cookie ? s : minterm(m, s, d);
+                planar_set(dst, dx + xx, dy + yy, r, mask);
+            }
+        }
+    }
+}
+
+struct blit_ctx { struct BitMap *src; LONG sx, sy, at_x, at_y; UBYTE m, mask; const UBYTE *cookie; LONG cmod; };
+
+static void blit_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
+{
+    struct blit_ctx *b = c;
+    LONG rx = x0 - dx - b->at_x, ry = y0 - dy - b->at_y;    /* offset into the source box */
+    blit(b->src, b->sx + rx, b->sy + ry, &bm->bm, x0, y0, x1 - x0 + 1, y1 - y0 + 1, b->m, b->mask,
+         b->cookie, b->cookie ? rx + b->sx : 0, b->cookie ? ry + b->sy : 0, b->cmod);
+}
+
+/* ---- the patches ----------------------------------------------------------------------- */
+
+typedef void (*rectfill_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(d2, LONG), REG(d3, LONG), REG(a6, struct GfxBase *));
+typedef void (*bltpattern_fn)(REG(a1, struct RastPort *), REG(a0, PLANEPTR), REG(d0, LONG), REG(d1, LONG), REG(d2, LONG), REG(d3, LONG), REG(d4, ULONG), REG(a6, struct GfxBase *));
+typedef void (*setrast_fn)(REG(a1, struct RastPort *), REG(d0, ULONG), REG(a6, struct GfxBase *));
+typedef void (*draw_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(a6, struct GfxBase *));
+typedef LONG (*writepixel_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(a6, struct GfxBase *));
+typedef ULONG (*readpixel_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(a6, struct GfxBase *));
+typedef void (*polydraw_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(a0, WORD *), REG(a6, struct GfxBase *));
+typedef LONG (*text_fn)(REG(a1, struct RastPort *), REG(a0, STRPTR), REG(d0, ULONG), REG(a6, struct GfxBase *));
+typedef void (*blttemplate_fn)(REG(a0, PLANEPTR), REG(d0, LONG), REG(d1, LONG), REG(a1, struct RastPort *), REG(d2, LONG), REG(d3, LONG), REG(d4, LONG), REG(d5, LONG), REG(a6, struct GfxBase *));
+typedef LONG (*bltbitmap_fn)(REG(a0, struct BitMap *), REG(d0, LONG), REG(d1, LONG), REG(a1, struct BitMap *), REG(d2, LONG), REG(d3, LONG), REG(d4, LONG), REG(d5, LONG), REG(d6, ULONG), REG(d7, ULONG), REG(a2, PLANEPTR), REG(a6, struct GfxBase *));
+typedef void (*bltbmrp_fn)(REG(a0, struct BitMap *), REG(d0, LONG), REG(d1, LONG), REG(a1, struct RastPort *), REG(d2, LONG), REG(d3, LONG), REG(d4, LONG), REG(d5, LONG), REG(d6, ULONG), REG(a6, struct GfxBase *));
+typedef void (*bltmaskbmrp_fn)(REG(a0, struct BitMap *), REG(d0, LONG), REG(d1, LONG), REG(a1, struct RastPort *), REG(d2, LONG), REG(d3, LONG), REG(d4, LONG), REG(d5, LONG), REG(d6, ULONG), REG(a2, PLANEPTR), REG(a6, struct GfxBase *));
+typedef void (*clipblit_fn)(REG(a0, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(a1, struct RastPort *), REG(d2, LONG), REG(d3, LONG), REG(d4, LONG), REG(d5, LONG), REG(d6, ULONG), REG(a6, struct GfxBase *));
+typedef void (*scroll_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(d2, LONG), REG(d3, LONG), REG(d4, LONG), REG(d5, LONG), REG(a6, struct GfxBase *));
+typedef struct BitMap *(*allocbm_fn)(REG(d0, ULONG), REG(d1, ULONG), REG(d2, ULONG), REG(d3, ULONG), REG(a0, struct BitMap *), REG(a6, struct GfxBase *));
+typedef void (*freebm_fn)(REG(a0, struct BitMap *), REG(a6, struct GfxBase *));
+typedef ULONG (*bmattr_fn)(REG(a0, struct BitMap *), REG(d1, ULONG), REG(a6, struct GfxBase *));
+typedef ULONG (*makevp_fn)(REG(a0, struct View *), REG(a1, struct ViewPort *), REG(a6, struct GfxBase *));
+typedef ULONG (*mrgcop_fn)(REG(a1, struct View *), REG(a6, struct GfxBase *));
+typedef void (*loadview_fn)(REG(a1, struct View *), REG(a6, struct GfxBase *));
+typedef void (*loadrgb32_fn)(REG(a0, struct ViewPort *), REG(a1, ULONG *), REG(a6, struct GfxBase *));
+typedef void (*setrgb32_fn)(REG(a0, struct ViewPort *), REG(d0, ULONG), REG(d1, ULONG), REG(d2, ULONG), REG(d3, ULONG), REG(a6, struct GfxBase *));
+typedef void (*loadrgb4_fn)(REG(a0, struct ViewPort *), REG(a1, UWORD *), REG(d0, LONG), REG(a6, struct GfxBase *));
+typedef void (*setrgb4_fn)(REG(a0, struct ViewPort *), REG(d0, LONG), REG(d1, ULONG), REG(d2, ULONG), REG(d3, ULONG), REG(a6, struct GfxBase *));
+typedef void (*wcp_fn)(REG(a0, struct RastPort *), REG(d0, ULONG), REG(d1, ULONG), REG(d2, ULONG), REG(d3, ULONG), REG(a2, UBYTE *), REG(d4, LONG), REG(a6, struct GfxBase *));
+typedef LONG (*wpa8_fn)(REG(a0, struct RastPort *), REG(d0, ULONG), REG(d1, ULONG), REG(d2, ULONG), REG(d3, ULONG), REG(a2, UBYTE *), REG(a1, struct RastPort *), REG(a6, struct GfxBase *));
+typedef void (*movesprite_fn)(REG(a0, struct ViewPort *), REG(a1, struct SimpleSprite *), REG(d0, LONG), REG(d1, LONG), REG(a6, struct GfxBase *));
+typedef LONG (*changeext_fn)(REG(a0, struct ViewPort *), REG(a1, struct ExtSprite *), REG(a2, struct ExtSprite *), REG(a3, struct TagItem *), REG(a6, struct GfxBase *));
+typedef struct Screen *(*openscreen_fn)(REG(a0, struct NewScreen *), REG(a1, struct TagItem *), REG(a6, struct IntuitionBase *));
+typedef BOOL (*closescreen_fn)(REG(a0, struct Screen *), REG(a6, struct IntuitionBase *));
+
+static rectfill_fn old_rectfill;
+static bltpattern_fn old_bltpattern;
+static setrast_fn old_setrast;
+static draw_fn old_draw;
+static writepixel_fn old_writepixel;
+static readpixel_fn old_readpixel;
+static polydraw_fn old_polydraw;
+static text_fn old_text;
+static blttemplate_fn old_blttemplate;
+static bltbitmap_fn old_bltbitmap;
+static bltbmrp_fn old_bltbmrp;
+static bltmaskbmrp_fn old_bltmaskbmrp;
+static clipblit_fn old_clipblit;
+static scroll_fn old_scroll;
+static allocbm_fn old_allocbm;
+static freebm_fn old_freebm;
+static bmattr_fn old_bmattr;
+static makevp_fn old_makevp;
+static mrgcop_fn old_mrgcop;
+static loadview_fn old_loadview;
+static loadrgb32_fn old_loadrgb32;
+static setrgb32_fn old_setrgb32;
+static loadrgb4_fn old_loadrgb4;
+static setrgb4_fn old_setrgb4;
+static wcp_fn old_wcp;
+static wpa8_fn old_wpa8;
+static movesprite_fn old_movesprite;
+static changeext_fn old_changeext;
+static openscreen_fn old_openscreen;
+static closescreen_fn old_closescreen;
+
+/* -- fills -- */
+
+static void do_fill(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, const UBYTE *mask, ULONG mask_bpr)
+{
+    if (mask) {
+        struct tmpl_ctx t;
+        pens_of(rp, &t.p);
+        t.p.mode &= ~JAM2;                              /* a mask draws only where it is set */
+        t.src = mask; t.src_x = 0; t.mod = (LONG)mask_bpr; t.at_x = x0; t.at_y = y0;
+        pieces(rp, x0, y0, x1, y1, tmpl_piece, &t);
+        return;
+    }
+    {
+        struct fill_ctx f;
+        pens_of(rp, &f.p);
+        f.ptrn = rp->AreaPtrn;
+        f.ptsz = 1 << (rp->AreaPtSz < 0 ? 0 : rp->AreaPtSz);
+        if (!f.ptrn) f.p.mode &= ~JAM2;
+        pieces(rp, x0, y0, x1, y1, fill_piece, &f);
+    }
+}
+
+static void rectfill_patch(REG(a1, struct RastPort *rp), REG(d0, WORD x0), REG(d1, WORD y0), REG(d2, WORD x1), REG(d3, WORD y1), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) { do_fill(rp, x0, y0, x1, y1, NULL, 0); return; }
+    old_rectfill(rp, x0, y0, x1, y1, g);
+}
+
+static void bltpattern_patch(REG(a1, struct RastPort *rp), REG(a0, PLANEPTR mask), REG(d0, WORD x0), REG(d1, WORD y0), REG(d2, WORD x1), REG(d3, WORD y1), REG(d4, ULONG bpr), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) { do_fill(rp, x0, y0, x1, y1, mask, bpr); return; }
+    old_bltpattern(rp, mask, x0, y0, x1, y1, bpr, g);
+}
+
+static void setrast_patch(REG(a1, struct RastPort *rp), REG(d0, ULONG pen), REG(a6, struct GfxBase *g))
+{
+    struct ortg_bitmap *o = ortg_of(rp->BitMap);
+    if (o) {
+        for (ULONG y = 0; y < o->height; y++)
+            for (ULONG x = 0; x < o->width; x++) o->mem[y * o->stride + x] = (UBYTE)pen;
+        return;
+    }
+    old_setrast(rp, pen, g);
+}
+
+/* -- lines and pixels -- */
+
+static void pixel_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
+{
+    plot(bm->mem + y0 * bm->stride + x0, (struct pens *)c, 1);
+}
+
+static void line(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1)
+{
+    struct pens p;
+    LONG ddx = x1 > x0 ? x1 - x0 : x0 - x1, ddy = -(y1 > y0 ? y1 - y0 : y0 - y1);
+    LONG sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = ddx + ddy;
+    UWORD pat = rp->LinePtrn;
+    int k = 0;
+    pens_of(rp, &p);
+    p.mode &= ~JAM2;
+    for (;;) {
+        if (pat == 0xFFFF || ((pat >> (15 - (k & 15))) & 1)) pieces(rp, x0, y0, x0, y0, pixel_piece, &p);
+        k++;
+        if (x0 == x1 && y0 == y1) break;
+        if (2 * err >= ddy) { err += ddy; x0 += sx; }
+        if (2 * err <= ddx) { err += ddx; y0 += sy; }
+    }
+}
+
+static void draw_patch(REG(a1, struct RastPort *rp), REG(d0, WORD x), REG(d1, WORD y), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        line(rp, rp->cp_x, rp->cp_y, x, y);
+        rp->cp_x = (WORD)x; rp->cp_y = (WORD)y;
+        return;
+    }
+    old_draw(rp, x, y, g);
+}
+
+static void polydraw_patch(REG(a1, struct RastPort *rp), REG(d0, WORD n), REG(a0, WORD *xy), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        for (LONG i = 0; i < n; i++) {
+            line(rp, rp->cp_x, rp->cp_y, xy[2 * i], xy[2 * i + 1]);
+            rp->cp_x = xy[2 * i]; rp->cp_y = xy[2 * i + 1];
+        }
+        return;
+    }
+    old_polydraw(rp, n, xy, g);
+}
+
+static LONG writepixel_patch(REG(a1, struct RastPort *rp), REG(d0, WORD x), REG(d1, WORD y), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        struct pens p;
+        pens_of(rp, &p);
+        p.mode &= ~JAM2;
+        pieces(rp, x, y, x, y, pixel_piece, &p);
+        return 0;
+    }
+    return old_writepixel(rp, x, y, g);
+}
+
+struct read_ctx { LONG v; };
+static void read_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
+{
+    ((struct read_ctx *)c)->v = bm->mem[y0 * bm->stride + x0];
+}
+
+static ULONG readpixel_patch(REG(a1, struct RastPort *rp), REG(d0, WORD x), REG(d1, WORD y), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        struct read_ctx r = { -1 };
+        pieces(rp, x, y, x, y, read_piece, &r);
+        return (ULONG)r.v;
+    }
+    return old_readpixel(rp, x, y, g);
+}
+
+/* -- templates and text -- */
+
+static void blttemplate_patch(REG(a0, PLANEPTR src), REG(d0, WORD sx), REG(d1, LONG mod), REG(a1, struct RastPort *rp), REG(d2, WORD x), REG(d3, WORD y),
+                              REG(d4, WORD w), REG(d5, WORD h), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        struct tmpl_ctx t;
+        pens_of(rp, &t.p);
+        t.src = src; t.src_x = sx; t.mod = mod; t.at_x = x; t.at_y = y;
+        pieces(rp, x, y, x + w - 1, y + h - 1, tmpl_piece, &t);
+        return;
+    }
+    old_blttemplate(src, sx, mod, rp, x, y, w, h, g);
+}
+
+static LONG text_patch(REG(a1, struct RastPort *rp), REG(a0, STRPTR s), REG(d0, WORD n), REG(a6, struct GfxBase *g))
+{
+    struct TextFont *f = rp->Font;
+    if (!ortg_is(rp->BitMap) || !f) return old_text(rp, s, n, g);
+    {
+        UWORD *loc = f->tf_CharLoc;
+        WORD *space = f->tf_CharSpace, *kern = f->tf_CharKern;
+        LONG x = rp->cp_x, top = rp->cp_y - f->tf_Baseline, total = 0, i;
+        int prop = (f->tf_Flags & FPF_PROPORTIONAL) && space;
+        struct tmpl_ctx t;
+        UBYTE style = rp->AlgoStyle;
+        pens_of(rp, &t.p);
+        /* the advance of the whole string, for JAM2's background */
+        for (i = 0; i < (LONG)n; i++) {
+            UBYTE c = (UBYTE)s[i];
+            int k = (c >= f->tf_LoChar && c <= f->tf_HiChar) ? c - f->tf_LoChar : f->tf_HiChar - f->tf_LoChar + 1;
+            total += (prop ? space[k] : f->tf_XSize) + rp->TxSpacing;
+            if (style & FSF_BOLD) total += f->tf_BoldSmear;
+        }
+        if (t.p.mode & JAM2 && !(t.p.mode & COMPLEMENT)) {
+            struct fill_ctx bg;
+            bg.p = t.p; bg.p.a = t.p.b; bg.p.mode = JAM1; bg.ptrn = NULL; bg.ptsz = 1;
+            pieces(rp, x, top, x + total - 1, top + f->tf_YSize - 1, fill_piece, &bg);
+        }
+        t.p.mode &= ~JAM2;
+        t.src = f->tf_CharData; t.mod = f->tf_Modulo;
+        for (i = 0; i < (LONG)n; i++) {
+            UBYTE c = (UBYTE)s[i];
+            int k = (c >= f->tf_LoChar && c <= f->tf_HiChar) ? c - f->tf_LoChar : f->tf_HiChar - f->tf_LoChar + 1;
+            LONG gx = x + (kern ? kern[k] : 0), w = loc[2 * k + 1];
+            if (w > 0) {
+                t.src_x = loc[2 * k]; t.at_x = gx; t.at_y = top;
+                pieces(rp, gx, top, gx + w - 1, top + f->tf_YSize - 1, tmpl_piece, &t);
+                if (style & FSF_BOLD) {
+                    t.at_x = gx + f->tf_BoldSmear;
+                    pieces(rp, t.at_x, top, t.at_x + w - 1, top + f->tf_YSize - 1, tmpl_piece, &t);
+                }
+            }
+            x += (prop ? space[k] : f->tf_XSize) + rp->TxSpacing + ((style & FSF_BOLD) ? f->tf_BoldSmear : 0);
+        }
+        if (style & FSF_UNDERLINED) {
+            struct fill_ctx u;
+            u.p = t.p; u.ptrn = NULL; u.ptsz = 1;
+            pieces(rp, rp->cp_x, rp->cp_y + 1, x - 1, rp->cp_y + 1, fill_piece, &u);
+        }
+        rp->cp_x = (WORD)x;
+    }
+    return 0;
+}
+
+/* -- blits -- */
+
+static LONG bltbitmap_patch(REG(a0, struct BitMap *src), REG(d0, WORD sx), REG(d1, WORD sy), REG(a1, struct BitMap *dst), REG(d2, WORD dx), REG(d3, WORD dy),
+                            REG(d4, WORD w), REG(d5, WORD h), REG(d6, ULONG m), REG(d7, ULONG mask), REG(a2, PLANEPTR tmp), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(src) || ortg_is(dst)) {
+        if (w > 0 && h > 0) blit(src, sx, sy, dst, dx, dy, w, h, (UBYTE)m, (UBYTE)mask, NULL, 0, 0, 0);
+        return 8;
+    }
+    return old_bltbitmap(src, sx, sy, dst, dx, dy, w, h, m, mask, tmp, g);
+}
+
+static void bltbmrp_patch(REG(a0, struct BitMap *src), REG(d0, WORD sx), REG(d1, WORD sy), REG(a1, struct RastPort *rp), REG(d2, WORD x), REG(d3, WORD y),
+                          REG(d4, WORD w), REG(d5, WORD h), REG(d6, ULONG m), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        struct blit_ctx b = { src, sx, sy, x, y, (UBYTE)m, rp->Mask, NULL, 0 };
+        pieces(rp, x, y, x + w - 1, y + h - 1, blit_piece, &b);
+        return;
+    }
+    old_bltbmrp(src, sx, sy, rp, x, y, w, h, m, g);
+}
+
+static void bltmaskbmrp_patch(REG(a0, struct BitMap *src), REG(d0, WORD sx), REG(d1, WORD sy), REG(a1, struct RastPort *rp), REG(d2, WORD x), REG(d3, WORD y),
+                              REG(d4, WORD w), REG(d5, WORD h), REG(d6, ULONG m), REG(a2, PLANEPTR mask), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        /* the mask is one plane of the source's size: where it is set, the source */
+        LONG mod = ortg_of(src) ? (ortg_of(src)->width + 15) / 16 * 2 : src->BytesPerRow;
+        struct blit_ctx b = { src, sx, sy, x, y, (UBYTE)m, rp->Mask, mask, mod };
+        pieces(rp, x, y, x + w - 1, y + h - 1, blit_piece, &b);
+        return;
+    }
+    old_bltmaskbmrp(src, sx, sy, rp, x, y, w, h, m, mask, g);
+}
+
+static void clipblit_patch(REG(a0, struct RastPort *srp), REG(d0, WORD sx), REG(d1, WORD sy), REG(a1, struct RastPort *rp), REG(d2, WORD x), REG(d3, WORD y),
+                           REG(d4, WORD w), REG(d5, WORD h), REG(d6, ULONG m), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap) || ortg_is(srp->BitMap)) {
+        LONG ox = 0, oy = 0;
+        if (srp->Layer) { ox = srp->Layer->bounds.MinX - srp->Layer->Scroll_X; oy = srp->Layer->bounds.MinY - srp->Layer->Scroll_Y; }
+        if (ortg_is(rp->BitMap)) {
+            struct blit_ctx b = { srp->BitMap, sx + ox, sy + oy, x, y, (UBYTE)m, rp->Mask, NULL, 0 };
+            pieces(rp, x, y, x + w - 1, y + h - 1, blit_piece, &b);
+        } else {
+            LONG dx = 0, dy = 0;
+            if (rp->Layer) { dx = rp->Layer->bounds.MinX - rp->Layer->Scroll_X; dy = rp->Layer->bounds.MinY - rp->Layer->Scroll_Y; }
+            blit(srp->BitMap, sx + ox, sy + oy, rp->BitMap, x + dx, y + dy, w, h, (UBYTE)m, rp->Mask, NULL, 0, 0, 0);
+        }
+        return;
+    }
+    old_clipblit(srp, sx, sy, rp, x, y, w, h, m, g);
+}
+
+/* ScrollRaster: the box's contents move by -dx, -dy; what is uncovered gets
+ * the B pen. Within each visible piece of the box. */
+struct scroll_ctx { LONG dx, dy; UBYTE pen; };
+
+static void scroll_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG ox, LONG oy)
+{
+    struct scroll_ctx *s = c;
+    LONG w = x1 - x0 + 1, h = y1 - y0 + 1;
+    LONG mw = w - (s->dx < 0 ? -s->dx : s->dx), mh = h - (s->dy < 0 ? -s->dy : s->dy);
+    if (mw > 0 && mh > 0) {
+        LONG sx = x0 + (s->dx > 0 ? s->dx : 0), sy = y0 + (s->dy > 0 ? s->dy : 0);
+        LONG tx = x0 + (s->dx < 0 ? -s->dx : 0), ty = y0 + (s->dy < 0 ? -s->dy : 0);
+        blit(&bm->bm, sx, sy, &bm->bm, tx, ty, mw, mh, 0xC0, 0xFF, NULL, 0, 0, 0);
+    }
+    for (LONG y = y0; y <= y1; y++) {
+        UBYTE *row = bm->mem + y * bm->stride;
+        int ybar = (s->dy > 0 && y > y1 - s->dy) || (s->dy < 0 && y < y0 - s->dy) || mh <= 0;
+        for (LONG x = x0; x <= x1; x++)
+            if (ybar || mw <= 0 || (s->dx > 0 && x > x1 - s->dx) || (s->dx < 0 && x < x0 - s->dx)) row[x] = s->pen;
+    }
+}
+
+static void scroll_patch(REG(a1, struct RastPort *rp), REG(d0, WORD dx), REG(d1, WORD dy), REG(d2, WORD x0), REG(d3, WORD y0), REG(d4, WORD x1), REG(d5, WORD y1), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        struct scroll_ctx s = { dx, dy, rp->BgPen };
+        pieces(rp, x0, y0, x1, y1, scroll_piece, &s);
+        return;
+    }
+    old_scroll(rp, dx, dy, x0, y0, x1, y1, g);
+}
+
+/* -- chunky arrays -- */
+
+struct array_ctx { UBYTE *a; LONG bpr, at_x, at_y; };
+static void array_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
+{
+    struct array_ctx *a = c;
+    for (LONG y = y0; y <= y1; y++) {
+        UBYTE *s = a->a + (y - dy - a->at_y) * a->bpr + (x0 - dx - a->at_x), *d = bm->mem + y * bm->stride + x0;
+        for (LONG x = x0; x <= x1; x++) *d++ = *s++;
+    }
+}
+
+static void wcp_patch(REG(a0, struct RastPort *rp), REG(d0, WORD x0), REG(d1, WORD y0), REG(d2, WORD x1), REG(d3, WORD y1), REG(a2, UBYTE *a), REG(d4, LONG bpr), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        struct array_ctx c = { a, bpr, (LONG)x0, (LONG)y0 };
+        pieces(rp, x0, y0, x1, y1, array_piece, &c);
+        return;
+    }
+    old_wcp(rp, x0, y0, x1, y1, a, bpr, g);
+}
+
+static LONG wpa8_patch(REG(a0, struct RastPort *rp), REG(d0, WORD x0), REG(d1, WORD y0), REG(d2, WORD x1), REG(d3, WORD y1), REG(a2, UBYTE *a), REG(a1, struct RastPort *tmp), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        /* WritePixelArray8's rows are rounded up to 16 pixels */
+        struct array_ctx c = { a, (LONG)((x1 - x0 + 16) & ~15UL), (LONG)x0, (LONG)y0 };
+        pieces(rp, x0, y0, x1, y1, array_piece, &c);
+        return (LONG)((x1 - x0 + 1) * (y1 - y0 + 1));
+    }
+    return old_wpa8(rp, x0, y0, x1, y1, a, tmp, g);
+}
+
+/* -- bitmaps -- */
+
+/* The mode an OpenRTG screen bitmap is for, from AllocBitMap's tags. */
+static const struct ortg_mode *mode_of(ULONG id, int *monitor)
+{
+    int n = (int)((id >> 16) - 0x5000);
+    if (!(id & 0x1000) || n < 1 || n > ORTG_MAX_MONITORS || !tables || !tables[n] || !board[n]) return NULL;
+    *monitor = n;
+    return ortg_find_mode(tables[n], id);
+}
+
+static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, ULONG depth), REG(d3, ULONG flags), REG(a0, struct BitMap *friend), REG(a6, struct GfxBase *g))
+{
+    struct BitMap *fr = friend;
+    if (BITMAPFLAGS_ARE_EXTENDED(flags)) {
+        /* OS 3.2's intuition asks for a screen's bitmap with tags: its
+         * ModeID says whether it is an OpenRTG screen */
+        struct TagItem *tags = (struct TagItem *)friend;
+        int n = 0;
+        const struct ortg_mode *m = mode_of(GetTagData(BMATags_DisplayID, INVALID_ID, tags), &n);
+        if (m && m->format == ORTG_CLUT8 && GetTagData(BMATags_Depth, depth, tags) <= 8) {
+            struct ortg_bitmap *o = ortg_alloc(n, (UWORD)w, (UWORD)h, 1);
+            serx("ortg: screen bitmap for mode ", m->mode_id);
+            if (o && o->monitor) return &o->bm;
+            if (o) ortg_free(o);
+        }
+        fr = (struct BitMap *)GetTagData(BMATags_Friend, 0, tags);
+    }
+    /* a bitmap like an OpenRTG one (layers' backing store, double buffers,
+     * a program's off-screen picture) is one, in fast RAM */
+    if (ortg_is(fr) && depth <= 8) {
+        struct ortg_bitmap *o = ortg_alloc(0, (UWORD)w, (UWORD)h, (flags & BMF_CLEAR) != 0);
+        if (o) return &o->bm;
+    }
+    return old_allocbm(w, h, depth, flags, friend, g);
+}
+
+static void freebm_patch(REG(a0, struct BitMap *bm), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(bm)) { struct ortg_bitmap *o = ortg_of(bm); if (&o->bm == bm) ortg_free(o); return; }
+    old_freebm(bm, g);
+}
+
+static ULONG bmattr_patch(REG(a0, struct BitMap *bm), REG(d1, ULONG a), REG(a6, struct GfxBase *g))
+{
+    struct ortg_bitmap *o = ortg_of(bm);
+    if (o) {
+        switch (a) {
+        case BMA_HEIGHT: return o->height;
+        case BMA_DEPTH: return 8;
+        case BMA_WIDTH: return o->stride;
+        case BMA_FLAGS: return 0;               /* not standard: no planar planes */
+        default: return 0;
+        }
+    }
+    return old_bmattr(bm, a, g);
+}
+
+static struct ExtSprite *pointer;
+static void pointer_update(LONG x, LONG y, int image);
+
+/* ---- the display ---------------------------------------------------------------------- */
+
+static struct ortg_bitmap *vp_bitmap(struct ViewPort *vp)
+{
+    return vp && vp->RasInfo ? ortg_of(vp->RasInfo->BitMap) : NULL;
+}
+
+static void palette_to_board(int n, struct ViewPort *vp, ULONG first, ULONG count)
+{
+    ULONG rgb[3 * 16];
+    if (!vp->ColorMap) return;
+    while (count) {
+        ULONG k = count > 16 ? 16 : count;
+        GetRGB32(vp->ColorMap, first, k, rgb);
+        for (ULONG i = 0; i < k; i++) {
+            reg(n, R_PAL_INDEX, first + i);
+            reg(n, R_PAL_RGB, (rgb[3 * i] >> 24) << 16 | (rgb[3 * i + 1] >> 24) << 8 | (rgb[3 * i + 2] >> 24));
+        }
+        first += k; count -= k;
+    }
+}
+
+/* The front OpenRTG screen of each monitor is what the board shows. */
+static void show_front(void)
+{
+    struct ortg_bitmap *want[ORTG_MAX_MONITORS + 1] = { 0 };
+    struct ViewPort *wvp[ORTG_MAX_MONITORS + 1] = { 0 };
+    struct Screen *s;
+    for (s = IntuitionBase->FirstScreen; s; s = s->NextScreen) {
+        struct ortg_bitmap *o = vp_bitmap(&s->ViewPort);
+        if (o && o->monitor && !want[o->monitor]) { want[o->monitor] = o; wvp[o->monitor] = &s->ViewPort; }
+    }
+    for (int n = 1; n <= ORTG_MAX_MONITORS; n++) {
+        struct ortg_bitmap *o = want[n];
+        if (!board[n] || !o || shown[n].bm == o) continue;
+        serx("ortg: showing ", (ULONG)o->vram_off);
+        if (shown[n].w != o->width || shown[n].h != o->height) {
+            reg(n, R_WIDTH, o->width); reg(n, R_HEIGHT, o->height); reg(n, R_FORMAT, FMT_CLUT); reg(n, R_CLOCK, 0);
+            reg(n, R_COMMIT, C_MODE);
+            shown[n].w = o->width; shown[n].h = o->height;
+        }
+        reg(n, R_ARG_A, o->vram_off); reg(n, R_ARG_B, o->stride); reg(n, R_PAN_X, 0); reg(n, R_PAN_Y, 0);
+        reg(n, R_COMMIT, C_PAN);
+        palette_to_board(n, wvp[n], 0, 256);
+        reg(n, R_ARG_A, 1);
+        reg(n, R_COMMIT, C_DISPLAY);
+        shown[n].bm = o;
+    }
+    if (pointer) pointer_update(pointer->es_SimpleSprite.x, pointer->es_SimpleSprite.y, 0);
+}
+
+/* graphics has no copper list to make for an OpenRTG viewport: the board shows it */
+static ULONG makevp_patch(REG(a0, struct View *v), REG(a1, struct ViewPort *vp), REG(a6, struct GfxBase *g))
+{
+    if (vp_bitmap(vp)) { ser("ortg: MakeVPort\r\n"); return MVP_OK; }
+    return old_makevp(v, vp, g);
+}
+
+static ULONG mrgcop_patch(REG(a1, struct View *v), REG(a6, struct GfxBase *g))
+{
+    /* OpenRTG's viewports are hidden from the chipset while the copper lists merge */
+    struct ViewPort *vp;
+    UWORD saved[16];
+    int i = 0;
+    ULONG r;
+    for (vp = v ? v->ViewPort : NULL; vp && i < 16; vp = vp->Next)
+        if (vp_bitmap(vp)) { saved[i++] = vp->Modes; vp->Modes |= VP_HIDE; }
+    r = old_mrgcop(v, g);
+    i = 0;
+    for (vp = v ? v->ViewPort : NULL; vp && i < 16; vp = vp->Next)
+        if (vp_bitmap(vp)) vp->Modes = saved[i++];
+    return r;
+}
+
+static void loadview_patch(REG(a1, struct View *v), REG(a6, struct GfxBase *g))
+{
+    old_loadview(v, g);
+    show_front();
+}
+
+static void palette_changed(struct ViewPort *vp, ULONG first, ULONG count)
+{
+    struct ortg_bitmap *o = vp_bitmap(vp);
+    if (o && o->monitor && shown[o->monitor].bm == o) palette_to_board(o->monitor, vp, first, count);
+}
+
+static void loadrgb32_patch(REG(a0, struct ViewPort *vp), REG(a1, ULONG *t), REG(a6, struct GfxBase *g))
+{
+    old_loadrgb32(vp, t, g);
+    if (vp_bitmap(vp)) palette_changed(vp, 0, 256);
+}
+
+static void setrgb32_patch(REG(a0, struct ViewPort *vp), REG(d0, ULONG n), REG(d1, ULONG r), REG(d2, ULONG gg), REG(d3, ULONG b), REG(a6, struct GfxBase *g))
+{
+    old_setrgb32(vp, n, r, gg, b, g);
+    if (vp_bitmap(vp)) palette_changed(vp, n, 1);
+}
+
+static void loadrgb4_patch(REG(a0, struct ViewPort *vp), REG(a1, UWORD *t), REG(d0, LONG n), REG(a6, struct GfxBase *g))
+{
+    old_loadrgb4(vp, t, n, g);
+    if (vp_bitmap(vp)) palette_changed(vp, 0, (ULONG)n);
+}
+
+static void setrgb4_patch(REG(a0, struct ViewPort *vp), REG(d0, LONG n), REG(d1, ULONG r), REG(d2, ULONG gg), REG(d3, ULONG b), REG(a6, struct GfxBase *g))
+{
+    old_setrgb4(vp, n, r, gg, b, g);
+    if (vp_bitmap(vp)) palette_changed(vp, (ULONG)n, 1);
+}
+
+/* ---- the pointer: the board's sprite while an OpenRTG screen is in front ------------- */
+
+/* pointer: intuition's pointer sprite, the last it set */
+static int pointer_on;                  /* the monitor whose sprite shows it, or 0 */
+
+/* The OpenRTG monitor of the front screen, or 0 when the front screen is the chipset's. */
+static int front_monitor(struct Screen **sp)
+{
+    struct Screen *s = IntuitionBase->FirstScreen;
+    struct ortg_bitmap *o = s ? vp_bitmap(&s->ViewPort) : NULL;
+    if (sp) *sp = s;
+    return o && o->monitor && shown[o->monitor].bm == o ? o->monitor : 0;
+}
+
+/* The sprite's picture: posctldata as the chipset reads it (control words,
+ * then each row's plane 0 and plane 1 words), es_wordwidth words a plane. */
+static void pointer_to_board(int n, struct Screen *s)
+{
+    struct SimpleSprite *ss = &pointer->es_SimpleSprite;
+    UWORD ww = pointer->es_wordwidth ? pointer->es_wordwidth : 1, h = ss->height;
+    UWORD *d = ss->posctldata;
+    ULONG rgb[9];
+    if (!d || !h) return;
+    if (ww > 4) ww = 1;
+    if (h > 64) h = 64;
+    reg(n, R_SPR_SIZE, (ULONG)(ww * 16) << 16 | h);
+    for (UWORD y = 0; y < h; y++) {
+        UWORD *row = d + 2 * ww + y * 2 * ww;
+        for (UWORD k = 0; k < ww; k++) reg(n, R_SPR_DATA, (ULONG)row[k] << 16 | row[ww + k]);
+    }
+    if (s->ViewPort.ColorMap) {
+        GetRGB32(s->ViewPort.ColorMap, 17, 3, rgb);
+        for (int i = 0; i < 3; i++) reg(n, R_SPR_COLOR, (ULONG)i << 24 | (rgb[3 * i] >> 24) << 16 | (rgb[3 * i + 1] >> 24) << 8 | (rgb[3 * i + 2] >> 24));
+    }
+    reg(n, R_SPR_HOT, 0);
+}
+
+static void pointer_update(LONG x, LONG y, int image)
+{
+    struct Screen *s;
+    int n = front_monitor(&s);
+    if (pointer_on && pointer_on != n) { reg(pointer_on, R_SPR_CTRL, 0); pointer_on = 0; }
+    if (!n || !pointer) return;
+    if (image || pointer_on != n) pointer_to_board(n, s);
+    reg(n, R_SPR_X, (ULONG)x);
+    reg(n, R_SPR_Y, (ULONG)y);
+    if (pointer_on != n) { reg(n, R_SPR_CTRL, 1); pointer_on = n; }
+}
+
+static void movesprite_patch(REG(a0, struct ViewPort *vp), REG(a1, struct SimpleSprite *sp), REG(d0, WORD x), REG(d1, WORD y), REG(a6, struct GfxBase *g))
+{
+    old_movesprite(vp, sp, x, y, g);
+    {
+        static int traced;
+        if (traced < 12 && pointer && sp == &pointer->es_SimpleSprite && IntuitionBase->FirstScreen) {
+            traced++;
+            serx("ortg: MoveSprite x ", (ULONG)x); serx("  y ", (ULONG)y); serx("  vp ", (ULONG)vp);
+            serx("  mouse x ", (ULONG)IntuitionBase->FirstScreen->MouseX); serx("  mouse y ", (ULONG)IntuitionBase->FirstScreen->MouseY);
+        }
+    }
+    if (pointer && sp == &pointer->es_SimpleSprite) pointer_update(x, y, 0);
+}
+
+static LONG changeext_patch(REG(a0, struct ViewPort *vp), REG(a1, struct ExtSprite *olds), REG(a2, struct ExtSprite *news), REG(a3, struct TagItem *tags), REG(a6, struct GfxBase *g))
+{
+    LONG r = old_changeext(vp, olds, news, tags, g);
+    if (news && news->es_SimpleSprite.num == 0) {          /* sprite 0: intuition's pointer */
+        pointer = news;
+        pointer_update(news->es_SimpleSprite.x, news->es_SimpleSprite.y, 1);
+    }
+    return r;
+}
+
+/* ---- screens ---------------------------------------------------------------------------- */
+
+static ULONG tag_or(struct TagItem *tags, ULONG tag, ULONG def)
+{
+    return tags ? GetTagData(tag, def, tags) : def;
+}
+
+static struct Screen *openscreen_patch(REG(a0, struct NewScreen *ns), REG(a1, struct TagItem *tags), REG(a6, struct IntuitionBase *ib))
+{
+    struct TagItem *ext = (ns && (ns->Type & NS_EXTENDED)) ? ((struct ExtNewScreen *)ns)->Extension : NULL;
+    ULONG id = tag_or(tags, SA_DisplayID, tag_or(ext, SA_DisplayID, ns ? ns->ViewModes : 0));
+    const struct ortg_mode *m = NULL;
+    int n = (int)((id >> 16) - 0x5000);
+    if ((id & 0x1000) && n >= 1 && n <= ORTG_MAX_MONITORS && tables && tables[n]) m = ortg_find_mode(tables[n], id);
+    serx("ortg: OpenScreen, mode ", id);
+    if (m && m->format == ORTG_CLUT8 && board[n] && !tag_or(tags, SA_BitMap, tag_or(ext, SA_BitMap, 0))) {
+        struct ortg_bitmap *o = ortg_alloc(n, m->width, m->height, 1);
+        serx("ortg: bitmap at ", (ULONG)(o ? o->mem : 0));
+        if (o && o->monitor) {
+            struct TagItem more[4];
+            struct Screen *s;
+            more[0].ti_Tag = SA_BitMap; more[0].ti_Data = (ULONG)&o->bm;
+            more[1].ti_Tag = SA_Width; more[1].ti_Data = m->width;
+            more[2].ti_Tag = SA_Height; more[2].ti_Data = m->height;
+            more[3].ti_Tag = tags ? TAG_MORE : TAG_DONE; more[3].ti_Data = (ULONG)tags;
+            s = old_openscreen(ns, more, ib);
+            serx("ortg: screen ", (ULONG)s);
+            if (s) { o->screen = s; show_front(); return s; }
+        }
+        ortg_free(o);
+        return NULL;
+    }
+    return old_openscreen(ns, tags, ib);
+}
+
+static BOOL closescreen_patch(REG(a0, struct Screen *s), REG(a6, struct IntuitionBase *ib))
+{
+    struct ortg_bitmap *o = s ? vp_bitmap(&s->ViewPort) : NULL;
+    int n = o ? o->monitor : 0, mine = o && o->screen == s;
+    BOOL ok = old_closescreen(s, ib);
+    if (ok && o) {
+        if (mine) ortg_free(o);                         /* intuition frees the others itself */
+        if (n) {
+            shown[n].bm = NULL;
+            show_front();
+            if (!shown[n].bm) { reg(n, R_ARG_A, 0); reg(n, R_COMMIT, C_DISPLAY); }
+        }
+    }
+    return ok;
+}
+
+/* ---- switching on ------------------------------------------------------------------------ */
+
+static int on;
+
+int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *boards)
+{
+    if (on) return 1;
+    GfxBase = (struct GfxBase *)gfx;
+    if (!(IntuitionBase = (struct IntuitionBase *)OpenLibrary("intuition.library", 39))) return 0;
+    if (!(UtilityBase = OpenLibrary("utility.library", 39))) return 0;
+    tables = t;
+    for (int n = 1; n <= ORTG_MAX_MONITORS; n++) board[n] = boards[n];
+    Forbid();
+    old_rectfill = (rectfill_fn)SetFunction(gfx, -306, (APTR)rectfill_patch);
+    old_bltpattern = (bltpattern_fn)SetFunction(gfx, -312, (APTR)bltpattern_patch);
+    old_setrast = (setrast_fn)SetFunction(gfx, -234, (APTR)setrast_patch);
+    old_draw = (draw_fn)SetFunction(gfx, -246, (APTR)draw_patch);
+    old_polydraw = (polydraw_fn)SetFunction(gfx, -336, (APTR)polydraw_patch);
+    old_writepixel = (writepixel_fn)SetFunction(gfx, -324, (APTR)writepixel_patch);
+    old_readpixel = (readpixel_fn)SetFunction(gfx, -318, (APTR)readpixel_patch);
+    old_text = (text_fn)SetFunction(gfx, -60, (APTR)text_patch);
+    old_blttemplate = (blttemplate_fn)SetFunction(gfx, -36, (APTR)blttemplate_patch);
+    old_bltbitmap = (bltbitmap_fn)SetFunction(gfx, -30, (APTR)bltbitmap_patch);
+    old_bltbmrp = (bltbmrp_fn)SetFunction(gfx, -606, (APTR)bltbmrp_patch);
+    old_bltmaskbmrp = (bltmaskbmrp_fn)SetFunction(gfx, -636, (APTR)bltmaskbmrp_patch);
+    old_clipblit = (clipblit_fn)SetFunction(gfx, -552, (APTR)clipblit_patch);
+    old_scroll = (scroll_fn)SetFunction(gfx, -396, (APTR)scroll_patch);
+    old_allocbm = (allocbm_fn)SetFunction(gfx, -918, (APTR)allocbm_patch);
+    old_freebm = (freebm_fn)SetFunction(gfx, -924, (APTR)freebm_patch);
+    old_bmattr = (bmattr_fn)SetFunction(gfx, -960, (APTR)bmattr_patch);
+    old_makevp = (makevp_fn)SetFunction(gfx, -216, (APTR)makevp_patch);
+    old_mrgcop = (mrgcop_fn)SetFunction(gfx, -210, (APTR)mrgcop_patch);
+    old_loadview = (loadview_fn)SetFunction(gfx, -222, (APTR)loadview_patch);
+    old_loadrgb32 = (loadrgb32_fn)SetFunction(gfx, -882, (APTR)loadrgb32_patch);
+    old_setrgb32 = (setrgb32_fn)SetFunction(gfx, -852, (APTR)setrgb32_patch);
+    old_loadrgb4 = (loadrgb4_fn)SetFunction(gfx, -192, (APTR)loadrgb4_patch);
+    old_setrgb4 = (setrgb4_fn)SetFunction(gfx, -288, (APTR)setrgb4_patch);
+    old_wcp = (wcp_fn)SetFunction(gfx, -1056, (APTR)wcp_patch);
+    old_wpa8 = (wpa8_fn)SetFunction(gfx, -786, (APTR)wpa8_patch);
+    old_movesprite = (movesprite_fn)SetFunction(gfx, -426, (APTR)movesprite_patch);
+    old_changeext = (changeext_fn)SetFunction(gfx, -1026, (APTR)changeext_patch);
+    old_openscreen = (openscreen_fn)SetFunction((struct Library *)IntuitionBase, -612, (APTR)openscreen_patch);
+    old_closescreen = (closescreen_fn)SetFunction((struct Library *)IntuitionBase, -66, (APTR)closescreen_patch);
+    CacheClearU();
+    Permit();
+    on = 1;
+    return 1;
+}
