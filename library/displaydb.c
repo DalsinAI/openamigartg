@@ -13,6 +13,7 @@
  * are re-entrant, and never call DOS or Wait().
  */
 #include <exec/types.h>
+#include <exec/memory.h>
 #include <exec/execbase.h>
 #include <utility/tagitem.h>
 #include <graphics/displayinfo.h>
@@ -43,13 +44,17 @@ static avail_fn old_avail;
 static struct ortg_mode_table **tables;        /* [1..4], the library's */
 static volatile int db_on, patched;
 static struct MonitorSpec mspec[ORTG_MAX_MONITORS + 1];
+static struct SpecialMonitor mspecial[ORTG_MAX_MONITORS + 1];
+
+/* A board's monitor has nothing of the chipset's to program. */
+static LONG do_monitor(struct MonitorSpec *ms) { (void)ms; return 0; }
 static char mspec_name[ORTG_MAX_MONITORS + 1][20];
 
 static struct ortg_mode_table *table_for(ULONG id)
 {
-    ULONG high = id >> 16;
-    if ((id & 0x1000) == 0 || high < 0x5001 || high > 0x5000 + ORTG_MAX_MONITORS) return NULL;
-    return tables ? tables[high - 0x5000] : NULL;
+    ULONG n = (id >> 24) - 0x60;
+    if ((id & 0x1000) == 0 || (id >> 28) != 6 || n < 1 || n > ORTG_MAX_MONITORS) return NULL;
+    return tables ? tables[n] : NULL;
 }
 
 static const struct ortg_mode *ours(ULONG id)
@@ -58,12 +63,74 @@ static const struct ortg_mode *ours(ULONG id)
     return t ? ortg_find_mode(t, id) : NULL;
 }
 
+/* A DisplayInfoHandle is a pointer to graphics' own DisplayInfoRecord, and
+ * graphics and intuition read some of its fields straight from the handle
+ * (5 Oct 2026: with a handle to OpenRTG's mode table instead, intuition's
+ * mouse ran to its limits). So OpenRTG's handles are records laid out as
+ * graphics' are (V37 onwards): the node, the keys, the clip rectangle. */
+struct record_node { struct record_node *succ, *pred, *child, *parent; };
+struct ortg_record {
+    struct record_node node;
+    UWORD major, minor;             /* the ModeID's halves */
+    struct TagItem tag;
+    ULONG control;
+    APTR get_data, set_data;
+    struct Rectangle clip_oscan;    /* the whole picture */
+    ULONG reserved[2];
+    /* the record's data, right after it as graphics keeps it: rec_Tag is a
+     * TAG_MORE to here, and each chunk is a tag list of its own, since a
+     * QueryHeader is {StructID, DisplayID} {TAG_SKIP, Length} and Length
+     * counts the 8-byte pairs that follow (measured on the chipset's and
+     * Picasso96's records, 5 Oct 2026): DISP, DIMS, MNTR, NAME, TAG_DONE */
+    ULONG data[80];
+    const struct ortg_mode *mode;   /* OpenRTG's own, after graphics' fields */
+};
+static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag);
+static struct ortg_record *records[ORTG_MAX_MONITORS + 1];
+static struct ortg_record *monitor_records[ORTG_MAX_MONITORS + 1];
+
+/* graphics' private AddDisplayInfo (LVO -738), as monitor drivers use it */
+static void add_info(APTR record, struct Library *gfx)
+{
+    register APTR a0 __asm("a0") = record;
+    register struct Library *a6 __asm("a6") = gfx;
+    __asm volatile ("jsr -738(a6)" : "+r"(a0), "+r"(a6) : : "d0", "d1", "a1", "cc", "memory");
+}
+
+static struct ortg_record *record_of(const struct ortg_mode *m)
+{
+    int n = (int)((m->mode_id >> 24) - 0x60);
+    struct ortg_mode_table *t = tables ? tables[n] : NULL;
+    if (n < 1 || n > ORTG_MAX_MONITORS || !t || !records[n]) return NULL;
+    for (int i = 0; i < t->full_count; i++)
+        if (&t->full[i] == m) {
+            struct ortg_record *r = &records[n][i];
+            r->major = (UWORD)(m->mode_id >> 16); r->minor = (UWORD)m->mode_id;
+            if (r->mode != m) {
+                static const ULONG kinds[] = { DTAG_DISP, DTAG_DIMS, DTAG_MNTR, DTAG_NAME };
+                UBYTE *at = (UBYTE *)r->data;
+                for (int k = 0; k < 4; k++) {
+                    struct QueryHeader *q = (struct QueryHeader *)at;
+                    fill(m, at, sizeof r->data - 8 - (ULONG)(at - (UBYTE *)r->data), kinds[k]);
+                    at += 16 + q->Length * 8;   /* the chunk as its header says */
+                }
+                ((struct TagItem *)at)->ti_Tag = TAG_DONE;
+            }
+            r->tag.ti_Tag = TAG_MORE; r->tag.ti_Data = (ULONG)r->data;
+            r->clip_oscan.MinX = 0; r->clip_oscan.MinY = 0;
+            r->clip_oscan.MaxX = (WORD)(m->width - 1); r->clip_oscan.MaxY = (WORD)(m->height - 1);
+            r->mode = m;
+            return r;
+        }
+    return NULL;
+}
+
 static const struct ortg_mode *our_handle(APTR h)
 {
     for (int n = 1; tables && n <= ORTG_MAX_MONITORS; n++) {
         struct ortg_mode_table *t = tables[n];
-        if (t && (const struct ortg_mode *)h >= t->full && (const struct ortg_mode *)h < t->full + t->full_count)
-            return (const struct ortg_mode *)h;
+        if (t && records[n] && (struct ortg_record *)h >= records[n] && (struct ortg_record *)h < records[n] + t->full_count)
+            return ((struct ortg_record *)h)->mode;
     }
     return NULL;
 }
@@ -92,7 +159,8 @@ static ULONG next_patch(REG(d0, ULONG id), REG(a6, struct Library *gfx))
 static APTR find_patch(REG(d0, ULONG id), REG(a6, struct Library *gfx))
 {
     const struct ortg_mode *m = db_on ? ours(id) : NULL;
-    return m ? (APTR)m : old_find(id, gfx);
+    struct ortg_record *r = m ? record_of(m) : NULL;
+    return r ? (APTR)r : old_find(id, gfx);
 }
 
 static void header(struct QueryHeader *q, ULONG tag, ULONG id, ULONG size)
@@ -108,7 +176,7 @@ static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag)
     union { struct DisplayInfo d; struct DimensionInfo dm; struct MonitorInfo mi; struct NameInfo n; } r;
     ULONG len = 0, i;
     UBYTE *z = (UBYTE *)&r;
-    int n = (int)((m->mode_id >> 16) - 0x5000);
+    int n = (int)((m->mode_id >> 24) - 0x60);
     for (i = 0; i < sizeof r; i++) z[i] = 0;
     switch (tag) {
     case DTAG_DISP:
@@ -201,10 +269,21 @@ int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
             mspec[n].ratioh = mspec[n].ratiov = (44 << RATIO_FIXEDPART) / ORTG_TICKS;
             mspec[n].ms_transform = NULL; mspec[n].ms_translate = NULL; mspec[n].ms_scale = NULL;
             /* nothing of the chipset's beam: as Picasso96's monitors have it */
-            mspec[n].ms_Flags = 0;
+            /* as Picasso96's: a special monitor, whose do_monitor programs nothing */
+            mspec[n].ms_Flags = MSF_REQUEST_SPECIAL;
+            mspecial[n].spm_Node.xln_Type = NT_GRAPHICS;
+            mspecial[n].do_monitor = (LONG (*)())do_monitor;
             mspec[n].DeniseMaxDisplayColumn = mspec[n].BeamCon0 = mspec[n].min_row = 0;
             mspec[n].DeniseMinDisplayColumn = 0;
-            mspec[n].ms_Special = NULL;
+            mspec[n].ms_Special = &mspecial[n];
+            mspec[n].DisplayCompatible = 0;
+            mspec[n].ms_xoffset = 9;                     /* as Picasso96's */
+            /* its own (empty) list of display records: a copy of the
+             * default's list header would lead into the default monitor's */
+            {
+                UBYTE *z = (UBYTE *)&mspec[n].DisplayInfoDataBase;
+                for (ULONG i = 0; i < sizeof mspec[n].DisplayInfoDataBase + sizeof mspec[n].DisplayInfoDataBaseSemaphore; i++) z[i] = 0;
+            }
             mspec[n].ms_xoffset = mspec[n].ms_yoffset = 0;
             mspec[n].ms_LegalView.MinX = mspec[n].ms_LegalView.MinY = mspec[n].ms_LegalView.MaxX = mspec[n].ms_LegalView.MaxY = 0;
             mspec[n].ms_maxoscan = NULL; mspec[n].ms_videoscan = NULL;
@@ -217,7 +296,44 @@ int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
             mspec[n].ms_Node.xln_Name = s;
         }
         if (def) CloseMonitor(def);
+        for (int n = 1; n <= ORTG_MAX_MONITORS; n++)
+            if (tables && tables[n] && !records[n]) {
+                records[n] = AllocVec(sizeof(struct ortg_record) * ORTG_MAX_MODES, MEMF_PUBLIC | MEMF_CLEAR);
+                monitor_records[n] = AllocVec(sizeof(struct ortg_record) * ORTG_MAX_MODES, MEMF_PUBLIC | MEMF_CLEAR);
+            }
+        for (int n = 1; n <= ORTG_MAX_MONITORS; n++)
+            if (tables && tables[n] && records[n] && monitor_records[n])
+                for (int i = 0; i < tables[n]->full_count; i++) record_of(&tables[n]->full[i]);
         Forbid();
+        /* in graphics' own display database, as Picasso96's modes are: a
+         * record at the top for each upper word of the ModeIDs (AddDisplayInfo
+         * keys it by its minor key) and the modes as its children. Graphics looks modes up
+         * itself, not only through FindDisplayInfo, and finds nothing for a
+         * ModeID it has no record of (5 Oct 2026: intuition's mouse stayed
+         * at 0,0 until the records were in the tree) */
+        for (int n = 1; n <= ORTG_MAX_MONITORS; n++) {
+            int tops = 0;
+            if (!tables || !tables[n] || !monitor_records[n] || !records[n]) continue;
+            for (int i = 0; i < tables[n]->full_count; i++) {
+                struct ortg_record *r = &records[n][i], *top = NULL, *last;
+                int k;
+                for (k = 0; k < tops; k++)
+                    if (monitor_records[n][k].minor == r->major) top = &monitor_records[n][k];
+                if (!top) {
+                    top = &monitor_records[n][tops++];
+                    top->minor = r->major;
+                    top->tag.ti_Tag = TAG_DONE;
+                    add_info(top, gfx);
+                }
+                r->node.parent = &top->node;
+                for (last = (struct ortg_record *)top->node.child; last && last->node.succ; last = (struct ortg_record *)last->node.succ) ;
+                r->node.pred = last ? &last->node : NULL;
+                if (last) last->node.succ = &r->node; else top->node.child = &r->node;
+            }
+        }
+        /* in graphics' list of monitors, as Picasso96's are */
+        for (int n = 1; n <= ORTG_MAX_MONITORS; n++)
+            if (tables && tables[n]) AddTail(&GfxBase->MonitorList, (struct Node *)&mspec[n].ms_Node);
         old_next = (next_fn)SetFunction(gfx, -732, (APTR)next_patch);
         old_find = (find_fn)SetFunction(gfx, -726, (APTR)find_patch);
         old_data = (data_fn)SetFunction(gfx, -756, (APTR)data_patch);

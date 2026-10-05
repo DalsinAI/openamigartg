@@ -21,6 +21,7 @@ struct ortg_bitmap {
     UWORD width, height;
     UBYTE monitor;              /* 1-4: in that board's video RAM; 0: fast RAM */
     ULONG vram_off;             /* its offset in the board's video RAM */
+    ULONG vram_block;           /* where its block starts (the head, then the pixels) */
     struct Screen *screen;      /* the screen OpenRTG made it for, if any */
 };
 

@@ -29,10 +29,11 @@ int main(void) {
 
     /* Every ModeID is unique and carries the monitor's part. */
     for (int i = 0; i < all16.count; i++) {
-        CHECK((all16.modes[i].mode_id & 0xFFFF1000u) == ortg_monitor_id(1));
+        CHECK((all16.modes[i].mode_id & 0xFF000000u) == ortg_monitor_id(1));
+        CHECK((all16.modes[i].mode_id & 0x0CFFu) == 0);          /* no chipset mode flags */
         for (int j = i + 1; j < all16.count; j++) CHECK(all16.modes[i].mode_id != all16.modes[j].mode_id);
     }
-    CHECK(ortg_monitor_id(1) == 0x50011000u && ortg_monitor_id(2) == 0x50021000u);
+    CHECK(ortg_monitor_id(1) == 0x61000000u && ortg_monitor_id(2) == 0x62000000u);
 
     /* A ModeID means the same mode under Standard and All. */
     CHECK(by_size(&std16, 1920, 1080, 32)->mode_id == by_size(&all16, 1920, 1080, 32)->mode_id);
