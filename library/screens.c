@@ -36,8 +36,13 @@
 #include <intuition/intuitionbase.h>
 #include <intuition/screens.h>
 #include <utility/tagitem.h>
+#include <devices/input.h>
+#include <devices/inputevent.h>
+#include <exec/interrupts.h>
+#include <exec/io.h>
 #include <proto/exec.h>
 #include <proto/graphics.h>
+#include <proto/intuition.h>
 #include <proto/utility.h>
 
 #include "modes.h"
@@ -422,6 +427,8 @@ typedef void (*wcp_fn)(REG(a0, struct RastPort *), REG(d0, ULONG), REG(d1, ULONG
 typedef LONG (*wpa8_fn)(REG(a0, struct RastPort *), REG(d0, ULONG), REG(d1, ULONG), REG(d2, ULONG), REG(d3, ULONG), REG(a2, UBYTE *), REG(a1, struct RastPort *), REG(a6, struct GfxBase *));
 typedef void (*movesprite_fn)(REG(a0, struct ViewPort *), REG(a1, struct SimpleSprite *), REG(d0, LONG), REG(d1, LONG), REG(a6, struct GfxBase *));
 typedef LONG (*changeext_fn)(REG(a0, struct ViewPort *), REG(a1, struct ExtSprite *), REG(a2, struct ExtSprite *), REG(a3, struct TagItem *), REG(a6, struct GfxBase *));
+typedef void (*remake_fn)(REG(a6, struct IntuitionBase *));
+typedef LONG (*makescreen_fn)(REG(a0, struct Screen *), REG(a6, struct IntuitionBase *));
 typedef struct Screen *(*openscreen_fn)(REG(a0, struct NewScreen *), REG(a1, struct TagItem *), REG(a6, struct IntuitionBase *));
 typedef BOOL (*closescreen_fn)(REG(a0, struct Screen *), REG(a6, struct IntuitionBase *));
 
@@ -453,6 +460,8 @@ static wcp_fn old_wcp;
 static wpa8_fn old_wpa8;
 static movesprite_fn old_movesprite;
 static changeext_fn old_changeext;
+static remake_fn old_rethink, old_remake;
+static makescreen_fn old_makescreen;
 static openscreen_fn old_openscreen;
 static closescreen_fn old_closescreen;
 
@@ -876,7 +885,15 @@ static void show_front(void)
 /* graphics has no copper list to make for an OpenRTG viewport: the board shows it */
 static ULONG makevp_patch(REG(a0, struct View *v), REG(a1, struct ViewPort *vp), REG(a6, struct GfxBase *g))
 {
-    if (vp_bitmap(vp)) { ser("ortg: MakeVPort\r\n"); return MVP_OK; }
+    struct ortg_bitmap *o = vp_bitmap(vp);
+    if (o) {
+        /* the whole picture is shown: intuition's clip arithmetic, made for
+         * the chipset's beam, can leave the height at 0 on a board's mode */
+        if (!vp->DWidth || vp->DWidth > o->width) vp->DWidth = o->width;
+        if (!vp->DHeight || vp->DHeight > o->height) vp->DHeight = o->height;
+        serx("ortg: MakeVPort, height ", vp->DHeight);
+        return MVP_OK;
+    }
     return old_makevp(v, vp, g);
 }
 
@@ -1005,6 +1022,131 @@ static LONG changeext_patch(REG(a0, struct ViewPort *vp), REG(a1, struct ExtSpri
     return r;
 }
 
+/* ---- the viewports' size ----------------------------------------------------------------
+
+   Intuition sizes a screen's viewport from the chipset's display window;
+   for a board's mode it leaves the height 0, and the mouse then has no room
+   on the screen. OpenRTG's screens are shown whole, so their viewports are
+   their bitmaps' size, put right after each of intuition's remakes. */
+
+static void fix_viewports(void)
+{
+    struct Screen *s;
+    for (s = IntuitionBase->FirstScreen; s; s = s->NextScreen) {
+        struct ortg_bitmap *o = vp_bitmap(&s->ViewPort);
+        if (!o) continue;
+        if (s->ViewPort.DWidth != (WORD)s->Width) s->ViewPort.DWidth = s->Width;
+        if (s->ViewPort.DHeight != (WORD)s->Height) s->ViewPort.DHeight = s->Height;
+    }
+}
+
+static void rethink_patch(REG(a6, struct IntuitionBase *ib))
+{
+    fix_viewports();
+    old_rethink(ib);
+    fix_viewports();
+}
+
+static void remake_patch(REG(a6, struct IntuitionBase *ib))
+{
+    fix_viewports();
+    old_remake(ib);
+    fix_viewports();
+}
+
+static LONG makescreen_patch(REG(a0, struct Screen *s), REG(a6, struct IntuitionBase *ib))
+{
+    LONG r;
+    fix_viewports();
+    r = old_makescreen(s, ib);
+    fix_viewports();
+    return r;
+}
+
+/* ---- the mouse on an OpenRTG screen ---------------------------------------------------
+
+   Intuition scales the mouse's counts by the chipset's beam, which a board's
+   mode doesn't have: on an OpenRTG screen a count would jump the pointer to
+   its limits. So while an OpenRTG screen is in front, an input handler ahead
+   of intuition's keeps the pointer's position itself, in the screen's pixels,
+   and hands intuition that position (IECLASS_NEWPOINTERPOS, IESUBCLASS_PIXEL),
+   which needs no scaling. Buttons pass through as they are. */
+
+static struct Interrupt mouse_irq;
+static struct IEPointerPixel mouse_pp;
+static WORD mouse_x, mouse_y;
+static struct Screen *mouse_screen;
+
+static struct InputEvent *__attribute__((used)) mouse_events(struct InputEvent *ev)
+{
+    struct Screen *s;
+    int n = front_monitor(&s);
+    struct InputEvent *e;
+    {
+        static int traced;
+        if (traced < 6) { traced++; serx("ortg: input, monitor ", (ULONG)n); }
+    }
+    {
+        static int tr3;
+        struct InputEvent *t;
+        for (t = ev; t && tr3 < 30; t = t->ie_NextEvent)
+            if (t->ie_Class != IECLASS_TIMER) { tr3++; serx("ortg: event class/code ", (ULONG)t->ie_Class << 16 | t->ie_Code); serx("  qual/xy ", (ULONG)t->ie_Qualifier << 16 | (UWORD)t->ie_X); serx("  n ", (ULONG)n); }
+    }
+    if (!n || !s) { mouse_screen = NULL; return ev; }
+    if (s != mouse_screen) { mouse_screen = s; mouse_x = s->MouseX; mouse_y = s->MouseY; }
+    for (e = ev; e; e = e->ie_NextEvent) {
+        if (e->ie_Class != IECLASS_RAWMOUSE || (e->ie_Qualifier & IEQUALIFIER_RELATIVEMOUSE) == 0) continue;
+        if (!e->ie_X && !e->ie_Y) continue;
+        mouse_x += e->ie_X; mouse_y += e->ie_Y;
+        if (mouse_x < 0) mouse_x = 0;
+        if (mouse_y < 0) mouse_y = 0;
+        if (mouse_x >= s->Width) mouse_x = s->Width - 1;
+        if (mouse_y >= s->Height) mouse_y = s->Height - 1;
+        e->ie_X = e->ie_Y = 0;
+        {
+            static int tr2;
+            if (tr2 < 8) { tr2++; serx("ortg: mouse to ", (ULONG)mouse_x << 16 | (UWORD)mouse_y); serx("  screen mouse was ", (ULONG)s->MouseX << 16 | (UWORD)s->MouseY); }
+        }
+        if (e->ie_Code == IECODE_NOBUTTON) {
+            /* this event becomes the new position */
+            mouse_pp.iepp_Screen = s;
+            mouse_pp.iepp_Position.X = mouse_x;
+            mouse_pp.iepp_Position.Y = mouse_y;
+            e->ie_Class = IECLASS_NEWPOINTERPOS;
+            e->ie_SubClass = IESUBCLASS_PIXEL;
+            e->ie_EventAddress = &mouse_pp;
+        }
+        if (pointer && n) { reg(n, R_SPR_X, (ULONG)mouse_x); reg(n, R_SPR_Y, (ULONG)mouse_y); }
+    }
+    return ev;
+}
+
+__asm(
+"_mouse_entry:\n"
+"   move.l a0,-(sp)\n"
+"   jsr _mouse_events\n"
+"   addq.l #4,sp\n"
+"   rts\n");
+void mouse_entry(void);
+
+static void mouse_on(void)
+{
+    struct MsgPort *port = CreateMsgPort();
+    struct IOStdReq *io = port ? (struct IOStdReq *)CreateIORequest(port, sizeof *io) : NULL;
+    if (io && !OpenDevice((STRPTR)"input.device", 0, (struct IORequest *)io, 0)) {
+        mouse_irq.is_Node.ln_Type = NT_INTERRUPT;
+        mouse_irq.is_Node.ln_Pri = 127;   /* TEMP: see every event */
+        mouse_irq.is_Node.ln_Name = (char *)"OpenRTG mouse";
+        mouse_irq.is_Code = (void (*)())mouse_entry;
+        io->io_Command = IND_ADDHANDLER;
+        io->io_Data = &mouse_irq;
+        DoIO((struct IORequest *)io);
+        CloseDevice((struct IORequest *)io);
+    }
+    if (io) DeleteIORequest((struct IORequest *)io);
+    if (port) DeleteMsgPort(port);
+}
+
 /* ---- screens ---------------------------------------------------------------------------- */
 
 static ULONG tag_or(struct TagItem *tags, ULONG tag, ULONG def)
@@ -1032,12 +1174,21 @@ static struct Screen *openscreen_patch(REG(a0, struct NewScreen *ns), REG(a1, st
             more[3].ti_Tag = tags ? TAG_MORE : TAG_DONE; more[3].ti_Data = (ULONG)tags;
             s = old_openscreen(ns, more, ib);
             serx("ortg: screen ", (ULONG)s);
-            if (s) { o->screen = s; show_front(); return s; }
+            if (s) { o->screen = s; fix_viewports(); RethinkDisplay(); show_front(); return s; }
         }
         ortg_free(o);
         return NULL;
     }
-    return old_openscreen(ns, tags, ib);
+    {
+        struct Screen *sc = old_openscreen(ns, tags, ib);
+        if (sc && vp_bitmap(&sc->ViewPort)) {           /* intuition's own screen bitmap, from the tags */
+            serx("ortg: screen view height was ", sc->ViewPort.DHeight);
+            fix_viewports();
+            RethinkDisplay();
+            show_front();
+        }
+        return sc;
+    }
 }
 
 static BOOL closescreen_patch(REG(a0, struct Screen *s), REG(a6, struct IntuitionBase *ib))
@@ -1097,10 +1248,14 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
     old_wpa8 = (wpa8_fn)SetFunction(gfx, -786, (APTR)wpa8_patch);
     old_movesprite = (movesprite_fn)SetFunction(gfx, -426, (APTR)movesprite_patch);
     old_changeext = (changeext_fn)SetFunction(gfx, -1026, (APTR)changeext_patch);
+    old_rethink = (remake_fn)SetFunction((struct Library *)IntuitionBase, -390, (APTR)rethink_patch);
+    old_remake = (remake_fn)SetFunction((struct Library *)IntuitionBase, -384, (APTR)remake_patch);
+    old_makescreen = (makescreen_fn)SetFunction((struct Library *)IntuitionBase, -378, (APTR)makescreen_patch);
     old_openscreen = (openscreen_fn)SetFunction((struct Library *)IntuitionBase, -612, (APTR)openscreen_patch);
     old_closescreen = (closescreen_fn)SetFunction((struct Library *)IntuitionBase, -66, (APTR)closescreen_patch);
     CacheClearU();
     Permit();
+    mouse_on();
     on = 1;
     return 1;
 }

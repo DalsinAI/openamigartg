@@ -27,6 +27,9 @@
 
 #define REG(r, decl) register decl __asm(#r)
 #define NO_ID ((ULONG)INVALID_ID)
+/* An RTG pixel in the display database's ticks, as Picasso96 gives it
+ * (measured 5 Oct 2026); the monitor's ratio follows from it. */
+#define ORTG_TICKS 18
 
 typedef ULONG (*next_fn)(REG(d0, ULONG), REG(a6, struct Library *));
 typedef APTR (*find_fn)(REG(d0, ULONG), REG(a6, struct Library *));
@@ -110,12 +113,14 @@ static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag)
     switch (tag) {
     case DTAG_DISP:
         len = sizeof r.d;
-        r.d.PropertyFlags = DIPF_IS_WB | DIPF_IS_SPRITES;   /* not foreign: intuition moves the pointer with MoveSprite, which OpenRTG takes */
-        r.d.Resolution.x = r.d.Resolution.y = 22;
-        r.d.PixelSpeed = 1;
-        r.d.NumStdSprites = 1;
-        r.d.PaletteRange = 4096;
-        r.d.SpriteResolution.x = r.d.SpriteResolution.y = 22;
+        /* as Picasso96's modes: OS 3.2's intuition treats 0x02000000 as a
+         * board's mode (its mouse and pointer), measured 5 Oct 2026 */
+        r.d.PropertyFlags = 0x02000000UL | DIPF_IS_DBUFFER | DIPF_IS_SPRITES_CHNG_RES | DIPF_IS_DRAGGABLE | DIPF_IS_WB | DIPF_IS_GENLOCK;
+        r.d.Resolution.x = r.d.Resolution.y = ORTG_TICKS;
+        r.d.PixelSpeed = 25;
+        r.d.NumStdSprites = 0;
+        r.d.PaletteRange = 512;
+        r.d.SpriteResolution.x = r.d.SpriteResolution.y = ORTG_TICKS;
         r.d.RedBits = m->format == ORTG_RGB16 ? 5 : 8;
         r.d.GreenBits = m->format == ORTG_RGB16 ? 6 : 8;
         r.d.BlueBits = m->format == ORTG_RGB16 ? 5 : 8;
@@ -131,11 +136,23 @@ static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag)
     case DTAG_MNTR:
         len = sizeof r.mi;
         r.mi.Mspc = (n >= 1 && n <= ORTG_MAX_MONITORS) ? &mspec[n] : NULL;
-        r.mi.ViewResolution.x = r.mi.ViewResolution.y = 22;
-        r.mi.TotalRows = m->height;
-        r.mi.TotalColorClocks = (UWORD)(m->width / 4);
+        r.mi.ViewResolution.x = r.mi.ViewResolution.y = ORTG_TICKS;
         r.mi.Compatibility = MCOMPAT_NOBODY;
-        r.mi.MouseTicks.x = r.mi.MouseTicks.y = 1;
+        r.mi.MouseTicks.x = r.mi.MouseTicks.y = ORTG_TICKS;
+        r.mi.TotalRows = (UWORD)(m->height + 28);
+        r.mi.TotalColorClocks = 94;
+        {
+            /* OS 3.2 reads two rectangles of the whole picture, in ticks,
+             * from MonitorInfo's pad (0, 0, w*ticks-1, h*ticks-1), as
+             * Picasso96 fills them (measured 5 Oct 2026); without them the
+             * mouse has no room to move on the screen */
+            ULONG *pad = (ULONG *)r.mi.pad;
+            for (int k = 0; k < 2; k++) {
+                pad[4 * k] = 0; pad[4 * k + 1] = 0;
+                pad[4 * k + 2] = (ULONG)m->width * ORTG_TICKS - 1;
+                pad[4 * k + 3] = (ULONG)m->height * ORTG_TICKS - 1;
+            }
+        }   /* as the resolution: intuition scales the mouse by them */
         r.mi.PreferredModeID = m->mode_id;
         break;
     case DTAG_NAME:
@@ -180,6 +197,18 @@ int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
             char *s = mspec_name[n];
             if (def) mspec[n] = *def;
             mspec[n].ms_Node.xln_Succ = mspec[n].ms_Node.xln_Pred = NULL;
+            /* not the chipset's: its view is the board's, at RTG ticks */
+            mspec[n].ratioh = mspec[n].ratiov = (44 << RATIO_FIXEDPART) / ORTG_TICKS;
+            mspec[n].ms_transform = NULL; mspec[n].ms_translate = NULL; mspec[n].ms_scale = NULL;
+            /* nothing of the chipset's beam: as Picasso96's monitors have it */
+            mspec[n].ms_Flags = 0;
+            mspec[n].DeniseMaxDisplayColumn = mspec[n].BeamCon0 = mspec[n].min_row = 0;
+            mspec[n].DeniseMinDisplayColumn = 0;
+            mspec[n].ms_Special = NULL;
+            mspec[n].ms_xoffset = mspec[n].ms_yoffset = 0;
+            mspec[n].ms_LegalView.MinX = mspec[n].ms_LegalView.MinY = mspec[n].ms_LegalView.MaxX = mspec[n].ms_LegalView.MaxY = 0;
+            mspec[n].ms_maxoscan = NULL; mspec[n].ms_videoscan = NULL;
+            mspec[n].total_rows = 628; mspec[n].total_colorclocks = 94;
             const char *p = "OpenRTG.";
             int i = 0;
             while (*p) s[i++] = *p++;
