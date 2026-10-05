@@ -27,4 +27,16 @@
     LP1(0x3c, APTR, ORTG_BoardAddress, ULONG, monitor, d0, , OPENRTG_BASE_NAME)
 #define ORTG_DisplayDatabase(on) \
     LP1(0x42, LONG, ORTG_DisplayDatabase, ULONG, on, d0, , OPENRTG_BASE_NAME)
+#define ORTG_Screens(on) \
+    LP1(0x48, LONG, ORTG_Screens, ULONG, on, d0, , OPENRTG_BASE_NAME)
+#define ORTG_WritePixels(rp, x, y, pixels) \
+    LP4(0x4e, LONG, ORTG_WritePixels, struct RastPort *, rp, a1, LONG, x, d0, LONG, y, d1, const struct OpenRTGPixels *, pixels, a0, , OPENRTG_BASE_NAME)
+#define ORTG_ReadPixels(rp, x, y, pixels) \
+    LP4(0x54, LONG, ORTG_ReadPixels, struct RastPort *, rp, a1, LONG, x, d0, LONG, y, d1, struct OpenRTGPixels *, pixels, a0, , OPENRTG_BASE_NAME)
+#define ORTG_FillPixels(rp, x, y, width, height, argb) \
+    LP6(0x5a, LONG, ORTG_FillPixels, struct RastPort *, rp, a1, LONG, x, d0, LONG, y, d1, LONG, width, d2, LONG, height, d3, ULONG, argb, d4, , OPENRTG_BASE_NAME)
+#define ORTG_InvertPixels(rp, x, y, width, height) \
+    LP5(0x60, LONG, ORTG_InvertPixels, struct RastPort *, rp, a1, LONG, x, d0, LONG, y, d1, LONG, width, d2, LONG, height, d3, , OPENRTG_BASE_NAME)
+#define ORTG_BitMapInfo(bitmap, info) \
+    LP2(0x66, BOOL, ORTG_BitMapInfo, struct BitMap *, bitmap, a0, struct OpenRTGBitMapInfo *, info, a1, , OPENRTG_BASE_NAME)
 #endif

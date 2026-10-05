@@ -24,8 +24,8 @@ struct Library *OpenRTGBase;
 
 int main(void)
 {
-    LONG args[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-    struct RDArgs *rd = ReadArgs("MODES/S,ALL/S,STANDARD/S,MONITOR/K/N,ACTIVATE/S,OFF/S,FORCE/S,LISTDB/S", args, NULL);
+    LONG args[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    struct RDArgs *rd = ReadArgs("MODES/S,ALL/S,STANDARD/S,MONITOR/K/N,ACTIVATE/S,OFF/S,FORCE/S,LISTDB/S,SCREENS/S", args, NULL);
     int rc = RETURN_OK;
     (void)version;
     if (!rd) { PrintFault(IoErr(), "OpenRTG"); return RETURN_FAIL; }
@@ -70,6 +70,28 @@ int main(void)
             Printf("OpenRTG: the display database could not be changed (no monitors?).\n");
             rc = RETURN_WARN;
         } else Printf("OpenRTG: the display database %s OpenRTG's modes.\n", args[4] ? (LONG)"now lists" : (LONG)"no longer lists");
+    }
+    if (args[8]) {
+        /* OpenRTG's own screens: its modes in the display database, and
+         * screens on them drawn by OpenRTG, with no Picasso96 */
+        int p96;
+        Forbid();
+        p96 = FindName(&SysBase->LibList, (STRPTR)"rtg.library") != NULL;
+        Permit();
+        if (p96 && !args[6]) {
+            Printf("OpenRTG: Picasso96 is running. OpenRTG's screens need Picasso96's monitors off.\n");
+            rc = RETURN_WARN;
+        } else if (!ORTG_DisplayDatabase(1) || !ORTG_Screens(1)) {
+            Printf("OpenRTG: screens could not be switched on (no monitors?).\n");
+            rc = RETURN_WARN;
+        } else {
+            /* the compatibility libraries: opened from LIBS:OpenRTG/ once, they
+             * are in the library list under their own names, and stay (never
+             * closed) while OpenRTG is the RTG system */
+            struct Library *cgx = OpenLibrary((STRPTR)"LIBS:OpenRTG/cybergraphics.library", 41);
+            Printf("OpenRTG: screens on OpenRTG's modes are now OpenRTG's own%s.\n",
+                   cgx ? (LONG)", with cybergraphics.library" : (LONG)"");
+        }
     }
     if (args[7]) {
         struct Library *GfxBase = OpenLibrary((STRPTR)"graphics.library", 39);

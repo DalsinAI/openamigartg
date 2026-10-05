@@ -34,13 +34,17 @@ static const uint8_t DEPTH[ORTG_FORMATS] = { 8, 16, 32 };
 #define LARGE_VRAM (64u << 20)
 
 uint32_t ortg_monitor_id(int monitor) {
-    return 0x50001000u | ((uint32_t)monitor << 16);
+    return 0x60000000u | ((uint32_t)monitor << 24);
 }
 
-/* Low 12 bits: the size's place times four, plus the format (bit 12 belongs
- * to the monitor part). */
+/* A ModeID: 0x6n (monitor n) in the top byte, the size's place in the next,
+ * then 0x1000 and the format in bits 8-9 (0x000 8-bit, 0x100 16-bit, 0x200
+ * 32-bit), as Picasso96 lays out its own. The low twelve bits are the
+ * chipset's mode flags to graphics and intuition (LACE, HAM, SUPERHIRES and
+ * the rest), so OpenRTG keeps them clear but for bits 8 and 9, which mean
+ * nothing for a board's mode (5 Oct 2026: a LACE bit there broke the mouse). */
 static uint32_t mode_id(int monitor, int size, int format) {
-    return ortg_monitor_id(monitor) | (uint32_t)(size * 4 + format);
+    return ortg_monitor_id(monitor) | ((uint32_t)size << 16) | 0x1000u | ((uint32_t)format << 8);
 }
 
 static void put_num(char **p, char *end, unsigned v) {
@@ -102,7 +106,7 @@ int ortg_build_modes(struct ortg_mode_table *t, int monitor, const struct ortg_c
 }
 
 const struct ortg_mode *ortg_find_mode(const struct ortg_mode_table *t, uint32_t mode_id) {
-    if ((mode_id & 0xFFFF1000u) != ortg_monitor_id(t->monitor)) return 0;
+    if ((mode_id & 0xFF000000u) != ortg_monitor_id(t->monitor) || !(mode_id & 0x1000u)) return 0;
     for (int i = 0; i < t->full_count; i++)
         if (t->full[i].mode_id == mode_id) return &t->full[i];
     return 0;

@@ -1,4 +1,4 @@
-==id $Id: openrtg_lib.sfd 0.1 (4.10.2026) $
+==id $Id: openrtg_lib.sfd 0.4 (5.10.2026) $
 * "openrtg.library"
 ==base _OpenRTGBase
 ==basetype struct Library *
@@ -14,4 +14,10 @@ ULONG ORTG_BestMode(ULONG monitor, ULONG width, ULONG height, ULONG depth)(d0,d1
 LONG ORTG_SetModeList(ULONG monitor, ULONG all)(d0,d1)
 APTR ORTG_BoardAddress(ULONG monitor)(d0)
 LONG ORTG_DisplayDatabase(ULONG on)(d0)
+LONG ORTG_Screens(ULONG on)(d0)
+LONG ORTG_WritePixels(struct RastPort *rp, LONG x, LONG y, const struct OpenRTGPixels *pixels)(a1,d0,d1,a0)
+LONG ORTG_ReadPixels(struct RastPort *rp, LONG x, LONG y, struct OpenRTGPixels *pixels)(a1,d0,d1,a0)
+LONG ORTG_FillPixels(struct RastPort *rp, LONG x, LONG y, LONG width, LONG height, ULONG argb)(a1,d0,d1,d2,d3,d4)
+LONG ORTG_InvertPixels(struct RastPort *rp, LONG x, LONG y, LONG width, LONG height)(a1,d0,d1,d2,d3)
+BOOL ORTG_BitMapInfo(struct BitMap *bitmap, struct OpenRTGBitMapInfo *info)(a0,a1)
 ==end
