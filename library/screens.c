@@ -56,7 +56,7 @@ struct Library *UtilityBase;
 
 /* ---- tracing to the serial port (ORTG_TRACE) ---- */
 
-#define ORTG_TRACE 1
+#define ORTG_TRACE 0
 #if ORTG_TRACE
 static void ser(const char *t)
 {
@@ -73,9 +73,28 @@ static void serx(const char *t, ULONG v)
     b[8] = '\r'; b[9] = '\n'; b[10] = 0;
     ser(b);
 }
+/* one line for a big drawing call: what, the six numbers, the first 120 only */
+static void trace_big(const char *what, LONG a, LONG b, LONG c, LONG d, LONG w, LONG h, ULONG extra)
+{
+    static int n;
+    LONG v[7] = { a, b, c, d, w, h, (LONG)extra };
+    if (w * h < 64 || n >= 400) return;
+    n++;
+    ser(what);
+    for (int k = 0; k < 7; k++) {
+        char t[12], *q = t + 11;
+        ULONG u = (ULONG)(v[k] < 0 ? -v[k] : v[k]);
+        *q = 0;
+        if (k == 6) { for (int i = 0; i < 8; i++) { *--q = "0123456789abcdef"[u & 15]; u >>= 4; } }
+        else { do { *--q = (char)('0' + u % 10); u /= 10; } while (u); if (v[k] < 0) *--q = '-'; }
+        ser(" "); ser(q);
+    }
+    ser("\r\n");
+}
 #else
 #define ser(t) ((void)0)
 #define serx(t, v) ((void)0)
+#define trace_big(w, a, b, c, d, e, f, x) ((void)0)
 #endif
 
 /* ---- the boards ----------------------------------------------------------------------- */
@@ -288,6 +307,26 @@ static int pieces(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, piece
     return 1;
 }
 
+struct ortg_bitmap *ortg_find(struct BitMap *bm) { return ortg_of(bm); }
+
+int ortg_pieces(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, ortg_piece_fn fn, void *ctx)
+{
+    return pieces(rp, x0, y0, x1, y1, (piece_fn)fn, ctx);
+}
+
+/* The palette a RastPort draws with: its layer's screen's, else the screen
+ * whose bitmap it draws on, else the front screen's. */
+struct ColorMap *ortg_colormap(struct RastPort *rp)
+{
+    struct Screen *s;
+    struct ortg_bitmap *o = ortg_of(rp->BitMap);
+    if (!IntuitionBase) return NULL;
+    for (s = IntuitionBase->FirstScreen; s; s = s->NextScreen)
+        if ((rp->Layer && rp->Layer->LayerInfo == &s->LayerInfo) || rp->BitMap == s->RastPort.BitMap ||
+            (o && ortg_of(s->RastPort.BitMap) == o)) return s->ViewPort.ColorMap;
+    return IntuitionBase->FirstScreen ? IntuitionBase->FirstScreen->ViewPort.ColorMap : NULL;
+}
+
 /* ---- the operations ------------------------------------------------------------------ */
 
 /* A fill with the RastPort's pen, its area pattern and its mode. */
@@ -470,6 +509,9 @@ static loadrgb4_fn old_loadrgb4;
 static setrgb4_fn old_setrgb4;
 static wcp_fn old_wcp;
 static wpa8_fn old_wpa8;
+typedef LONG (*line8_fn)(REG(a0, struct RastPort *), REG(d0, ULONG), REG(d1, ULONG), REG(d2, ULONG), REG(a2, UBYTE *), REG(a1, struct RastPort *), REG(a6, struct GfxBase *));
+static line8_fn old_wpl8, old_rpl8;
+static wpa8_fn old_rpa8;
 static movesprite_fn old_movesprite;
 static changeext_fn old_changeext;
 static remake_fn old_rethink, old_remake;
@@ -501,13 +543,13 @@ static void do_fill(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, con
 
 static void rectfill_patch(REG(a1, struct RastPort *rp), REG(d0, WORD x0), REG(d1, WORD y0), REG(d2, WORD x1), REG(d3, WORD y1), REG(a6, struct GfxBase *g))
 {
-    if (ortg_is(rp->BitMap)) { do_fill(rp, x0, y0, x1, y1, NULL, 0); return; }
+    if (ortg_is(rp->BitMap)) { trace_big("ortg: RectFill", x0, y0, x1, y1, x1 - x0 + 1, y1 - y0 + 1, rp->FgPen); do_fill(rp, x0, y0, x1, y1, NULL, 0); return; }
     old_rectfill(rp, x0, y0, x1, y1, g);
 }
 
 static void bltpattern_patch(REG(a1, struct RastPort *rp), REG(a0, PLANEPTR mask), REG(d0, WORD x0), REG(d1, WORD y0), REG(d2, WORD x1), REG(d3, WORD y1), REG(d4, ULONG bpr), REG(a6, struct GfxBase *g))
 {
-    if (ortg_is(rp->BitMap)) { do_fill(rp, x0, y0, x1, y1, mask, bpr); return; }
+    if (ortg_is(rp->BitMap)) { trace_big("ortg: BltPattern", x0, y0, x1, y1, x1 - x0 + 1, y1 - y0 + 1, (ULONG)mask); do_fill(rp, x0, y0, x1, y1, mask, bpr); return; }
     old_bltpattern(rp, mask, x0, y0, x1, y1, bpr, g);
 }
 
@@ -668,6 +710,12 @@ static LONG bltbitmap_patch(REG(a0, struct BitMap *src), REG(d0, WORD sx), REG(d
                             REG(d4, WORD w), REG(d5, WORD h), REG(d6, ULONG m), REG(d7, ULONG mask), REG(a2, PLANEPTR tmp), REG(a6, struct GfxBase *g))
 {
     if (ortg_is(src) || ortg_is(dst)) {
+        trace_big(ortg_is(dst) ? "ortg: BltBitMap to ours" : "ortg: BltBitMap from ours", sx, sy, dx, dy, w, h, (ULONG)src);
+        if (w * h >= 100000 && src) {
+            serx("  src bpr/rows ", (ULONG)src->BytesPerRow << 16 | src->Rows); serx("  flags/depth ", (ULONG)src->Flags << 8 | src->Depth);
+            serx("  pad ", src->pad); serx("  plane0 ", (ULONG)src->Planes[0]); serx("  plane1 ", (ULONG)src->Planes[1]); serx("  plane7 ", (ULONG)src->Planes[7]);
+            serx("  ours ", (ULONG)ortg_of(src));
+        }
         if (w > 0 && h > 0) blit(src, sx, sy, dst, dx, dy, w, h, (UBYTE)m, (UBYTE)mask, NULL, 0, 0, 0);
         return 8;
     }
@@ -679,6 +727,7 @@ static void bltbmrp_patch(REG(a0, struct BitMap *src), REG(d0, WORD sx), REG(d1,
 {
     if (ortg_is(rp->BitMap)) {
         struct blit_ctx b = { src, sx, sy, x, y, (UBYTE)m, rp->Mask, NULL, 0 };
+        trace_big("ortg: BltBitMapRastPort", sx, sy, x, y, w, h, (ULONG)src);
         pieces(rp, x, y, x + w - 1, y + h - 1, blit_piece, &b);
         return;
     }
@@ -703,6 +752,7 @@ static void clipblit_patch(REG(a0, struct RastPort *srp), REG(d0, WORD sx), REG(
 {
     if (ortg_is(rp->BitMap) || ortg_is(srp->BitMap)) {
         LONG ox = 0, oy = 0;
+        trace_big("ortg: ClipBlit", sx, sy, x, y, w, h, (ULONG)srp->BitMap);
         if (srp->Layer) { ox = srp->Layer->bounds.MinX - srp->Layer->Scroll_X; oy = srp->Layer->bounds.MinY - srp->Layer->Scroll_Y; }
         if (ortg_is(rp->BitMap)) {
             struct blit_ctx b = { srp->BitMap, sx + ox, sy + oy, x, y, (UBYTE)m, rp->Mask, NULL, 0 };
@@ -780,6 +830,51 @@ static LONG wpa8_patch(REG(a0, struct RastPort *rp), REG(d0, WORD x0), REG(d1, W
         return (LONG)((x1 - x0 + 1) * (y1 - y0 + 1));
     }
     return old_wpa8(rp, x0, y0, x1, y1, a, tmp, g);
+}
+
+/* Reading pixels into an array: what isn't visible (and kept nowhere) stays as it was. */
+static void array_read_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
+{
+    struct array_ctx *a = c;
+    for (LONG y = y0; y <= y1; y++) {
+        UBYTE *d = a->a + (y - dy - a->at_y) * a->bpr + (x0 - dx - a->at_x), *s = bm->mem + y * bm->stride + x0;
+        for (LONG x = x0; x <= x1; x++) *d++ = *s++;
+    }
+}
+
+/* The line calls: graphics' own write the line as planes, through the
+ * temporary RastPort (5 Oct 2026: picture.datatype draws Workbench's
+ * backdrop with WritePixelLine8, and on a chunky bitmap that left a stripe
+ * of planes 100 bytes wide). */
+static LONG wpl8_patch(REG(a0, struct RastPort *rp), REG(d0, WORD x0), REG(d1, WORD y0), REG(d2, UWORD w), REG(a2, UBYTE *a), REG(a1, struct RastPort *tmp), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        struct array_ctx c = { a, (LONG)w, (LONG)x0, (LONG)y0 };
+        if (w) pieces(rp, x0, y0, x0 + w - 1, y0, array_piece, &c);
+        return (LONG)w;
+    }
+    return old_wpl8(rp, x0, y0, w, a, tmp, g);
+}
+
+static LONG rpl8_patch(REG(a0, struct RastPort *rp), REG(d0, WORD x0), REG(d1, WORD y0), REG(d2, UWORD w), REG(a2, UBYTE *a), REG(a1, struct RastPort *tmp), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        struct array_ctx c = { a, (LONG)w, (LONG)x0, (LONG)y0 };
+        if (w) pieces(rp, x0, y0, x0 + w - 1, y0, array_read_piece, &c);
+        return (LONG)w;
+    }
+    return old_rpl8(rp, x0, y0, w, a, tmp, g);
+}
+
+static LONG rpa8_patch(REG(a0, struct RastPort *rp), REG(d0, WORD x0), REG(d1, WORD y0), REG(d2, WORD x1), REG(d3, WORD y1), REG(a2, UBYTE *a), REG(a1, struct RastPort *tmp), REG(a6, struct GfxBase *g))
+{
+    if (ortg_is(rp->BitMap)) {
+        /* ReadPixelArray8's rows are rounded up to 16 pixels, as WritePixelArray8's */
+        struct array_ctx c = { a, (LONG)((x1 - x0 + 16) & ~15UL), (LONG)x0, (LONG)y0 };
+        pieces(rp, x0, y0, x1, y1, array_read_piece, &c);
+        return (LONG)((x1 - x0 + 1) * (y1 - y0 + 1));
+    }
+    return old_rpa8(rp, x0, y0, x1, y1, a, tmp, g);
 }
 
 /* -- bitmaps -- */
@@ -939,8 +1034,11 @@ static void loadview_patch(REG(a1, struct View *v), REG(a6, struct GfxBase *g))
     show_front();
 }
 
+volatile ULONG ortg_palette_gen;
+
 static void palette_changed(struct ViewPort *vp, ULONG first, ULONG count)
 {
+    ortg_palette_gen++;
     struct ortg_bitmap *o = vp_bitmap(vp);
     if (o && o->monitor && shown[o->monitor].bm == o) palette_to_board(o->monitor, vp, first, count);
 }
@@ -1275,6 +1373,9 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
     old_setrgb4 = (setrgb4_fn)SetFunction(gfx, -288, (APTR)setrgb4_patch);
     old_wcp = (wcp_fn)SetFunction(gfx, -1056, (APTR)wcp_patch);
     old_wpa8 = (wpa8_fn)SetFunction(gfx, -786, (APTR)wpa8_patch);
+    old_rpl8 = (line8_fn)SetFunction(gfx, -768, (APTR)rpl8_patch);
+    old_wpl8 = (line8_fn)SetFunction(gfx, -774, (APTR)wpl8_patch);
+    old_rpa8 = (wpa8_fn)SetFunction(gfx, -780, (APTR)rpa8_patch);
     old_movesprite = (movesprite_fn)SetFunction(gfx, -426, (APTR)movesprite_patch);
     old_changeext = (changeext_fn)SetFunction(gfx, -1026, (APTR)changeext_patch);
     old_rethink = (remake_fn)SetFunction((struct Library *)IntuitionBase, -390, (APTR)rethink_patch);
