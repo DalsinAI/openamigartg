@@ -152,8 +152,15 @@ static ULONG next_patch(REG(d0, ULONG id), REG(a6, struct Library *gfx))
             return first_from(t->monitor + 1);
         }
     }
-    ULONG r = old_next(id, gfx);
-    return (r == NO_ID && db_on) ? first_from(1) : r;
+    {
+        /* graphics' own walk passes OpenRTG's records too, since they are in
+         * its tree (0.4): those are listed in our order below, Standard or
+         * All, so the walk steps over them (6 Oct 2026: ScreenMode and
+         * OpenRTG LISTDB showed only the first, 320x200) */
+        ULONG r = old_next(id, gfx);
+        while (db_on && r != NO_ID && table_for(r)) r = old_next(r, gfx);
+        return (r == NO_ID && db_on) ? first_from(1) : r;
+    }
 }
 
 static APTR find_patch(REG(d0, ULONG id), REG(a6, struct Library *gfx))
