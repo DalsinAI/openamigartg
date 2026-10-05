@@ -18,17 +18,60 @@ struct Screen;
 struct ortg_bitmap {
     struct BitMap bm;
     ULONG magic;
-    UBYTE *mem;                 /* the pixels, one byte each (8-bit CLUT) */
+    UBYTE *mem;                 /* the pixels */
     ULONG stride;               /* bytes a row */
     UWORD width, height;
     UBYTE monitor;              /* 1-4: in that board's video RAM; 0: fast RAM */
     ULONG vram_off;             /* its offset in the board's video RAM */
     ULONG vram_block;           /* where its block starts (the head, then the pixels) */
     struct Screen *screen;      /* the screen OpenRTG made it for, if any */
+    UBYTE format;               /* ORTG_CLUT8 (a pen a byte), ORTG_RGB16 (R5G6B5), ORTG_ARGB32 */
+    UBYTE bpp;                  /* bytes a pixel: 1, 2 or 4 */
+    UBYTE pal_index;            /* which pen table its pens use (16 and 32-bit) */
 };
 
+/* 16 and 32-bit bitmaps draw a pen as the colour the pen stands for: each
+ * monitor's screens share one table of 256 colours (0x00RRGGBB), set from
+ * the front screen's palette whenever it changes (OpenRTG 0.5). */
+extern ULONG ortg_pen_rgb[][256];
+
+static inline ULONG ortg_encode(const struct ortg_bitmap *o, ULONG rgb)
+{
+    if (o->bpp == 2) return ((rgb >> 8) & 0xF800) | ((rgb >> 5) & 0x07E0) | ((rgb >> 3) & 0x001F);
+    return rgb & 0xFFFFFF;
+}
+static inline ULONG ortg_decode(const struct ortg_bitmap *o, ULONG px)
+{
+    if (o->bpp == 2) {
+        ULONG r = (px >> 11) & 31, g = (px >> 5) & 63, b = px & 31;
+        return (r << 19 | (r >> 2) << 16) | (g << 10 | (g >> 4) << 8) | (b << 3 | b >> 2);
+    }
+    return px & 0xFFFFFF;
+}
+/* The pixel a pen draws as. */
+static inline ULONG ortg_pen_px(const struct ortg_bitmap *o, ULONG pen)
+{
+    return o->bpp == 1 ? (pen & 255) : ortg_encode(o, ortg_pen_rgb[o->pal_index][pen & 255]);
+}
+static inline ULONG ortg_get(const struct ortg_bitmap *o, LONG x, LONG y)
+{
+    const UBYTE *p = o->mem + y * o->stride;
+    if (o->bpp == 1) return p[x];
+    if (o->bpp == 2) return ((const UWORD *)p)[x];
+    return ((const ULONG *)p)[x];
+}
+static inline void ortg_put(struct ortg_bitmap *o, LONG x, LONG y, ULONG v)
+{
+    UBYTE *p = o->mem + y * o->stride;
+    if (o->bpp == 1) p[x] = (UBYTE)v;
+    else if (o->bpp == 2) ((UWORD *)p)[x] = (UWORD)v;
+    else ((ULONG *)p)[x] = v;
+}
+/* The pen nearest a pixel's colour (exact when the pen's colour is there). */
+UBYTE ortg_px_pen(const struct ortg_bitmap *o, ULONG px);
+
 int ortg_is(struct BitMap *bm);
-struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear);
+struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear, int format);
 void ortg_free(struct ortg_bitmap *o);
 
 /* For pixels.c: the OpenRTG bitmap a BitMap is (or NULL); every visible

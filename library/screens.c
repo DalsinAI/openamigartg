@@ -125,6 +125,9 @@ static void trace_big(const char *what, LONG a, LONG b, LONG c, LONG d, LONG w, 
 #define C_PAN 6
 #define C_DISPLAY 7
 #define FMT_CLUT 1
+#define FMT_ARGB32 6
+#define FMT_RGB16 11
+static const ULONG board_fmt[3] = { FMT_CLUT, FMT_RGB16, FMT_ARGB32 };   /* by enum ortg_format */
 
 static UBYTE *board[ORTG_MAX_MONITORS + 1];               /* each monitor's board, or NULL */
 static struct ortg_mode_table **tables;
@@ -132,7 +135,10 @@ static struct ortg_mode_table **tables;
 static void reg(int n, ULONG off, ULONG v) { *(volatile ULONG *)(board[n] + REGS_AT + off) = v; }
 
 /* What each monitor shows now. */
-static struct { struct ortg_bitmap *bm; UWORD w, h; } shown[ORTG_MAX_MONITORS + 1];
+static struct { struct ortg_bitmap *bm; UWORD w, h; UBYTE fmt; } shown[ORTG_MAX_MONITORS + 1];
+
+/* each monitor's pen colours, for its 16 and 32-bit bitmaps; [0] for the rest */
+ULONG ortg_pen_rgb[ORTG_MAX_MONITORS + 1][256];
 
 /* ---- video RAM: first fit in fixed blocks ------------------------------------------- */
 
@@ -194,13 +200,17 @@ static struct ortg_bitmap *ortg_of(struct BitMap *bm)
 
 int ortg_is(struct BitMap *bm) { return ortg_of(bm) != NULL; }
 
-/* An 8-bit chunky bitmap: in monitor's video RAM when monitor > 0 (and it fits), else in fast RAM. */
-struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear)
+/* A chunky bitmap of a format: in monitor's video RAM when monitor > 0 (and
+ * it fits), else in fast RAM. Its pens use monitor's table (0: the first's). */
+struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear, int format)
 {
     struct ortg_bitmap *o = AllocVec(sizeof *o, MEMF_ANY | MEMF_CLEAR);
-    ULONG stride = (w + 63) & ~63UL;
+    ULONG bpp = format == ORTG_ARGB32 ? 4 : format == ORTG_RGB16 ? 2 : 1;
+    ULONG stride = (w * bpp + 63) & ~63UL;
     if (!o) return NULL;
     o->magic = ORTG_BM_MAGIC;
+    o->format = (UBYTE)format; o->bpp = (UBYTE)bpp;
+    o->pal_index = (UBYTE)(monitor > 0 && monitor <= ORTG_MAX_MONITORS ? monitor : 1);
     o->width = (UWORD)w; o->height = (UWORD)h; o->stride = stride;
     if (monitor > 0 && monitor <= ORTG_MAX_MONITORS && board[monitor]) {
         LONG off = vram_alloc(monitor, ORTG_HEAD + stride * h);
@@ -249,12 +259,44 @@ static void pens_of(struct RastPort *rp, struct pens *p)
     if (p->mode & INVERSVID) { UBYTE t = p->a; p->a = p->b; p->b = t; }
 }
 
-/* One pixel where a source bit is `on`. */
-static inline void plot(UBYTE *d, const struct pens *p, int on)
+/* The pens as one bitmap's pixels: on 8-bit the pens and the mask work on
+ * the byte; on 16 and 32-bit a pen is its colour, the mask only switches
+ * drawing off (0) or on, and COMPLEMENT inverts the colour. */
+struct ink { ULONG a, b, x; UBYTE mode, mask; UBYTE bpp; };
+
+static void ink_of(const struct pens *p, const struct ortg_bitmap *o, struct ink *k)
 {
-    if (p->mode & COMPLEMENT) { if (on) *d ^= p->mask; return; }
-    if (on) *d = (UBYTE)((*d & ~p->mask) | (p->a & p->mask));
-    else if (p->mode & JAM2) *d = (UBYTE)((*d & ~p->mask) | (p->b & p->mask));
+    k->mode = p->mode; k->mask = p->mask; k->bpp = o->bpp;
+    k->a = ortg_pen_px(o, p->a); k->b = ortg_pen_px(o, p->b);
+    k->x = o->bpp == 1 ? p->mask : o->bpp == 2 ? 0xFFFF : 0xFFFFFF;
+}
+
+/* One pixel where a source bit is `on`. */
+static inline void plot(struct ortg_bitmap *o, LONG x, LONG y, const struct ink *k, int on)
+{
+    ULONG d;
+    if (!k->mask) return;
+    if (k->mode & COMPLEMENT) { if (on) ortg_put(o, x, y, ortg_get(o, x, y) ^ k->x); return; }
+    if (!on && !(k->mode & JAM2)) return;
+    if (k->bpp != 1 || k->mask == 0xFF) { ortg_put(o, x, y, on ? k->a : k->b); return; }
+    d = ortg_get(o, x, y);
+    ortg_put(o, x, y, (d & ~k->mask) | ((on ? k->a : k->b) & k->mask));
+}
+
+/* The pen nearest a pixel's colour. */
+UBYTE ortg_px_pen(const struct ortg_bitmap *o, ULONG px)
+{
+    const ULONG *pal = ortg_pen_rgb[o->pal_index];
+    ULONG rgb, best = 0, dist = ~0UL;
+    if (o->bpp == 1) return (UBYTE)px;
+    rgb = ortg_decode(o, px);
+    for (ULONG i = 0; i < 256; i++) {
+        ULONG c = o->bpp == 2 ? ortg_decode(o, ortg_encode(o, pal[i])) : pal[i];
+        LONG dr = (LONG)((c >> 16) & 255) - (LONG)((rgb >> 16) & 255), dg = (LONG)((c >> 8) & 255) - (LONG)((rgb >> 8) & 255), db = (LONG)(c & 255) - (LONG)(rgb & 255);
+        ULONG d2 = (ULONG)(dr * dr + dg * dg + db * db);
+        if (d2 < dist) { dist = d2; best = i; if (!d2) break; }
+    }
+    return (UBYTE)best;
 }
 
 /* ---- clipping: an operation on every visible piece of a RastPort's box -------------- */
@@ -335,19 +377,22 @@ struct fill_ctx { struct pens p; UWORD *ptrn; int ptsz; int ptoff_y; };
 static void fill_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct fill_ctx *f = c;
+    struct ink k;
+    ink_of(&f->p, bm, &k);
     for (LONG y = y0; y <= y1; y++) {
-        UBYTE *row = bm->mem + y * bm->stride;
         if (!f->ptrn) {
-            if (!(f->p.mode & COMPLEMENT) && f->p.mask == 0xFF) {
-                UBYTE v = f->p.a;
-                for (LONG x = x0; x <= x1; x++) row[x] = v;
+            if (!(k.mode & COMPLEMENT) && (k.mask == 0xFF || (k.bpp != 1 && k.mask))) {
+                UBYTE *row = bm->mem + y * bm->stride;
+                if (k.bpp == 1) { UBYTE v = (UBYTE)k.a; for (LONG x = x0; x <= x1; x++) row[x] = v; }
+                else if (k.bpp == 2) { UWORD v = (UWORD)k.a, *r = (UWORD *)row; for (LONG x = x0; x <= x1; x++) r[x] = v; }
+                else { ULONG v = k.a, *r = (ULONG *)row; for (LONG x = x0; x <= x1; x++) r[x] = v; }
             } else
-                for (LONG x = x0; x <= x1; x++) plot(row + x, &f->p, 1);
+                for (LONG x = x0; x <= x1; x++) plot(bm, x, y, &k, 1);
         } else {
             /* the pattern's rows repeat every ptsz rows of the RastPort */
             UWORD bits = f->ptrn[(UWORD)(y - dy) & (f->ptsz - 1)];
             for (LONG x = x0; x <= x1; x++)
-                plot(row + x, &f->p, (bits >> (15 - ((x - dx) & 15))) & 1);
+                plot(bm, x, y, &k, (bits >> (15 - ((x - dx) & 15))) & 1);
         }
     }
 }
@@ -358,12 +403,13 @@ struct tmpl_ctx { struct pens p; const UBYTE *src; LONG src_x, mod; LONG at_x, a
 static void tmpl_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct tmpl_ctx *t = c;
+    struct ink k;
+    ink_of(&t->p, bm, &k);
     for (LONG y = y0; y <= y1; y++) {
         const UBYTE *s = t->src + (y - dy - t->at_y) * t->mod;
-        UBYTE *row = bm->mem + y * bm->stride;
         for (LONG x = x0; x <= x1; x++) {
             LONG bit = t->src_x + (x - dx - t->at_x);
-            plot(row + x, &t->p, (s[bit >> 3] >> (7 - (bit & 7))) & 1);
+            plot(bm, x, y, &k, (s[bit >> 3] >> (7 - (bit & 7))) & 1);
         }
     }
 }
@@ -394,10 +440,10 @@ static void planar_set(struct BitMap *bm, LONG x, LONG y, UBYTE v, UBYTE mask)
     }
 }
 
-/* BltBitMap's minterm on bytes: B the source, C the destination. */
-static inline UBYTE minterm(UBYTE m, UBYTE s, UBYTE d)
+/* BltBitMap's minterm, bit by bit: B the source, C the destination. */
+static inline ULONG minterm(UBYTE m, ULONG s, ULONG d)
 {
-    UBYTE r = 0;
+    ULONG r = 0;
     if (m & 0x80) r |= s & d;
     if (m & 0x40) r |= s & ~d;
     if (m & 0x20) r |= ~s & d;
@@ -418,21 +464,39 @@ static void blit(struct BitMap *src, LONG sx, LONG sy, struct BitMap *dst, LONG 
         LONG yy = down ? j : h - 1 - j;
         for (LONG i = 0; i < w; i++) {
             LONG xx = right ? i : w - 1 - i;
-            UBYTE s, d, r;
+            ULONG s, d, r;
             if (cookie) {
                 LONG bit = cookie_x + xx;
                 if (!((cookie[(cookie_y + yy) * cookie_mod + (bit >> 3)] >> (7 - (bit & 7))) & 1)) continue;
             }
-            s = os ? os->mem[(sy + yy) * os->stride + sx + xx] : planar_pen(src, sx + xx, sy + yy);
+            s = os ? ortg_get(os, sx + xx, sy + yy) : planar_pen(src, sx + xx, sy + yy);
             if (od) {
-                UBYTE *p = od->mem + (dy + yy) * od->stride + dx + xx;
-                d = *p;
-                r = cookie ? s : minterm(m, s, d);
-                *p = (UBYTE)((d & ~mask) | (r & mask));
+                /* the source as the destination's pixel: a pen becomes its
+                 * colour on 16 and 32-bit, a colour its nearest pen on 8-bit */
+                if (!os || os->bpp == 1) { if (od->bpp != 1) s = ortg_pen_px(od, s); }
+                else if (od->bpp == 1) s = ortg_px_pen(os, s);
+                else if (os->bpp != od->bpp) s = ortg_encode(od, ortg_decode(os, s));
+                d = ortg_get(od, dx + xx, dy + yy);
+                if (cookie) r = s;
+                else if (od->bpp != 1 && ((m >> 7) & 1) == ((m >> 5) & 1) && ((m >> 6) & 1) == ((m >> 4) & 1)) {
+                    /* a minterm that ignores the source works on pens: a clear
+                     * is pen 0 (layers clears a window that way), a set pen 255 */
+                    switch (m & 0xF0) {
+                    case 0x00: r = ortg_pen_px(od, 0); break;
+                    case 0xF0: r = ortg_pen_px(od, 255); break;
+                    case 0x50: r = d ^ (od->bpp == 2 ? 0xFFFF : 0xFFFFFF); break;
+                    default: r = d; break;
+                    }
+                } else r = minterm(m, s, d);
+                if (od->bpp == 1) r = (d & ~(ULONG)mask) | (r & mask);
+                else if (!mask) r = d;
+                else if (od->bpp == 2) r &= 0xFFFF;
+                ortg_put(od, dx + xx, dy + yy, r);
             } else {
+                if (os && os->bpp != 1) s = ortg_px_pen(os, s);
                 d = planar_pen(dst, dx + xx, dy + yy);
                 r = cookie ? s : minterm(m, s, d);
-                planar_set(dst, dx + xx, dy + yy, r, mask);
+                planar_set(dst, dx + xx, dy + yy, (UBYTE)r, mask);
             }
         }
     }
@@ -557,8 +621,9 @@ static void setrast_patch(REG(a1, struct RastPort *rp), REG(d0, ULONG pen), REG(
 {
     struct ortg_bitmap *o = ortg_of(rp->BitMap);
     if (o) {
+        ULONG v = ortg_pen_px(o, pen);
         for (ULONG y = 0; y < o->height; y++)
-            for (ULONG x = 0; x < o->width; x++) o->mem[y * o->stride + x] = (UBYTE)pen;
+            for (ULONG x = 0; x < o->width; x++) ortg_put(o, (LONG)x, (LONG)y, v);
         return;
     }
     old_setrast(rp, pen, g);
@@ -568,7 +633,9 @@ static void setrast_patch(REG(a1, struct RastPort *rp), REG(d0, ULONG pen), REG(
 
 static void pixel_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
-    plot(bm->mem + y0 * bm->stride + x0, (struct pens *)c, 1);
+    struct ink k;
+    ink_of((struct pens *)c, bm, &k);
+    plot(bm, x0, y0, &k, 1);
 }
 
 static void line(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1)
@@ -626,7 +693,7 @@ static LONG writepixel_patch(REG(a1, struct RastPort *rp), REG(d0, WORD x), REG(
 struct read_ctx { LONG v; };
 static void read_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
-    ((struct read_ctx *)c)->v = bm->mem[y0 * bm->stride + x0];
+    ((struct read_ctx *)c)->v = ortg_px_pen(bm, ortg_get(bm, x0, y0));
 }
 
 static ULONG readpixel_patch(REG(a1, struct RastPort *rp), REG(d0, WORD x), REG(d1, WORD y), REG(a6, struct GfxBase *g))
@@ -781,11 +848,11 @@ static void scroll_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG
         LONG tx = x0 + (s->dx < 0 ? -s->dx : 0), ty = y0 + (s->dy < 0 ? -s->dy : 0);
         blit(&bm->bm, sx, sy, &bm->bm, tx, ty, mw, mh, 0xC0, 0xFF, NULL, 0, 0, 0);
     }
+    ULONG v = ortg_pen_px(bm, s->pen);
     for (LONG y = y0; y <= y1; y++) {
-        UBYTE *row = bm->mem + y * bm->stride;
         int ybar = (s->dy > 0 && y > y1 - s->dy) || (s->dy < 0 && y < y0 - s->dy) || mh <= 0;
         for (LONG x = x0; x <= x1; x++)
-            if (ybar || mw <= 0 || (s->dx > 0 && x > x1 - s->dx) || (s->dx < 0 && x < x0 - s->dx)) row[x] = s->pen;
+            if (ybar || mw <= 0 || (s->dx > 0 && x > x1 - s->dx) || (s->dx < 0 && x < x0 - s->dx)) ortg_put(bm, x, y, v);
     }
 }
 
@@ -806,8 +873,9 @@ static void array_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG 
 {
     struct array_ctx *a = c;
     for (LONG y = y0; y <= y1; y++) {
-        UBYTE *s = a->a + (y - dy - a->at_y) * a->bpr + (x0 - dx - a->at_x), *d = bm->mem + y * bm->stride + x0;
-        for (LONG x = x0; x <= x1; x++) *d++ = *s++;
+        UBYTE *s = a->a + (y - dy - a->at_y) * a->bpr + (x0 - dx - a->at_x);
+        if (bm->bpp == 1) { UBYTE *d = bm->mem + y * bm->stride + x0; for (LONG x = x0; x <= x1; x++) *d++ = *s++; }
+        else for (LONG x = x0; x <= x1; x++) ortg_put(bm, x, y, ortg_pen_px(bm, *s++));
     }
 }
 
@@ -837,8 +905,9 @@ static void array_read_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, 
 {
     struct array_ctx *a = c;
     for (LONG y = y0; y <= y1; y++) {
-        UBYTE *d = a->a + (y - dy - a->at_y) * a->bpr + (x0 - dx - a->at_x), *s = bm->mem + y * bm->stride + x0;
-        for (LONG x = x0; x <= x1; x++) *d++ = *s++;
+        UBYTE *d = a->a + (y - dy - a->at_y) * a->bpr + (x0 - dx - a->at_x);
+        if (bm->bpp == 1) { UBYTE *s = bm->mem + y * bm->stride + x0; for (LONG x = x0; x <= x1; x++) *d++ = *s++; }
+        else for (LONG x = x0; x <= x1; x++) *d++ = ortg_px_pen(bm, ortg_get(bm, x, y));
     }
 }
 
@@ -897,8 +966,9 @@ static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, UL
         struct TagItem *tags = (struct TagItem *)friend;
         int n = 0;
         const struct ortg_mode *m = mode_of(GetTagData(BMATags_DisplayID, INVALID_ID, tags), &n);
-        if (m && m->format == ORTG_CLUT8 && GetTagData(BMATags_Depth, depth, tags) <= 8) {
-            struct ortg_bitmap *o = ortg_alloc(n, (UWORD)w, (UWORD)h, 1);
+        if (m) {
+            /* the mode's own format, whatever depth intuition asks for */
+            struct ortg_bitmap *o = ortg_alloc(n, (UWORD)w, (UWORD)h, 1, m->format);
             serx("ortg: screen bitmap for mode ", m->mode_id);
             if (o && o->monitor) return &o->bm;
             if (o) ortg_free(o);
@@ -907,9 +977,14 @@ static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, UL
     }
     /* a bitmap like an OpenRTG one (layers' backing store, double buffers,
      * a program's off-screen picture) is one, in fast RAM */
-    if (ortg_is(fr) && depth <= 8) {
-        struct ortg_bitmap *o = ortg_alloc(0, (UWORD)w, (UWORD)h, (flags & BMF_CLEAR) != 0);
-        if (o) return &o->bm;
+    if (ortg_is(fr)) {
+        const struct ortg_bitmap *f = ortg_of(fr);
+        /* a friend of a 16 or 32-bit bitmap is one too, whatever the depth asked
+         * (as Picasso96 does); of an 8-bit one, when it asks for at most 8 */
+        if (f->bpp != 1 || depth <= 8) {
+            struct ortg_bitmap *o = ortg_alloc(0, (UWORD)w, (UWORD)h, (flags & BMF_CLEAR) != 0, f->format);
+            if (o) { o->pal_index = f->pal_index; return &o->bm; }
+        }
     }
     return old_allocbm(w, h, depth, flags, friend, g);
 }
@@ -926,8 +1001,8 @@ static ULONG bmattr_patch(REG(a0, struct BitMap *bm), REG(d1, ULONG a), REG(a6, 
     if (o) {
         switch (a) {
         case BMA_HEIGHT: return o->height;
-        case BMA_DEPTH: return 8;
-        case BMA_WIDTH: return o->stride;
+        case BMA_DEPTH: return o->bpp == 4 ? 24 : o->bpp == 2 ? 16 : 8;
+        case BMA_WIDTH: return o->stride / o->bpp;
         case BMA_FLAGS: return 0;               /* not standard: no planar planes */
         default: return 0;
         }
@@ -943,6 +1018,19 @@ static void pointer_update(LONG x, LONG y, int image);
 static struct ortg_bitmap *vp_bitmap(struct ViewPort *vp)
 {
     return vp && vp->RasInfo ? ortg_of(vp->RasInfo->BitMap) : NULL;
+}
+
+/* A 16 or 32-bit screen's pens, from its palette, into its monitor's table. */
+static void pens_from(int index, struct ViewPort *vp)
+{
+    ULONG rgb[3 * 16], n = vp->ColorMap ? vp->ColorMap->Count : 0;
+    if (n > 256) n = 256;
+    for (ULONG first = 0; first < n; first += 16) {
+        ULONG k = n - first > 16 ? 16 : n - first;
+        GetRGB32(vp->ColorMap, first, k, rgb);
+        for (ULONG i = 0; i < k; i++)
+            ortg_pen_rgb[index][first + i] = (rgb[3 * i] >> 24) << 16 | (rgb[3 * i + 1] >> 24) << 8 | (rgb[3 * i + 2] >> 24);
+    }
 }
 
 static void palette_to_board(int n, struct ViewPort *vp, ULONG first, ULONG count)
@@ -974,14 +1062,15 @@ static void show_front(void)
         struct ortg_bitmap *o = want[n];
         if (!board[n] || !o || shown[n].bm == o) continue;
         serx("ortg: showing ", (ULONG)o->vram_off);
-        if (shown[n].w != o->width || shown[n].h != o->height) {
-            reg(n, R_WIDTH, o->width); reg(n, R_HEIGHT, o->height); reg(n, R_FORMAT, FMT_CLUT); reg(n, R_CLOCK, 0);
+        if (shown[n].w != o->width || shown[n].h != o->height || shown[n].fmt != o->format) {
+            reg(n, R_WIDTH, o->width); reg(n, R_HEIGHT, o->height); reg(n, R_FORMAT, board_fmt[o->format]); reg(n, R_CLOCK, 0);
             reg(n, R_COMMIT, C_MODE);
-            shown[n].w = o->width; shown[n].h = o->height;
+            shown[n].w = o->width; shown[n].h = o->height; shown[n].fmt = o->format;
         }
         reg(n, R_ARG_A, o->vram_off); reg(n, R_ARG_B, o->stride); reg(n, R_PAN_X, 0); reg(n, R_PAN_Y, 0);
         reg(n, R_COMMIT, C_PAN);
-        palette_to_board(n, wvp[n], 0, 256);
+        if (o->bpp == 1) palette_to_board(n, wvp[n], 0, 256);
+        else pens_from(o->pal_index, wvp[n]);
         reg(n, R_ARG_A, 1);
         reg(n, R_COMMIT, C_DISPLAY);
         shown[n].bm = o;
@@ -1038,9 +1127,14 @@ volatile ULONG ortg_palette_gen;
 
 static void palette_changed(struct ViewPort *vp, ULONG first, ULONG count)
 {
-    ortg_palette_gen++;
     struct ortg_bitmap *o = vp_bitmap(vp);
-    if (o && o->monitor && shown[o->monitor].bm == o) palette_to_board(o->monitor, vp, first, count);
+    ortg_palette_gen++;
+    if (!o) return;
+    if (o->bpp != 1) {
+        /* the pens of a 16 or 32-bit screen: what is drawn from now on;
+         * what is drawn already keeps its colours, as on any true-colour screen */
+        if (!o->monitor || shown[o->monitor].bm == o || !shown[o->monitor].bm) pens_from(o->pal_index, vp);
+    } else if (o->monitor && shown[o->monitor].bm == o) palette_to_board(o->monitor, vp, first, count);
 }
 
 static void loadrgb32_patch(REG(a0, struct ViewPort *vp), REG(a1, ULONG *t), REG(a6, struct GfxBase *g))
@@ -1290,7 +1384,7 @@ static struct Screen *openscreen_patch(REG(a0, struct NewScreen *ns), REG(a1, st
     if ((id & 0x1000) && (id >> 28) == 6 && n >= 1 && n <= ORTG_MAX_MONITORS && tables && tables[n]) m = ortg_find_mode(tables[n], id);
     serx("ortg: OpenScreen, mode ", id);
     if (m && m->format == ORTG_CLUT8 && board[n] && !tag_or(tags, SA_BitMap, tag_or(ext, SA_BitMap, 0))) {
-        struct ortg_bitmap *o = ortg_alloc(n, m->width, m->height, 1);
+        struct ortg_bitmap *o = ortg_alloc(n, m->width, m->height, 1, ORTG_CLUT8);
         serx("ortg: bitmap at ", (ULONG)(o ? o->mem : 0));
         if (o && o->monitor) {
             struct TagItem more[4];
