@@ -40,7 +40,7 @@
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define NO_ID ((ULONG)INVALID_ID)
 #define LIB_VERSION 43
-#define LIB_REVISION 1
+#define LIB_REVISION 2
 
 /* ---- the CyberGraphX interface's numbers ---- */
 #define CYBRMATTR_XMOD          0x80000001UL
@@ -202,7 +202,7 @@ static void trace(const char *t, ULONG v)
 int start(void) { return -1; }
 
 static const char lib_name[] = "cybergraphics.library";
-static const char lib_id[] = "cybergraphics.library 43.1 (5.10.2026) OpenRTG's CyberGraphX API, Dalsin Limited\r\n";
+static const char lib_id[] = "cybergraphics.library 43.2 (5.10.2026) OpenRTG's CyberGraphX API, Dalsin Limited\r\n";
 
 static struct Library *lib_init(REG(d0, struct CGXBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct CGXBase *base));
@@ -408,12 +408,12 @@ static ULONG GetCyberMapAttr(REG(a0, struct BitMap *bm), REG(d0, ULONG attr))
     }
     switch (attr) {
     case CYBRMATTR_XMOD: return i.bytes_per_row;
-    case CYBRMATTR_BPPIX: return 1;
+    case CYBRMATTR_BPPIX: return i.depth / 8;
     case CYBRMATTR_DISPADR: return (ULONG)i.memory;
-    case CYBRMATTR_PIXFMT: return PIXFMT_LUT8;
+    case CYBRMATTR_PIXFMT: return pixfmt_of(i.format);
     case CYBRMATTR_WIDTH: return i.width;
     case CYBRMATTR_HEIGHT: return i.height;
-    case CYBRMATTR_DEPTH: return 8;
+    case CYBRMATTR_DEPTH: return i.depth;
     case CYBRMATTR_ISCYBERGFX: return TRUE;
     case CYBRMATTR_ISLINEARMEM: return TRUE;
     default: return 0;
@@ -432,9 +432,9 @@ static APTR LockBitMapTagList(REG(a0, struct BitMap *bm), REG(a1, struct TagItem
         switch (t->ti_Tag) {
         case LBMI_WIDTH: *p = i.width; break;
         case LBMI_HEIGHT: *p = i.height; break;
-        case LBMI_DEPTH: *p = 8; break;
-        case LBMI_PIXFMT: *p = PIXFMT_LUT8; break;
-        case LBMI_BYTESPERPIX: *p = 1; break;
+        case LBMI_DEPTH: *p = i.depth; break;
+        case LBMI_PIXFMT: *p = pixfmt_of(i.format); break;
+        case LBMI_BYTESPERPIX: *p = i.depth / 8; break;
         case LBMI_BYTESPERROW: *p = i.bytes_per_row; break;
         case LBMI_BASEADDRESS: *p = (ULONG)i.memory; break;
         }
@@ -541,7 +541,7 @@ static void DoCDrawMethodTagList(REG(a0, struct Hook *hook), REG(a1, struct Rast
     if (!hook || !rp || !ortg_info(rp->BitMap, &i)) return;
     l = rp->Layer;
     if (!l) {
-        struct CDrawMsg m = { i.memory, 0, 0, i.width, i.height, (UWORD)i.bytes_per_row, 1, PIXFMT_LUT8 };
+        struct CDrawMsg m = { i.memory, 0, 0, i.width, i.height, (UWORD)i.bytes_per_row, (UWORD)(i.depth / 8), (UWORD)pixfmt_of(i.format) };
         CallHookPkt(hook, rp, &m);
         return;
     }
@@ -557,10 +557,10 @@ static void DoCDrawMethodTagList(REG(a0, struct Hook *hook), REG(a1, struct Rast
             if (a1 >= i.width) a1 = i.width - 1;
             if (b1 >= i.height) b1 = i.height - 1;
             if (a0 > a1 || b0 > b1) continue;
-            m.cdm_MemPtr = (UBYTE *)i.memory + b0 * i.bytes_per_row + a0;
+            m.cdm_MemPtr = (UBYTE *)i.memory + b0 * i.bytes_per_row + a0 * (i.depth / 8);
             m.cdm_offx = (ULONG)(a0 - ox); m.cdm_offy = (ULONG)(b0 - oy);
             m.cdm_xsize = (ULONG)(a1 - a0 + 1); m.cdm_ysize = (ULONG)(b1 - b0 + 1);
-            m.cdm_BytesPerRow = (UWORD)i.bytes_per_row; m.cdm_BytesPerPix = 1; m.cdm_ColorModel = PIXFMT_LUT8;
+            m.cdm_BytesPerRow = (UWORD)i.bytes_per_row; m.cdm_BytesPerPix = (UWORD)(i.depth / 8); m.cdm_ColorModel = (UWORD)pixfmt_of(i.format);
             CallHookPkt(hook, rp, &m);
         }
     }

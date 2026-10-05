@@ -101,6 +101,42 @@ static UBYTE src_pen(const struct OpenRTGPixels *px, const UBYTE *row, LONG sx)
     }
 }
 
+/* The colour of pixel sx of a row in px's format (for the formats that
+ * carry colours, and pens through the palette). */
+static ULONG src_rgb(const struct OpenRTGPixels *px, const UBYTE *row, LONG sx)
+{
+    const UBYTE *p;
+    switch (px->format) {
+    case ORTG_PIX_PEN: case ORTG_PIX_RAW: return pal[row[sx]];
+    case ORTG_PIX_GREY: return (ULONG)row[sx] * 0x010101UL;
+    case ORTG_PIX_INDEX: return px->ctable ? px->ctable[row[sx]] & 0xFFFFFF : (ULONG)row[sx] * 0x010101UL;
+    case ORTG_PIX_RGB: p = row + 3 * sx; return (ULONG)p[0] << 16 | p[1] << 8 | p[2];
+    case ORTG_PIX_BGR: p = row + 3 * sx; return (ULONG)p[2] << 16 | p[1] << 8 | p[0];
+    case ORTG_PIX_RGBA: case ORTG_PIX_RGB0: p = row + 4 * sx; return (ULONG)p[0] << 16 | p[1] << 8 | p[2];
+    case ORTG_PIX_ARGB: case ORTG_PIX_0RGB: p = row + 4 * sx; return (ULONG)p[1] << 16 | p[2] << 8 | p[3];
+    case ORTG_PIX_BGRA: case ORTG_PIX_BGR0: p = row + 4 * sx; return (ULONG)p[2] << 16 | p[1] << 8 | p[0];
+    case ORTG_PIX_ABGR: case ORTG_PIX_0BGR: p = row + 4 * sx; return (ULONG)p[3] << 16 | p[2] << 8 | p[1];
+    default: return 0;
+    }
+}
+
+/* A colour stored as a pixel of px's format; pen is what the pen formats store. */
+static void dst_store_rgb(const struct OpenRTGPixels *px, UBYTE *row, LONG x, ULONG c, UBYTE pen)
+{
+    UBYTE r = (UBYTE)(c >> 16), g = (UBYTE)(c >> 8), b = (UBYTE)c, *p;
+    switch (px->format) {
+    case ORTG_PIX_PEN: case ORTG_PIX_INDEX: row[x] = pen; break;
+    case ORTG_PIX_GREY: row[x] = (UBYTE)((r * 77 + g * 151 + b * 28) >> 8); break;
+    case ORTG_PIX_RGB: p = row + 3 * x; p[0] = r; p[1] = g; p[2] = b; break;
+    case ORTG_PIX_BGR: p = row + 3 * x; p[0] = b; p[1] = g; p[2] = r; break;
+    case ORTG_PIX_RGBA: case ORTG_PIX_RGB0: p = row + 4 * x; p[0] = r; p[1] = g; p[2] = b; p[3] = 0xFF; break;
+    case ORTG_PIX_ARGB: case ORTG_PIX_0RGB: p = row + 4 * x; p[0] = 0xFF; p[1] = r; p[2] = g; p[3] = b; break;
+    case ORTG_PIX_BGRA: case ORTG_PIX_BGR0: p = row + 4 * x; p[0] = b; p[1] = g; p[2] = r; p[3] = 0xFF; break;
+    case ORTG_PIX_ABGR: case ORTG_PIX_0BGR: p = row + 4 * x; p[0] = 0xFF; p[1] = b; p[2] = g; p[3] = r; break;
+    default: break;
+    }
+}
+
 /* A pen stored as a pixel of px's format. */
 static void dst_store(const struct OpenRTGPixels *px, UBYTE *row, LONG x, UBYTE pen)
 {
@@ -126,6 +162,7 @@ struct pix_ctx {
     LONG at_x, at_y;            /* the RastPort position of the rectangle */
     LONG dw, dh;                /* its size there */
     UBYTE mask, value;
+    ULONG argb;                 /* fill: the colour */
 };
 
 static LONG src_x(const struct pix_ctx *c, LONG rx) { return c->px->x + (c->dw == c->px->width ? rx : rx * c->px->width / c->dw); }
@@ -134,12 +171,22 @@ static LONG src_y(const struct pix_ctx *c, LONG ry) { return c->px->y + (c->dh =
 static void write_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct pix_ctx *c = v;
+    ULONG fmt = c->px->format;
+    if (bm->bpp != 1 && !c->mask) return;
     for (LONG y = y0; y <= y1; y++) {
         const UBYTE *row = (const UBYTE *)c->px->data + src_y(c, y - dy - c->at_y) * c->px->modulo;
         UBYTE *d = bm->mem + y * bm->stride;
         for (LONG x = x0; x <= x1; x++) {
-            UBYTE pen = src_pen(c->px, row, src_x(c, x - dx - c->at_x));
-            d[x] = c->mask == 0xFF ? pen : (UBYTE)((d[x] & ~c->mask) | (pen & c->mask));
+            LONG sx = src_x(c, x - dx - c->at_x);
+            if (bm->bpp == 1) {
+                UBYTE pen = src_pen(c->px, row, sx);
+                d[x] = c->mask == 0xFF ? pen : (UBYTE)((d[x] & ~c->mask) | (pen & c->mask));
+            } else if (fmt == ORTG_PIX_PEN)
+                ortg_put(bm, x, y, ortg_pen_px(bm, row[sx]));
+            else if (fmt == ORTG_PIX_RAW)          /* the bitmap's own pixels */
+                ortg_put(bm, x, y, bm->bpp == 2 ? ((const UWORD *)row)[sx] : ((const ULONG *)row)[sx]);
+            else
+                ortg_put(bm, x, y, ortg_encode(bm, src_rgb(c->px, row, sx)));
         }
     }
 }
@@ -147,16 +194,33 @@ static void write_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG 
 static void read_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct pix_ctx *c = v;
+    ULONG fmt = c->px->format;
     for (LONG y = y0; y <= y1; y++) {
         UBYTE *row = (UBYTE *)c->px->data + (c->px->y + y - dy - c->at_y) * c->px->modulo;
         const UBYTE *s = bm->mem + y * bm->stride;
-        for (LONG x = x0; x <= x1; x++) dst_store(c->px, row, c->px->x + x - dx - c->at_x, s[x]);
+        for (LONG x = x0; x <= x1; x++) {
+            LONG tx = c->px->x + x - dx - c->at_x;
+            if (bm->bpp == 1) dst_store(c->px, row, tx, s[x]);
+            else {
+                ULONG v = ortg_get(bm, x, y);
+                if (fmt == ORTG_PIX_RAW) { if (bm->bpp == 2) ((UWORD *)row)[tx] = (UWORD)v; else ((ULONG *)row)[tx] = v; }
+                else dst_store_rgb(c->px, row, tx, ortg_decode(bm, v),
+                                   (fmt == ORTG_PIX_PEN || fmt == ORTG_PIX_INDEX) ? ortg_px_pen(bm, v) : 0);
+            }
+        }
     }
 }
 
 static void fill_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct pix_ctx *c = v;
+    if (bm->bpp != 1) {
+        ULONG v = ortg_encode(bm, c->argb);
+        if (!c->mask) return;
+        for (LONG y = y0; y <= y1; y++)
+            for (LONG x = x0; x <= x1; x++) ortg_put(bm, x, y, v);
+        return;
+    }
     for (LONG y = y0; y <= y1; y++) {
         UBYTE *d = bm->mem + y * bm->stride;
         for (LONG x = x0; x <= x1; x++) d[x] = (UBYTE)((d[x] & ~c->mask) | (c->value & c->mask));
@@ -166,6 +230,13 @@ static void fill_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
 static void invert_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct pix_ctx *c = v;
+    if (bm->bpp != 1) {
+        ULONG m = bm->bpp == 2 ? 0xFFFF : 0xFFFFFF;
+        if (!c->mask) return;
+        for (LONG y = y0; y <= y1; y++)
+            for (LONG x = x0; x <= x1; x++) ortg_put(bm, x, y, ortg_get(bm, x, y) ^ m);
+        return;
+    }
     for (LONG y = y0; y <= y1; y++) {
         UBYTE *d = bm->mem + y * bm->stride;
         for (LONG x = x0; x <= x1; x++) d[x] ^= c->mask;
@@ -230,7 +301,7 @@ LONG ortg_fill_pixels(struct RastPort *rp, LONG x, LONG y, LONG w, LONG h, ULONG
     struct pix_ctx c;
     if (!GfxBase || !rp || w <= 0 || h <= 0) return 0;
     begin(rp);
-    c.px = NULL; c.mask = rp->Mask; c.value = pen_of(argb & 0xFFFFFF);
+    c.px = NULL; c.mask = rp->Mask; c.value = pen_of(argb & 0xFFFFFF); c.argb = argb & 0xFFFFFF;
     if (!ortg_pieces(rp, x, y, x + w - 1, y + h - 1, fill_piece, &c)) {
         UBYTE old_pen = rp->FgPen, old_mode = rp->DrawMode;
         SetAPen(rp, c.value); SetDrMd(rp, JAM1);
@@ -262,6 +333,6 @@ BOOL ortg_bitmap_info(struct BitMap *bm, struct OpenRTGBitMapInfo *info)
     info->memory = o->mem;
     info->bytes_per_row = o->stride;
     info->width = o->width; info->height = o->height;
-    info->depth = 8; info->format = 0; info->monitor = o->monitor; info->pad = 0;
+    info->depth = o->bpp == 4 ? 32 : o->bpp == 2 ? 16 : 8; info->format = o->format; info->monitor = o->monitor; info->pad = 0;
     return TRUE;
 }
