@@ -20,11 +20,12 @@
 #include "modes.h"
 #include "displaydb.h"
 #include "screens.h"
+#include "pixels.h"
 #include "../include/openrtg/openrtg.h"
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 3
+#define LIB_REVISION 4
 
 /* The ACRTG board (amigachrome's common/protocol/acrtg.h): Zorro III,
  * Dalsin (0xDA15; 2011 before 1 October 2026), product 9; video RAM at
@@ -53,7 +54,7 @@ struct ExecBase *SysBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.3 (5.10.2026) OpenRTG, Dalsin Limited\r\n";
+static const char lib_id[] = "openrtg.library 0.4 (5.10.2026) OpenRTG, Dalsin Limited\r\n";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));
@@ -68,11 +69,17 @@ static LONG ORTG_SetModeList(REG(d0, ULONG monitor), REG(d1, ULONG all), REG(a6,
 static APTR ORTG_BoardAddress(REG(d0, ULONG monitor), REG(a6, struct OpenRTGBase *base));
 static LONG ORTG_DisplayDatabase(REG(d0, ULONG on), REG(a6, struct OpenRTGBase *base));
 static LONG ORTG_Screens(REG(d0, ULONG on), REG(a6, struct OpenRTGBase *base));
+static LONG ORTG_WritePixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(a0, const struct OpenRTGPixels *px), REG(a6, struct OpenRTGBase *base));
+static LONG ORTG_ReadPixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(a0, struct OpenRTGPixels *px), REG(a6, struct OpenRTGBase *base));
+static LONG ORTG_FillPixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(d2, LONG w), REG(d3, LONG h), REG(d4, ULONG argb), REG(a6, struct OpenRTGBase *base));
+static LONG ORTG_InvertPixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(d2, LONG w), REG(d3, LONG h), REG(a6, struct OpenRTGBase *base));
+static BOOL ORTG_BitMapInfo(REG(a0, struct BitMap *bm), REG(a1, struct OpenRTGBitMapInfo *info), REG(a6, struct OpenRTGBase *base));
 
 static const APTR lib_vectors[] = {
     (APTR)lib_open, (APTR)lib_close, (APTR)lib_expunge, (APTR)lib_null,
     (APTR)ORTG_MonitorCount, (APTR)ORTG_NextMode, (APTR)ORTG_GetMode,
-    (APTR)ORTG_BestMode, (APTR)ORTG_SetModeList, (APTR)ORTG_BoardAddress, (APTR)ORTG_DisplayDatabase, (APTR)ORTG_Screens, (APTR)-1,
+    (APTR)ORTG_BestMode, (APTR)ORTG_SetModeList, (APTR)ORTG_BoardAddress, (APTR)ORTG_DisplayDatabase, (APTR)ORTG_Screens,
+    (APTR)ORTG_WritePixels, (APTR)ORTG_ReadPixels, (APTR)ORTG_FillPixels, (APTR)ORTG_InvertPixels, (APTR)ORTG_BitMapInfo, (APTR)-1,
 };
 static const struct { ULONG size; const APTR *vectors; APTR data; APTR init; } lib_inittable = {
     sizeof(struct OpenRTGBase), lib_vectors, NULL, (APTR)lib_init,
@@ -221,4 +228,31 @@ static LONG ORTG_Screens(REG(d0, ULONG on), REG(a6, struct OpenRTGBase *base))
     for (int n = 0; n <= ORTG_MAX_MONITORS; n++) boards[n] = base->board[n] ? base->board[n]->cd_BoardAddr : NULL;
     base->patched = 1;
     return ortg_screens_on(base->gfx, base->table, boards);
+}
+
+/* ---- pixel arrays (0.4): what cybergraphics.library and Picasso96API.library pass on ---- */
+
+static LONG ORTG_WritePixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(a0, const struct OpenRTGPixels *px), REG(a6, struct OpenRTGBase *base))
+{
+    return ortg_write_pixels(rp, x, y, px);
+}
+
+static LONG ORTG_ReadPixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(a0, struct OpenRTGPixels *px), REG(a6, struct OpenRTGBase *base))
+{
+    return ortg_read_pixels(rp, x, y, px);
+}
+
+static LONG ORTG_FillPixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(d2, LONG w), REG(d3, LONG h), REG(d4, ULONG argb), REG(a6, struct OpenRTGBase *base))
+{
+    return ortg_fill_pixels(rp, x, y, w, h, argb);
+}
+
+static LONG ORTG_InvertPixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(d2, LONG w), REG(d3, LONG h), REG(a6, struct OpenRTGBase *base))
+{
+    return ortg_invert_pixels(rp, x, y, w, h);
+}
+
+static BOOL ORTG_BitMapInfo(REG(a0, struct BitMap *bm), REG(a1, struct OpenRTGBitMapInfo *info), REG(a6, struct OpenRTGBase *base))
+{
+    return ortg_bitmap_info(bm, info);
 }

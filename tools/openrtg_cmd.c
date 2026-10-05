@@ -84,7 +84,14 @@ int main(void)
         } else if (!ORTG_DisplayDatabase(1) || !ORTG_Screens(1)) {
             Printf("OpenRTG: screens could not be switched on (no monitors?).\n");
             rc = RETURN_WARN;
-        } else Printf("OpenRTG: screens on OpenRTG's modes are now OpenRTG's own.\n");
+        } else {
+            /* the compatibility libraries: opened from LIBS:OpenRTG/ once, they
+             * are in the library list under their own names, and stay (never
+             * closed) while OpenRTG is the RTG system */
+            struct Library *cgx = OpenLibrary((STRPTR)"LIBS:OpenRTG/cybergraphics.library", 41);
+            Printf("OpenRTG: screens on OpenRTG's modes are now OpenRTG's own%s.\n",
+                   cgx ? (LONG)", with cybergraphics.library" : (LONG)"");
+        }
     }
     if (args[7]) {
         struct Library *GfxBase = OpenLibrary((STRPTR)"graphics.library", 39);
