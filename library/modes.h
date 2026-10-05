@@ -46,8 +46,7 @@ struct ortg_mode_table {
     struct ortg_mode full[ORTG_MAX_MODES];
 };
 
-/* The monitor part of a monitor's ModeIDs (graphics.library's
- * MONITOR_ID_MASK, 0xFFFF1000, keeps all of a monitor's modes together). */
+/* The monitor part of a monitor's ModeIDs: their top byte (0x6n). */
 uint32_t ortg_monitor_id(int monitor);
 
 /* Builds the table. Returns the number of modes offered, or -1 for a bad

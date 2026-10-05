@@ -14,9 +14,9 @@
  * the pointer and the board's blitter come next; OpenGPU after that.
  *
  * An OpenRTG bitmap is a struct BitMap with Depth 8, BytesPerRow the row's
- * bytes, every plane pointer at the chunky pixels, and pad and Planes[7]
- * marking it, so a program that reads plane 0 sees pixels rather than a
- * crash. ortg_is() is the test every patch makes first.
+ * bytes, every plane pointer at the chunky pixels, and pad and a head
+ * before the pixels marking it, so a program that reads plane 0 sees
+ * pixels rather than a crash. ortg_is() is the test every patch makes first.
  *
  * OS-friendly as displaydb.c is: SetFunction() under Forbid(); each patch
  * passes what isn't its own to the vector it replaced; patches stay.
@@ -153,15 +153,23 @@ static void vram_free(int monitor, ULONG off)
 /* ---- OpenRTG bitmaps ---------------------------------------------------------------- */
 
 #define ORTG_PAD 0x4F52                                  /* "OR" */
+#define ORTG_HEAD 64            /* before the pixels: the magic and the ortg_bitmap */
 
 /* The OpenRTG bitmap a BitMap is, or is a copy of: intuition copies a
  * screen's custom bitmap into the Screen's own BitMap, so a copy (same
- * marks, same pixels) counts as the bitmap. */
+ * marks, same pixels) counts as the bitmap. The mark is pad and the two
+ * longwords just before the pixels: every plane pointer is the pixels, since
+ * code that doesn't know the bitmap writes it as planes, all eight of them
+ * (5 Oct 2026: with the ortg_bitmap's address in Planes[7], an 8-plane write
+ * landed on it and on whatever followed it: a reopened Workbench's Screen) */
 static struct ortg_bitmap *ortg_of(struct BitMap *bm)
 {
     struct ortg_bitmap *o;
-    if (!bm || bm->pad != ORTG_PAD) return NULL;
-    o = (struct ortg_bitmap *)bm->Planes[7];
+    ULONG *t;
+    if (!bm || bm->pad != ORTG_PAD || !bm->Planes[0]) return NULL;
+    t = (ULONG *)bm->Planes[0];
+    if (t[-2] != ORTG_BM_MAGIC) return NULL;
+    o = (struct ortg_bitmap *)t[-1];
     return o && o->magic == ORTG_BM_MAGIC && o->mem == bm->Planes[0] ? o : NULL;
 }
 
@@ -176,24 +184,27 @@ struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear)
     o->magic = ORTG_BM_MAGIC;
     o->width = (UWORD)w; o->height = (UWORD)h; o->stride = stride;
     if (monitor > 0 && monitor <= ORTG_MAX_MONITORS && board[monitor]) {
-        LONG off = vram_alloc(monitor, stride * h);
+        LONG off = vram_alloc(monitor, ORTG_HEAD + stride * h);
         if (off >= 0) {
-            o->monitor = (UBYTE)monitor; o->vram_off = (ULONG)off;
-            o->mem = board[monitor] + VRAM_AT + off;
+            o->monitor = (UBYTE)monitor; o->vram_block = (ULONG)off; o->vram_off = (ULONG)off + ORTG_HEAD;
+            o->mem = board[monitor] + VRAM_AT + o->vram_off;
         }
     }
     if (!o->mem) {
+        UBYTE *raw;
         o->monitor = 0;
-        if (!(o->mem = AllocVec(stride * h, MEMF_ANY | (clear ? MEMF_CLEAR : 0)))) { FreeVec(o); return NULL; }
+        if (!(raw = AllocVec(ORTG_HEAD + stride * h, MEMF_ANY | (clear ? MEMF_CLEAR : 0)))) { FreeVec(o); return NULL; }
+        o->mem = raw + ORTG_HEAD;
         clear = 0;
     }
+    ((ULONG *)o->mem)[-2] = ORTG_BM_MAGIC;
+    ((ULONG *)o->mem)[-1] = (ULONG)o;
     if (clear) for (ULONG i = 0; i < stride * h; i++) o->mem[i] = 0;
     o->bm.BytesPerRow = (UWORD)stride;
     o->bm.Rows = (UWORD)h;
     o->bm.Depth = 8;
     o->bm.pad = ORTG_PAD;
-    for (int p = 0; p < 7; p++) o->bm.Planes[p] = o->mem;
-    o->bm.Planes[7] = (PLANEPTR)o;
+    for (int p = 0; p < 8; p++) o->bm.Planes[p] = o->mem;
     return o;
 }
 
@@ -202,8 +213,9 @@ void ortg_free(struct ortg_bitmap *o)
     if (!o) return;
     for (int n = 1; n <= ORTG_MAX_MONITORS; n++)
         if (shown[n].bm == o) shown[n].bm = NULL;
-    if (o->monitor) vram_free(o->monitor, o->vram_off);
-    else FreeVec(o->mem);
+    ((ULONG *)o->mem)[-2] = 0;
+    if (o->monitor) vram_free(o->monitor, o->vram_block);
+    else FreeVec(o->mem - ORTG_HEAD);
     o->magic = 0;
     FreeVec(o);
 }
@@ -775,8 +787,8 @@ static LONG wpa8_patch(REG(a0, struct RastPort *rp), REG(d0, WORD x0), REG(d1, W
 /* The mode an OpenRTG screen bitmap is for, from AllocBitMap's tags. */
 static const struct ortg_mode *mode_of(ULONG id, int *monitor)
 {
-    int n = (int)((id >> 16) - 0x5000);
-    if (!(id & 0x1000) || n < 1 || n > ORTG_MAX_MONITORS || !tables || !tables[n] || !board[n]) return NULL;
+    int n = (int)((id >> 24) - 0x60);
+    if (!(id & 0x1000) || (id >> 28) != 6 || n < 1 || n > ORTG_MAX_MONITORS || !tables || !tables[n] || !board[n]) return NULL;
     *monitor = n;
     return ortg_find_mode(tables[n], id);
 }
@@ -899,23 +911,31 @@ static ULONG makevp_patch(REG(a0, struct View *v), REG(a1, struct ViewPort *vp),
 
 static ULONG mrgcop_patch(REG(a1, struct View *v), REG(a6, struct GfxBase *g))
 {
-    /* OpenRTG's viewports are hidden from the chipset while the copper lists merge */
+    /* OpenRTG's viewports have no copper lists (MakeVPort made none), so the
+     * chipset's merge passes them by. With only OpenRTG viewports there is
+     * nothing to merge, but the view is good and intuition must still load
+     * it (it loads none for MCOP_NOP, and its mouse then has no view). */
     struct ViewPort *vp;
-    UWORD saved[16];
-    int i = 0;
+    int ours = 0;
     ULONG r;
-    for (vp = v ? v->ViewPort : NULL; vp && i < 16; vp = vp->Next)
-        if (vp_bitmap(vp)) { saved[i++] = vp->Modes; vp->Modes |= VP_HIDE; }
+    for (vp = v ? v->ViewPort : NULL; vp; vp = vp->Next)
+        if (vp_bitmap(vp)) ours = 1;
     r = old_mrgcop(v, g);
-    i = 0;
-    for (vp = v ? v->ViewPort : NULL; vp && i < 16; vp = vp->Next)
-        if (vp_bitmap(vp)) vp->Modes = saved[i++];
+    { static int t; if (t < 10) { t++; serx("ortg: MrgCop view ", (ULONG)v); serx("  result ", r); } }
+    if (r == MCOP_NOP && ours) r = MCOP_OK;
     return r;
 }
 
 static void loadview_patch(REG(a1, struct View *v), REG(a6, struct GfxBase *g))
 {
-    old_loadview(v, g);
+    { static int t; if (t < 40) { t++; serx("ortg: LoadView ", (ULONG)v); serx("  lof ", v ? (ULONG)v->LOFCprList : 0); serx("  first vp ", v ? (ULONG)v->ViewPort : 0); } }
+    if (v && !v->LOFCprList && !v->SHFCprList) {
+        /* a view with only OpenRTG viewports: the board shows them; the
+         * chipset shows nothing, and the view is the active one */
+        old_loadview(NULL, g);
+        GfxBase->ActiView = v;
+    } else
+        old_loadview(v, g);
     show_front();
 }
 
@@ -1003,8 +1023,9 @@ static void movesprite_patch(REG(a0, struct ViewPort *vp), REG(a1, struct Simple
     old_movesprite(vp, sp, x, y, g);
     {
         static int traced;
-        if (traced < 12 && pointer && sp == &pointer->es_SimpleSprite && IntuitionBase->FirstScreen) {
-            traced++;
+        static WORD lx = -999, ly = -999;
+        if (traced < 60 && pointer && sp == &pointer->es_SimpleSprite && IntuitionBase->FirstScreen && (x != lx || y != ly)) {
+            traced++; lx = x; ly = y;
             serx("ortg: MoveSprite x ", (ULONG)x); serx("  y ", (ULONG)y); serx("  vp ", (ULONG)vp);
             serx("  mouse x ", (ULONG)IntuitionBase->FirstScreen->MouseX); serx("  mouse y ", (ULONG)IntuitionBase->FirstScreen->MouseY);
         }
@@ -1037,6 +1058,14 @@ static void fix_viewports(void)
         if (!o) continue;
         if (s->ViewPort.DWidth != (WORD)s->Width) s->ViewPort.DWidth = s->Width;
         if (s->ViewPort.DHeight != (WORD)s->Height) s->ViewPort.DHeight = s->Height;
+        if (s == IntuitionBase->FirstScreen) s->ViewPort.Modes &= ~VP_HIDE;   /* hidden only for the 0 height */
+        if (s->ViewPort.ColorMap && s->ViewPort.ColorMap->cm_vpe) {
+            /* the display clip intuition worked out from the chipset's beam: 0 */
+            struct Rectangle *dc = &s->ViewPort.ColorMap->cm_vpe->DisplayClip;
+            if (dc->MaxX <= dc->MinX || dc->MaxY <= dc->MinY) {
+                dc->MinX = 0; dc->MinY = 0; dc->MaxX = o->width - 1; dc->MaxY = o->height - 1;
+            }
+        }
     }
 }
 
@@ -1093,7 +1122,7 @@ static struct InputEvent *__attribute__((used)) mouse_events(struct InputEvent *
             if (t->ie_Class != IECLASS_TIMER) { tr3++; serx("ortg: event class/code ", (ULONG)t->ie_Class << 16 | t->ie_Code); serx("  qual/xy ", (ULONG)t->ie_Qualifier << 16 | (UWORD)t->ie_X); serx("  n ", (ULONG)n); }
     }
     if (!n || !s) { mouse_screen = NULL; return ev; }
-    if (s != mouse_screen) { mouse_screen = s; mouse_x = s->MouseX; mouse_y = s->MouseY; }
+    if (s != mouse_screen) { mouse_screen = s; mouse_x = s->Width / 2; mouse_y = s->Height / 2; }   /* TEMP: from the centre */
     for (e = ev; e; e = e->ie_NextEvent) {
         if (e->ie_Class != IECLASS_RAWMOUSE || (e->ie_Qualifier & IEQUALIFIER_RELATIVEMOUSE) == 0) continue;
         if (!e->ie_X && !e->ie_Y) continue;
@@ -1129,7 +1158,7 @@ __asm(
 "   rts\n");
 void mouse_entry(void);
 
-static void mouse_on(void)
+static void __attribute__((unused)) mouse_on(void)
 {
     struct MsgPort *port = CreateMsgPort();
     struct IOStdReq *io = port ? (struct IOStdReq *)CreateIORequest(port, sizeof *io) : NULL;
@@ -1159,8 +1188,8 @@ static struct Screen *openscreen_patch(REG(a0, struct NewScreen *ns), REG(a1, st
     struct TagItem *ext = (ns && (ns->Type & NS_EXTENDED)) ? ((struct ExtNewScreen *)ns)->Extension : NULL;
     ULONG id = tag_or(tags, SA_DisplayID, tag_or(ext, SA_DisplayID, ns ? ns->ViewModes : 0));
     const struct ortg_mode *m = NULL;
-    int n = (int)((id >> 16) - 0x5000);
-    if ((id & 0x1000) && n >= 1 && n <= ORTG_MAX_MONITORS && tables && tables[n]) m = ortg_find_mode(tables[n], id);
+    int n = (int)((id >> 24) - 0x60);
+    if ((id & 0x1000) && (id >> 28) == 6 && n >= 1 && n <= ORTG_MAX_MONITORS && tables && tables[n]) m = ortg_find_mode(tables[n], id);
     serx("ortg: OpenScreen, mode ", id);
     if (m && m->format == ORTG_CLUT8 && board[n] && !tag_or(tags, SA_BitMap, tag_or(ext, SA_BitMap, 0))) {
         struct ortg_bitmap *o = ortg_alloc(n, m->width, m->height, 1);
@@ -1255,7 +1284,7 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
     old_closescreen = (closescreen_fn)SetFunction((struct Library *)IntuitionBase, -66, (APTR)closescreen_patch);
     CacheClearU();
     Permit();
-    mouse_on();
+    /* mouse_on(): not needed once the display handles are records */
     on = 1;
     return 1;
 }

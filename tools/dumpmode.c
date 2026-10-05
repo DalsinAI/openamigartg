@@ -31,6 +31,9 @@ int main(void)
         ULONG n;
         if (!h || !GetDisplayInfoData(h, (UBYTE *)&ni, sizeof ni, DTAG_NAME, 0) || !strstr((char *)ni.Name, (char *)args[0])) continue;
         Printf((STRPTR)"$%08lx %s\n", id, (LONG)ni.Name);
+        dump("handle", (UBYTE *)h, 64);
+        dump("before+record+after (from handle-96)", (UBYTE *)h - 96, 448);
+        if (((ULONG *)h)[3]) { Printf((STRPTR)"  parent at %08lx\n", ((ULONG *)h)[3]); dump("parent (from -32)", (UBYTE *)((ULONG *)h)[3] - 32, 160); }
         if ((n = GetDisplayInfoData(h, buf, sizeof buf, DTAG_DISP, 0))) dump("DisplayInfo", buf, n);
         if ((n = GetDisplayInfoData(h, buf, sizeof buf, DTAG_DIMS, 0))) dump("DimensionInfo", buf, n);
         if ((n = GetDisplayInfoData(h, buf, sizeof buf, DTAG_MNTR, 0))) {
