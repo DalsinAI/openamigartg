@@ -108,6 +108,7 @@ static void trace_big(const char *what, LONG a, LONG b, LONG c, LONG d, LONG w, 
 #define R_PAN_X 0x24
 #define R_PAN_Y 0x28
 #define R_CLOCK 0x2C
+#define R_SWITCH 0x30   /* the board's SetSwitch: the viewer shows this head while it is 1 */
 #define R_COMMIT 0x48
 #define R_RESULT 0x4C
 #define R_ARG_A 0x60
@@ -1092,6 +1093,8 @@ static void palette_to_board(int n, struct ViewPort *vp, ULONG first, ULONG coun
 }
 
 /* The front OpenRTG screen of each monitor is what the board shows. */
+static UBYTE switched[ORTG_MAX_MONITORS + 1];
+
 static void show_front(void)
 {
     struct ortg_bitmap *want[ORTG_MAX_MONITORS + 1] = { 0 };
@@ -1117,6 +1120,18 @@ static void show_front(void)
         reg(n, R_ARG_A, 1);
         reg(n, R_COMMIT, C_DISPLAY);
         shown[n].bm = o;
+    }
+    /* the switch, as Picasso96 sets it: on while an OpenRTG screen is in
+     * front, so the instance window shows the board's picture, and off when
+     * a chipset screen (a game, say) comes to the front (6 Oct 2026: without
+     * it the window kept showing the chipset's empty picture) */
+    {
+        struct Screen *f = IntuitionBase->FirstScreen;
+        struct ortg_bitmap *fo = f ? vp_bitmap(&f->ViewPort) : NULL;
+        for (int n = 1; n <= ORTG_MAX_MONITORS; n++) {
+            UBYTE sw = fo && fo->monitor == n && shown[n].bm;
+            if (board[n] && sw != switched[n]) { reg(n, R_SWITCH, sw); switched[n] = sw; }
+        }
     }
     if (pointer) pointer_update(pointer->es_SimpleSprite.x, pointer->es_SimpleSprite.y, 0);
 }
@@ -1465,7 +1480,7 @@ static BOOL closescreen_patch(REG(a0, struct Screen *s), REG(a6, struct Intuitio
         if (n) {
             shown[n].bm = NULL;
             show_front();
-            if (!shown[n].bm) { reg(n, R_ARG_A, 0); reg(n, R_COMMIT, C_DISPLAY); }
+            if (!shown[n].bm) { reg(n, R_ARG_A, 0); reg(n, R_COMMIT, C_DISPLAY); reg(n, R_SWITCH, 0); switched[n] = 0; }
         }
     }
     return ok;
