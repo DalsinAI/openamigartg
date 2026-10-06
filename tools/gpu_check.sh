@@ -11,10 +11,15 @@ set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-/tmp/opengpu-check}
 mkdir -p "$OUT"
-[ -e /usr/include/vulkan/vulkan.h ] || { echo "missing: Vulkan headers (Debian/Pi OS package libvulkan-dev)"; exit 1; }
-ldconfig -p 2>/dev/null | grep -q libvulkan.so.1 || { echo "missing: the Vulkan loader (libvulkan1)"; exit 1; }
-cc -std=c99 -O2 -Wall -Wextra -o "$OUT/test_opengpu_vk" "$HERE/tests/test_opengpu_vk.c" "$HERE/host/vulkan/ogpu_vk.c" \
-    "$HERE/library/opengpu/ogpu_core.c" "$HERE/library/opengpu/ogpu_build.c" -lvulkan || exit 1
+# Headers: the system's, or VULKAN_INCLUDE (Khronos's Vulkan-Headers include/
+# folder, for a machine without libvulkan-dev and no root).
+INC=${VULKAN_INCLUDE:-/usr/include}
+[ -e "$INC/vulkan/vulkan.h" ] || { echo "missing: Vulkan headers (package libvulkan-dev, or VULKAN_INCLUDE=<Vulkan-Headers>/include)"; exit 1; }
+# The loader: libvulkan.so.1 by its path, so the dev symlink isn't needed.
+LIB=$(ldconfig -p 2>/dev/null | awk '/libvulkan\.so\.1 /{print $NF; exit}')
+[ -n "$LIB" ] || { echo "missing: the Vulkan loader (libvulkan1)"; exit 1; }
+cc -std=c99 -O2 -Wall -Wextra -I"$INC" -o "$OUT/test_opengpu_vk" "$HERE/tests/test_opengpu_vk.c" "$HERE/host/vulkan/ogpu_vk.c" \
+    "$HERE/library/opengpu/ogpu_core.c" "$HERE/library/opengpu/ogpu_build.c" "$LIB" || exit 1
 rc=0
 for mode in own auto import map; do
     if [ $mode = own ]; then host=0; mem=; elif [ $mode = auto ]; then host=1; mem=; else host=1; mem=$mode; fi
