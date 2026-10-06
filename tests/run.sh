@@ -20,6 +20,8 @@ if [ -e /usr/include/vulkan/vulkan.h ] && { ldconfig -p 2>/dev/null | grep -q li
         -o "$OUT/test_opengpu_vk" "$HERE/test_opengpu_vk.c" "$HERE/../host/vulkan/ogpu_vk.c" \
         "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c" -lvulkan
     ASAN_OPTIONS=detect_leaks=0 "$OUT/test_opengpu_vk" "$HERE/golden/opengpu-g1.txt" 3000 "$HERE/golden/opengpu-v11.txt"
+    # Again in video RAM the test owns, as the runtime's board memory is.
+    OGPU_VK_HOST=1 ASAN_OPTIONS=detect_leaks=0 "$OUT/test_opengpu_vk" "$HERE/golden/opengpu-g1.txt" 500 "$HERE/golden/opengpu-v11.txt"
 else
     echo "no Vulkan headers or loader; the GPU run is skipped"
 fi

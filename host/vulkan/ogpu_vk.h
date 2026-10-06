@@ -32,6 +32,14 @@ struct ogpu_vk_config {
     /* A device whose name contains this, or 0: the environment's
      * OGPU_VK_DEVICE, else a real GPU before a CPU one (lavapipe). */
     const char *device;
+    /* Video RAM the caller already has (the runtime's board memory, which
+     * its 68k reaches directly), or 0 for the back end's own. The GPU then
+     * draws in place: the memory is imported (VK_EXT_external_memory_host,
+     * RADV and lavapipe), or the GPU's memory is exported and mapped over it
+     * (VK_KHR_external_memory_fd, V3DV on the Pi 5), keeping what was there.
+     * It must be page aligned and vram_size a multiple of the page size.
+     * OGPU_VK_HOSTMEM=import or map tries only that way. */
+    ogpu_u8 *host_vram;
 };
 
 /* 0 on failure, with the reason in err. */
@@ -43,6 +51,8 @@ void ogpu_vk_destroy(struct ogpu_vk *vk);
  * sees everything the GPU drew. */
 ogpu_u8 *ogpu_vk_vram(struct ogpu_vk *vk);
 const char *ogpu_vk_device(struct ogpu_vk *vk);
+/* How video RAM reaches the GPU: "own", "import" or "map". */
+const char *ogpu_vk_vram_mode(struct ogpu_vk *vk);
 
 /* As ogpu_core_run: carries out `words` words of stream and returns the
  * commands done; the GPU's work is finished when it returns. Slots, the
