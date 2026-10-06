@@ -667,12 +667,21 @@ static int fail(char *err, int errlen, const char *what, VkResult r) {
     return 0;
 }
 
-/* A memory type: host-visible and coherent, on the device when it can be. */
-static int memory_type(VkPhysicalDevice phys, uint32_t bits) {
+/* A memory type: host-visible and coherent. Video RAM (cpu_reads) is read
+ * by the CPU all the time (the 68k, the C core, the picture), so it wants
+ * memory the CPU caches: a card's own memory behind the PCI bar is uncached
+ * and very slow to read (2 minutes against 1 s for the check on daletop's
+ * RX 460). The upload arena, which the CPU only writes, prefers the
+ * device's memory. A Pi's GPU shares its memory either way. */
+static int memory_type(VkPhysicalDevice phys, uint32_t bits, int cpu_reads) {
     VkPhysicalDeviceMemoryProperties mp;
     const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    const VkMemoryPropertyFlags cached = want | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
     uint32_t i;
     vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+    if (cpu_reads)
+        for (i = 0; i < mp.memoryTypeCount; i++)
+            if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & cached) == cached) return (int)i;
     for (i = 0; i < mp.memoryTypeCount; i++)
         if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & (want | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
                                       == (want | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
@@ -682,7 +691,7 @@ static int memory_type(VkPhysicalDevice phys, uint32_t bits) {
     return -1;
 }
 
-static int make_buffer(struct ogpu_vk *vk, VkDeviceSize size, VkBuffer *buf, VkDeviceMemory *mem, ogpu_u8 **p,
+static int make_buffer(struct ogpu_vk *vk, VkDeviceSize size, int cpu_reads, VkBuffer *buf, VkDeviceMemory *mem, ogpu_u8 **p,
                        char *err, int errlen) {
     VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     VkMemoryAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
@@ -695,7 +704,7 @@ static int make_buffer(struct ogpu_vk *vk, VkDeviceSize size, VkBuffer *buf, VkD
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if ((r = vkCreateBuffer(vk->dev, &bi, 0, buf)) != VK_SUCCESS) return fail(err, errlen, "vkCreateBuffer", r);
     vkGetBufferMemoryRequirements(vk->dev, *buf, &req);
-    type = memory_type(vk->phys, req.memoryTypeBits);
+    type = memory_type(vk->phys, req.memoryTypeBits, cpu_reads);
     if (type < 0) return fail(err, errlen, "no host-visible coherent memory", VK_ERROR_FEATURE_NOT_PRESENT);
     ai.allocationSize = req.size;
     ai.memoryTypeIndex = (uint32_t)type;
@@ -737,7 +746,7 @@ static int import_host_vram(struct ogpu_vk *vk) {
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(vk->dev, &bi, 0, &vk->vram_buf) != VK_SUCCESS) return 0;
     vkGetBufferMemoryRequirements(vk->dev, vk->vram_buf, &req);
-    type = memory_type(vk->phys, req.memoryTypeBits & hp.memoryTypeBits);
+    type = memory_type(vk->phys, req.memoryTypeBits & hp.memoryTypeBits, 1);
     if (type < 0 || req.size > vk->cfg.vram_size) goto no;
     imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
     imp.pHostPointer = vk->cfg.host_vram;
@@ -789,7 +798,7 @@ static int map_host_vram(struct ogpu_vk *vk, int dma_buf) {
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(vk->dev, &bi, 0, &vk->vram_buf) != VK_SUCCESS) return 0;
     vkGetBufferMemoryRequirements(vk->dev, vk->vram_buf, &req);
-    type = memory_type(vk->phys, req.memoryTypeBits);
+    type = memory_type(vk->phys, req.memoryTypeBits, 1);
     if (type < 0) goto no;
     exp.handleTypes = (VkExternalMemoryHandleTypeFlags)ht;
     ai.pNext = &exp;
@@ -957,10 +966,10 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
             goto bad;
         }
     } else {
-        if (!make_buffer(vk, vk->cfg.vram_size, &vk->vram_buf, &vk->vram_mem, &vk->vram, err, errlen)) goto bad;
+        if (!make_buffer(vk, vk->cfg.vram_size, 1, &vk->vram_buf, &vk->vram_mem, &vk->vram, err, errlen)) goto bad;
         vk->vram_mode = "own";
     }
-    if (!make_buffer(vk, vk->cfg.arena_size, &vk->arena_buf, &vk->arena_mem, &vk->arena, err, errlen)) goto bad;
+    if (!make_buffer(vk, vk->cfg.arena_size, 0, &vk->arena_buf, &vk->arena_mem, &vk->arena, err, errlen)) goto bad;
 
     memset(b, 0, sizeof b);
     for (q = 0; q < 2; q++) {
