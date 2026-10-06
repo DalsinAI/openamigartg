@@ -10,6 +10,7 @@
  */
 #include <exec/types.h>
 #include <exec/resident.h>
+#include <dos/dos.h>
 #include <exec/libraries.h>
 #include <exec/execbase.h>
 #include <exec/semaphores.h>
