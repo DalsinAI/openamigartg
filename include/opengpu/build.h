@@ -33,6 +33,12 @@ void ogpu_pixels(struct OGPUBatch *b, unsigned long address, unsigned long bpr, 
                  int x, int y, int w, int h);
 void ogpu_composite(struct OGPUBatch *b, int src_slot, int sx, int sy, int sw, int sh,
                     int x, int y, int w, int h, int alpha, unsigned long flags);
+/* v1.1 */
+void ogpu_composite_masked(struct OGPUBatch *b, int src_slot, int sx, int sy, int sw, int sh,
+                           int x, int y, int w, int h, int alpha, unsigned long flags,
+                           int mask_slot, int mx, int my);
+void ogpu_mask(struct OGPUBatch *b, unsigned long address, unsigned long bpr, int x, int y, int w, int h,
+               unsigned long colour);
 void ogpu_fence(struct OGPUBatch *b, unsigned long id);
 
 #endif

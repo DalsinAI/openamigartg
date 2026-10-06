@@ -99,6 +99,23 @@ void ogpu_composite(struct OGPUBatch *b, int src_slot, int sx, int sy, int sw, i
     cmd(b, OGPU_OP_COMPOSITE, 7, a);
 }
 
+void ogpu_composite_masked(struct OGPUBatch *b, int src_slot, int sx, int sy, int sw, int sh,
+                           int x, int y, int w, int h, int alpha, unsigned long flags,
+                           int mask_slot, int mx, int my) {
+    unsigned long a[9];
+    a[0] = (unsigned long)src_slot; a[1] = OGPU_XY(sx, sy); a[2] = OGPU_XY(sw, sh);
+    a[3] = OGPU_XY(x, y); a[4] = OGPU_XY(w, h); a[5] = (unsigned long)alpha & 255; a[6] = flags | OGPU_COMP_MASK;
+    a[7] = (unsigned long)mask_slot; a[8] = OGPU_XY(mx, my);
+    cmd(b, OGPU_OP_COMPOSITE, 9, a);
+}
+
+void ogpu_mask(struct OGPUBatch *b, unsigned long address, unsigned long bpr, int x, int y, int w, int h,
+               unsigned long colour) {
+    unsigned long a[5];
+    a[0] = address; a[1] = bpr; a[2] = OGPU_XY(x, y); a[3] = OGPU_XY(w, h); a[4] = colour;
+    cmd(b, OGPU_OP_MASK, 5, a);
+}
+
 void ogpu_fence(struct OGPUBatch *b, unsigned long id) {
     unsigned long a[1];
     a[0] = id;
