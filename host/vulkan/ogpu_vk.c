@@ -8,10 +8,16 @@
  * compute dispatch each, recorded into one command buffer and sent when the
  * run ends, a FENCE comes, the C core needs the memory, or the upload arena
  * is full. A barrier between dispatches keeps them in stream order. */
+#define _DEFAULT_SOURCE  /* mmap's MAP_ANONYMOUS under -std=c99 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <vulkan/vulkan.h>
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/mman.h>
+#include <unistd.h>
+#define OGPU_VK_MMAP 1
+#endif
 #include "ogpu_vk.h"
 #include "ogpu_vk_spv.h"    /* ogpu_comp_spv[]: ogpu.comp compiled (host/vulkan/build_spv.sh) */
 
@@ -24,6 +30,8 @@ struct ogpu_vk {
     VkBuffer vram_buf, arena_buf;
     VkDeviceMemory vram_mem, arena_mem;
     ogpu_u8 *vram, *arena;
+    const char *vram_mode;      /* "own", "import" or "map" */
+    int vram_mapped;            /* "map": host_vram is our mapping of the GPU's memory */
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
     VkShaderModule shader;
@@ -143,6 +151,11 @@ static ogpu_u8 *core_map(void *user, ogpu_u32 address, ogpu_u32 length) {
 }
 
 static void flush(struct ogpu_vk *vk);
+
+static int core_ext(void *user, int op, const ogpu_u8 *cmd, long words) {
+    struct ogpu_vk *vk = user;
+    return vk->cfg.ext ? vk->cfg.ext(vk->cfg.user, op, cmd, words) : OGPU_ERR_BADOP;
+}
 
 static void core_fence(void *user, ogpu_u32 id) {
     struct ogpu_vk *vk = user;
@@ -648,6 +661,7 @@ void ogpu_vk_reset(struct ogpu_vk *vk) {
 int ogpu_vk_last_error(const struct ogpu_vk *vk) { return vk->last_error; }
 long ogpu_vk_error_word(const struct ogpu_vk *vk) { return vk->error_word; }
 ogpu_u8 *ogpu_vk_vram(struct ogpu_vk *vk) { return vk->vram; }
+const char *ogpu_vk_vram_mode(struct ogpu_vk *vk) { return vk->vram_mode; }
 const char *ogpu_vk_device(struct ogpu_vk *vk) { return vk->name; }
 void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s) { *s = vk->stats; }
 
@@ -658,12 +672,21 @@ static int fail(char *err, int errlen, const char *what, VkResult r) {
     return 0;
 }
 
-/* A memory type: host-visible and coherent, on the device when it can be. */
-static int memory_type(VkPhysicalDevice phys, uint32_t bits) {
+/* A memory type: host-visible and coherent. Video RAM (cpu_reads) is read
+ * by the CPU all the time (the 68k, the C core, the picture), so it wants
+ * memory the CPU caches: a card's own memory behind the PCI bar is uncached
+ * and very slow to read (2 minutes against 1 s for the check on daletop's
+ * RX 460). The upload arena, which the CPU only writes, prefers the
+ * device's memory. A Pi's GPU shares its memory either way. */
+static int memory_type(VkPhysicalDevice phys, uint32_t bits, int cpu_reads) {
     VkPhysicalDeviceMemoryProperties mp;
     const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    const VkMemoryPropertyFlags cached = want | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
     uint32_t i;
     vkGetPhysicalDeviceMemoryProperties(phys, &mp);
+    if (cpu_reads)
+        for (i = 0; i < mp.memoryTypeCount; i++)
+            if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & cached) == cached) return (int)i;
     for (i = 0; i < mp.memoryTypeCount; i++)
         if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & (want | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
                                       == (want | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
@@ -673,7 +696,7 @@ static int memory_type(VkPhysicalDevice phys, uint32_t bits) {
     return -1;
 }
 
-static int make_buffer(struct ogpu_vk *vk, VkDeviceSize size, VkBuffer *buf, VkDeviceMemory *mem, ogpu_u8 **p,
+static int make_buffer(struct ogpu_vk *vk, VkDeviceSize size, int cpu_reads, VkBuffer *buf, VkDeviceMemory *mem, ogpu_u8 **p,
                        char *err, int errlen) {
     VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     VkMemoryAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
@@ -686,7 +709,7 @@ static int make_buffer(struct ogpu_vk *vk, VkDeviceSize size, VkBuffer *buf, VkD
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if ((r = vkCreateBuffer(vk->dev, &bi, 0, buf)) != VK_SUCCESS) return fail(err, errlen, "vkCreateBuffer", r);
     vkGetBufferMemoryRequirements(vk->dev, *buf, &req);
-    type = memory_type(vk->phys, req.memoryTypeBits);
+    type = memory_type(vk->phys, req.memoryTypeBits, cpu_reads);
     if (type < 0) return fail(err, errlen, "no host-visible coherent memory", VK_ERROR_FEATURE_NOT_PRESENT);
     ai.allocationSize = req.size;
     ai.memoryTypeIndex = (uint32_t)type;
@@ -696,6 +719,143 @@ static int make_buffer(struct ogpu_vk *vk, VkDeviceSize size, VkBuffer *buf, VkD
     *p = m;
     memset(*p, 0, (size_t)size);
     return 1;
+}
+
+
+static int has_extension(VkPhysicalDevice phys, const char *name) {
+    VkExtensionProperties ext[512];
+    uint32_t n = 512, i;
+    VkResult r = vkEnumerateDeviceExtensionProperties(phys, 0, &n, ext);
+    if (r != VK_SUCCESS && r != VK_INCOMPLETE) return 0;
+    for (i = 0; i < n; i++) if (!strcmp(ext[i].extensionName, name)) return 1;
+    return 0;
+}
+
+/* The caller's video RAM imported as the GPU's memory. */
+static int import_host_vram(struct ogpu_vk *vk) {
+    VkExternalMemoryBufferCreateInfo ebi = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO };
+    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    VkMemoryHostPointerPropertiesEXT hp = { .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT };
+    VkImportMemoryHostPointerInfoEXT imp = { .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT };
+    VkMemoryAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    VkMemoryRequirements req;
+    PFN_vkGetMemoryHostPointerPropertiesEXT props =
+        (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(vk->dev, "vkGetMemoryHostPointerPropertiesEXT");
+    int type;
+    if (!props) return 0;
+    if (props(vk->dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, vk->cfg.host_vram, &hp) != VK_SUCCESS) return 0;
+    ebi.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+    bi.pNext = &ebi;
+    bi.size = vk->cfg.vram_size;
+    bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vk->dev, &bi, 0, &vk->vram_buf) != VK_SUCCESS) return 0;
+    vkGetBufferMemoryRequirements(vk->dev, vk->vram_buf, &req);
+    type = memory_type(vk->phys, req.memoryTypeBits & hp.memoryTypeBits, 1);
+    if (type < 0 || req.size > vk->cfg.vram_size) goto no;
+    imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+    imp.pHostPointer = vk->cfg.host_vram;
+    ai.pNext = &imp;
+    ai.allocationSize = vk->cfg.vram_size;
+    ai.memoryTypeIndex = (uint32_t)type;
+    if (vkAllocateMemory(vk->dev, &ai, 0, &vk->vram_mem) != VK_SUCCESS) goto no;
+    if (vkBindBufferMemory(vk->dev, vk->vram_buf, vk->vram_mem, 0) != VK_SUCCESS) goto no;
+    vk->vram = vk->cfg.host_vram;
+    vk->vram_mode = "import";
+    return 1;
+no:
+    if (vk->vram_mem) vkFreeMemory(vk->dev, vk->vram_mem, 0);
+    vkDestroyBuffer(vk->dev, vk->vram_buf, 0);
+    vk->vram_mem = 0;
+    vk->vram_buf = 0;
+    return 0;
+}
+
+#ifdef OGPU_VK_MMAP
+/* Plain memory back under the caller's video RAM (its contents undefined). */
+static void unplace(struct ogpu_vk *vk) {
+    if (vk->cfg.place) vk->cfg.place(vk->cfg.user, -1, vk->cfg.vram_size);
+    else mmap(vk->cfg.host_vram, vk->cfg.vram_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+}
+#endif
+
+/* The GPU's own memory, exported and mapped over the caller's video RAM:
+ * what was there is copied in first, so nothing is lost. */
+static int map_host_vram(struct ogpu_vk *vk, int dma_buf) {
+#ifdef OGPU_VK_MMAP
+    VkExternalMemoryHandleTypeFlagBits ht = dma_buf ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+                                                    : VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    VkExternalMemoryBufferCreateInfo ebi = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO };
+    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    VkExportMemoryAllocateInfo exp = { .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO };
+    VkMemoryAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    VkMemoryGetFdInfoKHR gfi = { .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR };
+    VkMemoryRequirements req;
+    PFN_vkGetMemoryFdKHR get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(vk->dev, "vkGetMemoryFdKHR");
+    void *m = 0, *at, *keep = 0;
+    volatile ogpu_u8 *probe;
+    int type, fd = -1, same;
+    if (!get_fd) return 0;
+    ebi.handleTypes = (VkExternalMemoryHandleTypeFlags)ht;
+    bi.pNext = &ebi;
+    bi.size = vk->cfg.vram_size;
+    bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vk->dev, &bi, 0, &vk->vram_buf) != VK_SUCCESS) return 0;
+    vkGetBufferMemoryRequirements(vk->dev, vk->vram_buf, &req);
+    type = memory_type(vk->phys, req.memoryTypeBits, 1);
+    if (type < 0) goto no;
+    exp.handleTypes = (VkExternalMemoryHandleTypeFlags)ht;
+    ai.pNext = &exp;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = (uint32_t)type;
+    if (vkAllocateMemory(vk->dev, &ai, 0, &vk->vram_mem) != VK_SUCCESS) goto no;
+    if (vkBindBufferMemory(vk->dev, vk->vram_buf, vk->vram_mem, 0) != VK_SUCCESS) goto no;
+    gfi.memory = vk->vram_mem;
+    gfi.handleType = ht;
+    if (get_fd(vk->dev, &gfi, &fd) != VK_SUCCESS || fd < 0) goto no;
+    if (vkMapMemory(vk->dev, vk->vram_mem, 0, VK_WHOLE_SIZE, 0, &m) != VK_SUCCESS) goto no;
+    memcpy(m, vk->cfg.host_vram, vk->cfg.vram_size);
+    if (!(keep = malloc(vk->cfg.vram_size))) goto no;
+    memcpy(keep, vk->cfg.host_vram, vk->cfg.vram_size);
+    if (vk->cfg.place)
+        at = vk->cfg.place(vk->cfg.user, fd, vk->cfg.vram_size) ? MAP_FAILED : (void *)vk->cfg.host_vram;
+    else
+        at = mmap(vk->cfg.host_vram, vk->cfg.vram_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+    close(fd);
+    fd = -1;
+    /* A failed MAP_FIXED leaves the old pages; check a write through the new
+     * mapping reaches the GPU's memory too, else put the old pages back. */
+    probe = (volatile ogpu_u8 *)m;
+    same = at == (void *)vk->cfg.host_vram;
+    if (same) {
+        vk->cfg.host_vram[0] ^= 0xFF;
+        same = probe[0] == vk->cfg.host_vram[0];
+        vk->cfg.host_vram[0] ^= 0xFF;
+    }
+    vkUnmapMemory(vk->dev, vk->vram_mem);
+    if (!same) {
+        if (at == (void *)vk->cfg.host_vram) unplace(vk);
+        memcpy(vk->cfg.host_vram, keep, vk->cfg.vram_size);
+        goto no;
+    }
+    free(keep);
+    vk->vram = vk->cfg.host_vram;
+    vk->vram_mode = "map";
+    vk->vram_mapped = 1;
+    return 1;
+no:
+    free(keep);
+    if (fd >= 0) close(fd);
+    if (vk->vram_mem) vkFreeMemory(vk->dev, vk->vram_mem, 0);
+    vkDestroyBuffer(vk->dev, vk->vram_buf, 0);
+    vk->vram_mem = 0;
+    vk->vram_buf = 0;
+    return 0;
+#else
+    (void)vk; (void)dma_buf;
+    return 0;
+#endif
 }
 
 static int pick_device(struct ogpu_vk *vk, char *err, int errlen) {
@@ -750,6 +910,9 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
     uint32_t nq = 16, qfam = 0, q;
     float prio = 1.0f;
     VkResult r;
+    const char *ext[3];
+    int next = 0, can_import = 0, can_map = 0, can_dma_buf = 0;
+    const char *hostmem = getenv("OGPU_VK_HOSTMEM");
 
     if (!vk) { fail(err, errlen, "out of memory", VK_ERROR_OUT_OF_HOST_MEMORY); return 0; }
     vk->cfg = *cfg;
@@ -776,11 +939,42 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
     qi.pQueuePriorities = &prio;
     di.queueCreateInfoCount = 1;
     di.pQueueCreateInfos = &qi;
+    if (hostmem && !*hostmem) hostmem = 0;
+    if (vk->cfg.host_vram) {
+        if (!hostmem || !strcmp(hostmem, "import")) {
+            if (has_extension(vk->phys, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME)) {
+                ext[next++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+                can_import = 1;
+            }
+        }
+        if (!hostmem || !strcmp(hostmem, "map")) {
+            if (has_extension(vk->phys, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME)) {
+                ext[next++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+                can_map = 1;
+                if (has_extension(vk->phys, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME)) {
+                    ext[next++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
+                    can_dma_buf = 1;
+                }
+            }
+        }
+        di.enabledExtensionCount = (uint32_t)next;
+        di.ppEnabledExtensionNames = ext;
+    }
     if ((r = vkCreateDevice(vk->phys, &di, 0, &vk->dev)) != VK_SUCCESS) { fail(err, errlen, "vkCreateDevice", r); goto bad; }
     vkGetDeviceQueue(vk->dev, qfam, 0, &vk->queue);
 
-    if (!make_buffer(vk, vk->cfg.vram_size, &vk->vram_buf, &vk->vram_mem, &vk->vram, err, errlen)) goto bad;
-    if (!make_buffer(vk, vk->cfg.arena_size, &vk->arena_buf, &vk->arena_mem, &vk->arena, err, errlen)) goto bad;
+    if (vk->cfg.host_vram) {
+        if (!(can_import && import_host_vram(vk))
+            && !(can_dma_buf && map_host_vram(vk, 1))
+            && !(can_map && map_host_vram(vk, 0))) {
+            fail(err, errlen, "the device can't draw in the caller's video RAM", VK_ERROR_FEATURE_NOT_PRESENT);
+            goto bad;
+        }
+    } else {
+        if (!make_buffer(vk, vk->cfg.vram_size, 1, &vk->vram_buf, &vk->vram_mem, &vk->vram, err, errlen)) goto bad;
+        vk->vram_mode = "own";
+    }
+    if (!make_buffer(vk, vk->cfg.arena_size, 0, &vk->arena_buf, &vk->arena_mem, &vk->arena, err, errlen)) goto bad;
 
     memset(b, 0, sizeof b);
     for (q = 0; q < 2; q++) {
@@ -845,6 +1039,7 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
     ogpu_core_init(&vk->core);
     vk->core.map = core_map;
     vk->core.fence = core_fence;
+    vk->core.ext = vk->cfg.ext ? core_ext : 0;
     vk->core.user = vk;
     return vk;
 bad:
@@ -865,6 +1060,16 @@ void ogpu_vk_destroy(struct ogpu_vk *vk) {
         if (vk->dsl) vkDestroyDescriptorSetLayout(vk->dev, vk->dsl, 0);
         if (vk->vram_buf) vkDestroyBuffer(vk->dev, vk->vram_buf, 0);
         if (vk->arena_buf) vkDestroyBuffer(vk->dev, vk->arena_buf, 0);
+#ifdef OGPU_VK_MMAP
+        /* "map": put plain memory back under the caller's video RAM with
+         * what the GPU left there, so the caller can carry on. */
+        if (vk->vram_mapped) {
+            void *keep = malloc(vk->cfg.vram_size);
+            if (keep) memcpy(keep, vk->cfg.host_vram, vk->cfg.vram_size);
+            unplace(vk);
+            if (keep) { memcpy(vk->cfg.host_vram, keep, vk->cfg.vram_size); free(keep); }
+        }
+#endif
         if (vk->vram_mem) vkFreeMemory(vk->dev, vk->vram_mem, 0);
         if (vk->arena_mem) vkFreeMemory(vk->dev, vk->arena_mem, 0);
         vkDestroyDevice(vk->dev, 0);

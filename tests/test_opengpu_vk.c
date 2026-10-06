@@ -7,6 +7,7 @@
  * fences byte for byte as the core leaves them. Runs on any Vulkan device;
  * with no GPU, Mesa's lavapipe (mesa-vulkan-drivers) does. OGPU_VK_DEVICE
  * picks a device by name. */
+#define _POSIX_C_SOURCE 200112L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -323,6 +324,15 @@ int main(int argc, char **argv) {
     cfg.arena_size = 1u << 20;
     cfg.map = map_vk;
     cfg.fence = fence_vk;
+    /* OGPU_VK_HOST=1: draw in our own video RAM, as the runtime does. A
+     * mark left there first must still be there once the GPU has it. */
+    if (getenv("OGPU_VK_HOST") && atoi(getenv("OGPU_VK_HOST"))) {
+        void *h = 0;
+        if (posix_memalign(&h, 65536, VSIZE)) { printf("opengpu vulkan: FAILED, no memory\n"); return 1; }
+        memset(h, 0, VSIZE);
+        ((ogpu_u8 *)h)[VSIZE - 1] = 0x5A;
+        cfg.host_vram = h;
+    }
     V = ogpu_vk_create(&cfg, err, sizeof err);
     if (!V) {
         /* Only a machine with no Vulkan device skips; anything else is a failure. */
@@ -332,7 +342,12 @@ int main(int argc, char **argv) {
         return none ? 0 : 1;
     }
     vram_vk = ogpu_vk_vram(V);
-    printf("opengpu vulkan: on %s\n", ogpu_vk_device(V));
+    printf("opengpu vulkan: on %s, video RAM %s\n", ogpu_vk_device(V), ogpu_vk_vram_mode(V));
+    if (cfg.host_vram) {
+        CHECK(vram_vk == cfg.host_vram, "video RAM is not the caller's");
+        CHECK(vram_vk[VSIZE - 1] == 0x5A, "what was in the caller's video RAM was lost");
+        vram_vk[VSIZE - 1] = 0;
+    }
 
     golden_v = golden_scene(1);
     golden_r = golden_scene(0);
