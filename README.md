@@ -80,3 +80,7 @@ that it is based on OpenRTG by Dalsin Limited.
 - `measurements/`: LibCount's raw counts from the OS 3.2.3 scratch copy with
   Picasso96, 4 October 2026: Workbench for 45 seconds, and MultiView showing
   a true-colour PNG for 30. The design's phase 0 section reads them.
+
+## Contributors
+
+OpenRTG is created and maintained by [SacredTrees](https://github.com/SacredTrees) with the AmigaChrome agent team, copyright Dalsin Limited. Everyone whose work it includes is credited in [`CONTRIBUTORS.md`](CONTRIBUTORS.md).
