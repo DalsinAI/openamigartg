@@ -695,8 +695,11 @@ static void line(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1)
         if (pat == 0xFFFF || ((pat >> (15 - (k & 15))) & 1)) pieces(rp, x0, y0, x0, y0, pixel_piece, &p);
         k++;
         if (x0 == x1 && y0 == y1) break;
-        if (2 * err >= ddy) { err += ddy; x0 += sx; }
-        if (2 * err <= ddx) { err += ddx; y0 += sy; }
+        /* both tests on the error before this step: testing the second on the
+         * updated one steps y too often and walks past the end for ever */
+        LONG e2 = 2 * err;
+        if (e2 >= ddy) { err += ddy; x0 += sx; }
+        if (e2 <= ddx) { err += ddx; y0 += sy; }
     }
 }
 
