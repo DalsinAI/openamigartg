@@ -1,0 +1,435 @@
+/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+ * SPDX-License-Identifier: MIT
+ *
+ * OpenGPU core tests (G1): each command against a plain per-pixel
+ * reference, the errors, random streams that must never reach outside the
+ * memory they were given, and a golden scene whose checksum every back end
+ * (68k, Cradle, PiStorm) must reproduce: tests/golden/opengpu-g1.txt. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "../library/opengpu/ogpu_core.h"
+#include "../include/opengpu/build.h"
+
+/* Amiga addresses in these tests are offsets into one arena. */
+#define ARENA (1L << 20)
+static ogpu_u8 arena[ARENA];
+static long fences[8], nfences;
+
+static ogpu_u8 *map(void *user, ogpu_u32 address, ogpu_u32 length) {
+    (void)user;
+    if (address >= ARENA || length > (ogpu_u32)ARENA - address) return 0;
+    return arena + address;
+}
+
+static void on_fence(void *user, ogpu_u32 id) { (void)user; if (nfences < 8) fences[nfences++] = (long)id; }
+
+static int failures;
+#define CHECK(cond, ...) do { if (!(cond)) { failures++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
+
+static unsigned char sbuf[1 << 16];
+static struct OGPUBatch B;
+static struct ogpu_core C;
+
+static void begin(void) { ogpu_batch_init(&B, sbuf, sizeof sbuf / 4); }
+static long run(void) {
+    ogpu_core_init(&C);
+    C.map = map; C.fence = on_fence; C.user = 0;
+    nfences = 0;
+    return ogpu_core_run(&C, sbuf, B.words);
+}
+
+static int bpp_of(int f) { return f == OGPU_FMT_RGB565 ? 2 : f == OGPU_FMT_ARGB32 ? 4 : 1; }
+static unsigned long px(long base, long bpr, int f, int x, int y) {
+    const ogpu_u8 *p = arena + base + y * bpr + x * bpp_of(f);
+    if (f == OGPU_FMT_RGB565) return ((unsigned long)p[0] << 8) | p[1];
+    if (f == OGPU_FMT_ARGB32) return ((unsigned long)p[0] << 24) | ((unsigned long)p[1] << 16) | ((unsigned long)p[2] << 8) | p[3];
+    return p[0];
+}
+static void setpx(long base, long bpr, int f, int x, int y, unsigned long v) {
+    ogpu_u8 *p = arena + base + y * bpr + x * bpp_of(f);
+    if (f == OGPU_FMT_RGB565) { p[0] = (ogpu_u8)(v >> 8); p[1] = (ogpu_u8)v; }
+    else if (f == OGPU_FMT_ARGB32) { p[0] = (ogpu_u8)(v >> 24); p[1] = (ogpu_u8)(v >> 16); p[2] = (ogpu_u8)(v >> 8); p[3] = (ogpu_u8)v; }
+    else p[0] = (ogpu_u8)v;
+}
+
+static unsigned long rnd_state = 12345;
+static unsigned long rnd(void) { rnd_state = (rnd_state * 1103515245UL + 12345UL) & 0xFFFFFFFFUL; return (rnd_state >> 8) & 0xFFFFFFUL; }
+
+static void noise(long base, long bytes) { long i; for (i = 0; i < bytes; i++) arena[base + i] = (ogpu_u8)rnd(); }
+
+#define W 64
+#define H 40
+#define T0 0x1000L      /* target */
+#define S0 0x40000L     /* a second surface */
+#define D0 0x80000L     /* data: templates, patterns, pixels */
+#define REF 0xC0000L    /* the reference picture */
+
+/* ---- each command against a reference ---------------------------------------------- */
+
+static void test_fill(int f) {
+    long bpr = W * bpp_of(f) + 6;
+    unsigned long colour = f == OGPU_FMT_CLUT8 ? 0x5A : f == OGPU_FMT_RGB565 ? 0xF81F : 0x80123456UL;
+    int x, y;
+    noise(T0, bpr * H);
+    memcpy(arena + REF, arena + T0, (size_t)(bpr * H));
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, f); ogpu_target(&B, 0);
+    ogpu_clip(&B, 5, 3, 40, 30);
+    ogpu_fill(&B, -10, -10, 30, 30, colour);    /* reaches over the clip's corner */
+    ogpu_clip(&B, 0, 0, 0, 0);
+    ogpu_invert(&B, 50, 30, 100, 100, f == OGPU_FMT_ARGB32 ? 0x00FFFFFFUL : 0xFFFFUL);
+    CHECK(run() == 6 && C.last_error == OGPU_OK, "fill %d ran with %d", f, C.last_error);
+    for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
+        unsigned long r = px(REF, bpr, f, x, y);
+        if (x >= 5 && x < 20 && y >= 3 && y < 20) r = colour;
+        if (x >= 50 && y >= 30) r ^= f == OGPU_FMT_CLUT8 ? 0xFF : f == OGPU_FMT_RGB565 ? 0xFFFF : 0x00FFFFFFUL;
+        CHECK(px(T0, bpr, f, x, y) == r, "fill fmt %d at %d,%d: %lx, want %lx", f, x, y, px(T0, bpr, f, x, y), r);
+        if (failures > 20) return;
+    }
+}
+
+static void test_copy_overlap(int f, int dx, int dy) {
+    long bpr = W * bpp_of(f);
+    int x, y, sx = 10, sy = 8, w = 30, h = 20;
+    noise(T0, bpr * H);
+    memcpy(arena + REF, arena + T0, (size_t)(bpr * H));
+    /* Reference: through a copy of the source rectangle. */
+    {
+        static unsigned long tmp[W * H];
+        for (y = 0; y < h; y++) for (x = 0; x < w; x++) tmp[y * w + x] = px(REF, bpr, f, sx + x, sy + y);
+        for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+            int tx = sx + dx + x, ty = sy + dy + y;
+            if (tx >= 0 && ty >= 0 && tx < W && ty < H) setpx(REF, bpr, f, tx, ty, tmp[y * w + x]);
+        }
+    }
+    begin();
+    ogpu_surface(&B, 3, T0, bpr, W, H, f); ogpu_target(&B, 3);
+    ogpu_copy(&B, 3, sx, sy, sx + dx, sy + dy, w, h);
+    run();
+    CHECK(memcmp(arena + T0, arena + REF, (size_t)(bpr * H)) == 0, "copy fmt %d by %d,%d", f, dx, dy);
+}
+
+static void test_copy_between(void) {
+    long bpr = W * 2;
+    int x, y;
+    noise(T0, bpr * H); noise(S0, bpr * H);
+    memcpy(arena + REF, arena + T0, (size_t)(bpr * H));
+    for (y = 0; y < H; y++) for (x = 0; x < W; x++) {
+        int sx = x - 20 + 3, sy = y - 15 - 4;      /* source 3,-4 lands at 20,15 */
+        if (x >= 20 && y >= 15 && x < 20 + 50 && y < 15 + 30 && sx >= 0 && sy >= 0 && sx < W && sy < H)
+            setpx(REF, bpr, OGPU_FMT_RGB565, x, y, px(S0, bpr, OGPU_FMT_RGB565, sx, sy));
+    }
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_RGB565);
+    ogpu_surface(&B, 1, S0, bpr, W, H, OGPU_FMT_RGB565);
+    ogpu_target(&B, 0);
+    ogpu_copy(&B, 1, 3, -4, 20, 15, 50, 30);
+    run();
+    CHECK(memcmp(arena + T0, arena + REF, (size_t)(bpr * H)) == 0, "copy between surfaces, source clipped");
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_RGB565);
+    ogpu_surface(&B, 1, S0, W, W, H, OGPU_FMT_CLUT8);
+    ogpu_target(&B, 0);
+    ogpu_copy(&B, 1, 0, 0, 0, 0, 4, 4);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "copy across formats is refused");
+}
+
+static void test_template(int f, int mode) {
+    long bpr = W * bpp_of(f), tbpr = 12;
+    unsigned long fg = f == OGPU_FMT_ARGB32 ? 0xFF00FF00UL : 0x0F, bg = f == OGPU_FMT_ARGB32 ? 0xFF0000FFUL : 0x03;
+    int x, y, first = 5, tx = -3, ty = 2, tw = 70, th = 20;
+    noise(T0, bpr * H); noise(D0, tbpr * th);
+    memcpy(arena + REF, arena + T0, (size_t)(bpr * H));
+    for (y = 0; y < th; y++) for (x = 0; x < tw; x++) {
+        int ax = tx + x, ay = ty + y, bit = first + x;
+        int set = (arena[D0 + y * tbpr + (bit >> 3)] >> (7 - (bit & 7))) & 1;
+        if (ax < 0 || ay < 0 || ax >= W || ay >= H) continue;
+        if (ax >= 40) continue;                                 /* outside the clips below */
+        if (mode & OGPU_INVERSVID) set = !set;
+        if (mode & OGPU_COMPLEMENT) { if (set) setpx(REF, bpr, f, ax, ay, px(REF, bpr, f, ax, ay) ^ (f == OGPU_FMT_ARGB32 ? 0xFFFFFFUL : f == OGPU_FMT_RGB565 ? 0xFFFFUL : 0xFF)); }
+        else if (set) setpx(REF, bpr, f, ax, ay, fg);
+        else if (mode & OGPU_JAM2) setpx(REF, bpr, f, ax, ay, bg);
+    }
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, f); ogpu_target(&B, 0);
+    ogpu_clip(&B, 0, 0, 40, H);
+    ogpu_template(&B, D0, (unsigned long)tbpr, (unsigned long)first, tx, ty, tw, 8, fg, bg, mode);
+    ogpu_clip(&B, 0, 0, W, 10);
+    ogpu_template(&B, D0 + 8 * tbpr, (unsigned long)tbpr, (unsigned long)first, tx, ty + 8, tw, th - 8, fg, bg, mode);
+    ogpu_clip(&B, 0, 10, 40, H - 10);
+    ogpu_template(&B, D0 + 8 * tbpr, (unsigned long)tbpr, (unsigned long)first, tx, ty + 8, tw, th - 8, fg, bg, mode);
+    run();
+    CHECK(C.last_error == OGPU_OK && memcmp(arena + T0, arena + REF, (size_t)(bpr * H)) == 0, "template fmt %d mode %d", f, mode);
+}
+
+static void test_pattern(void) {
+    long bpr = W;
+    int x, y;
+    static const unsigned short pat[4] = { 0xAAAA, 0x5555, 0xF0F0, 0x0001 };
+    for (y = 0; y < 4; y++) { arena[D0 + y * 2] = (ogpu_u8)(pat[y] >> 8); arena[D0 + y * 2 + 1] = (ogpu_u8)pat[y]; }
+    noise(T0, bpr * H);
+    memcpy(arena + REF, arena + T0, (size_t)(bpr * H));
+    for (y = 7; y < 30; y++) for (x = 3; x < 50; x++) {
+        int set = (pat[y & 3] >> (15 - (x & 15))) & 1;
+        setpx(REF, bpr, OGPU_FMT_CLUT8, x, y, set ? 9 : 2);
+    }
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_CLUT8); ogpu_target(&B, 0);
+    ogpu_pattern(&B, D0, 4, 3, 7, 47, 23, 9, 2, OGPU_JAM2);
+    run();
+    CHECK(C.last_error == OGPU_OK && memcmp(arena + T0, arena + REF, (size_t)(bpr * H)) == 0, "pattern");
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_CLUT8); ogpu_target(&B, 0);
+    ogpu_pattern(&B, D0, 3, 0, 0, 4, 4, 1, 0, OGPU_JAM1);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "pattern rows must be a power of two");
+}
+
+static void test_lines(void) {
+    long bpr = W;
+    int i;
+    for (i = 0; i < 200; i++) {
+        int x0 = (int)(rnd() % 90) - 13, y0 = (int)(rnd() % 60) - 10, x1 = (int)(rnd() % 90) - 13, y1 = (int)(rnd() % 60) - 10;
+        int dx = abs(x1 - x0), dy = abs(y1 - y0), n = 0, x, y, inside = 0;
+        memset(arena + T0, 0, (size_t)(bpr * H));
+        begin();
+        ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_CLUT8); ogpu_target(&B, 0);
+        ogpu_line(&B, x0, y0, x1, y1, 1, OGPU_JAM1);
+        run();
+        for (y = 0; y < H; y++) for (x = 0; x < W; x++) if (arena[T0 + y * bpr + x]) n++;
+        /* Count the pixels of the whole line that fall inside, by a second
+         * walk along its major axis. */
+        {
+            int steps = dx > dy ? dx : dy, k;
+            for (k = 0; k <= steps; k++) {
+                long num_x = (long)(x1 - x0) * k, num_y = (long)(y1 - y0) * k;
+                int px_ = x0 + (int)(steps ? (num_x >= 0 ? (2 * num_x + steps) / (2 * steps) : -((-2 * num_x + steps) / (2 * steps))) : 0);
+                int py_ = y0 + (int)(steps ? (num_y >= 0 ? (2 * num_y + steps) / (2 * steps) : -((-2 * num_y + steps) / (2 * steps))) : 0);
+                if (px_ >= 0 && py_ >= 0 && px_ < W && py_ < H) inside++;
+            }
+        }
+        CHECK(abs(n - inside) <= 1 + (dx > dy ? dx : dy) / 16, "line %d,%d-%d,%d: %d pixels, about %d expected", x0, y0, x1, y1, n, inside);
+        if (x0 >= 0 && y0 >= 0 && x0 < W && y0 < H) CHECK(arena[T0 + y0 * bpr + x0] == 1, "line start drawn");
+        if (x1 >= 0 && y1 >= 0 && x1 < W && y1 < H) CHECK(arena[T0 + y1 * bpr + x1] == 1, "line end drawn");
+        if (failures > 20) return;
+    }
+    /* COMPLEMENT twice gives back what was there. */
+    noise(T0, bpr * H);
+    memcpy(arena + REF, arena + T0, (size_t)(bpr * H));
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_CLUT8); ogpu_target(&B, 0);
+    ogpu_line(&B, 0, 0, 63, 39, 0, OGPU_COMPLEMENT);
+    ogpu_line(&B, 0, 0, 63, 39, 0, OGPU_COMPLEMENT);
+    run();
+    CHECK(memcmp(arena + T0, arena + REF, (size_t)(bpr * H)) == 0, "complemented line twice");
+}
+
+static void test_pixels(void) {
+    long bpr = W * 2;
+    unsigned long i;
+    /* ARGB32 to RGB565, and INDEX8 through a table. */
+    for (i = 0; i < 4; i++) {
+        static const unsigned long c[4] = { 0xFFFF0000UL, 0xFF00FF00UL, 0xFF0000FFUL, 0xFF808080UL };
+        setpx(D0, 16, OGPU_FMT_ARGB32, (int)i, 0, c[i]);
+    }
+    for (i = 0; i < 256; i++) setpx(D0 + 0x1000, 0, OGPU_FMT_ARGB32, (int)i, 0, 0xFF000000UL | (i << 16) | ((255 - i) << 8));
+    for (i = 0; i < 4; i++) arena[D0 + 0x2000 + i] = (ogpu_u8)(i * 85);
+    memset(arena + T0, 0, (size_t)(bpr * H));
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_RGB565); ogpu_target(&B, 0);
+    ogpu_pixels(&B, D0, 16, OGPU_FMT_ARGB32, 0, 0, 0, 4, 1);
+    ogpu_pixels(&B, D0 + 0x2000, 4, OGPU_FMT_INDEX8, D0 + 0x1000, 0, 1, 4, 1);
+    run();
+    CHECK(C.last_error == OGPU_OK, "pixels ran");
+    CHECK(px(T0, bpr, OGPU_FMT_RGB565, 0, 0) == 0xF800 && px(T0, bpr, OGPU_FMT_RGB565, 1, 0) == 0x07E0
+          && px(T0, bpr, OGPU_FMT_RGB565, 2, 0) == 0x001F && px(T0, bpr, OGPU_FMT_RGB565, 3, 0) == 0x8410, "ARGB to RGB565");
+    CHECK(px(T0, bpr, OGPU_FMT_RGB565, 0, 1) == 0x07E0 && px(T0, bpr, OGPU_FMT_RGB565, 3, 1) == 0xF800, "INDEX8 through a table");
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_RGB565); ogpu_target(&B, 0);
+    ogpu_pixels(&B, D0, 4, OGPU_FMT_CLUT8, 0, 0, 0, 4, 1);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "bare pens on a true-colour target are refused");
+}
+
+static void test_composite(void) {
+    long bpr = W * 4;
+    unsigned long d;
+    /* Half alpha, no scaling: grey over black. */
+    memset(arena + T0, 0, (size_t)(bpr * H));
+    setpx(S0, 16, OGPU_FMT_ARGB32, 0, 0, 0xFFC8C8C8UL);
+    setpx(S0, 16, OGPU_FMT_ARGB32, 1, 0, 0x80FF0000UL);
+    setpx(S0, 16, OGPU_FMT_ARGB32, 2, 0, 0xFF000000UL);
+    setpx(S0, 16, OGPU_FMT_ARGB32, 3, 0, 0xFFFFFFFFUL);
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 1, S0, 16, 4, 1, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_composite(&B, 1, 0, 0, 1, 1, 0, 0, 1, 1, 128, 0);
+    ogpu_composite(&B, 1, 1, 0, 1, 1, 1, 0, 1, 1, 255, OGPU_COMP_SRCALPHA);
+    ogpu_composite(&B, 1, 0, 0, 2, 1, 0, 2, 8, 2, 255, 0);            /* nearest, x4 and x2 */
+    ogpu_composite(&B, 1, 2, 0, 2, 1, 0, 5, 4, 1, 255, OGPU_COMP_BILINEAR);
+    run();
+    CHECK(C.last_error == OGPU_OK, "composite ran (%d)", C.last_error);
+    d = px(T0, bpr, OGPU_FMT_ARGB32, 0, 0);
+    CHECK(d == 0x80646464UL, "half of C8 over black is 64 (got %08lx)", d);
+    d = px(T0, bpr, OGPU_FMT_ARGB32, 1, 0);
+    CHECK(d == 0x80800000UL, "source alpha 80 (got %08lx)", d);
+    CHECK(px(T0, bpr, OGPU_FMT_ARGB32, 3, 2) == 0xFFC8C8C8UL && px(T0, bpr, OGPU_FMT_ARGB32, 4, 3) == 0xFFFF0000UL,
+          "nearest scaling");
+    /* Bilinear: 0 to 255 over 4 pixels: 0, 0x3F or 0x40, 0xBF or 0xC0, 255. */
+    d = px(T0, bpr, OGPU_FMT_ARGB32, 0, 5) & 255;
+    CHECK(d == 0, "bilinear left edge (%02lx)", d);
+    d = px(T0, bpr, OGPU_FMT_ARGB32, 1, 5) & 255;
+    CHECK(d >= 0x3E && d <= 0x41, "bilinear quarter (%02lx)", d);
+    d = px(T0, bpr, OGPU_FMT_ARGB32, 3, 5) & 255;
+    CHECK(d == 0xFF, "bilinear right edge (%02lx)", d);
+}
+
+static void test_errors(void) {
+    unsigned char *p;
+    begin();
+    ogpu_fill(&B, 0, 0, 1, 1, 1);
+    run();
+    CHECK(C.last_error == OGPU_ERR_NOSURFACE, "no target");
+    begin();
+    ogpu_surface(&B, 0, ARENA - 10, 64, 64, 64, OGPU_FMT_CLUT8);
+    run();
+    CHECK(C.last_error == OGPU_ERR_NOMAP, "a surface past the arena can't be mapped");
+    /* An unknown opcode is skipped; the fence after it still comes. */
+    begin();
+    p = sbuf;
+    p[0] = 0x7F; p[1] = 0x00; p[2] = 0x00; p[3] = 0x03;
+    B.words = 3;
+    ogpu_fence(&B, 77);
+    CHECK(run() == 2 && C.last_error == OGPU_ERR_BADOP && nfences == 1 && fences[0] == 77, "unknown opcode skipped");
+    /* A length past the end stops the run. */
+    begin();
+    ogpu_fence(&B, 1);
+    sbuf[3] = 9;
+    run();
+    CHECK(C.last_error == OGPU_ERR_BADLEN && nfences == 0, "length past the end");
+    /* A batch that runs out of room says so. */
+    {
+        unsigned char small[16];
+        struct OGPUBatch b;
+        ogpu_batch_init(&b, small, 4);
+        ogpu_fill(&b, 0, 0, 1, 1, 0);
+        ogpu_fill(&b, 0, 0, 1, 1, 0);
+        CHECK(b.overflow && b.words == 4, "overflow");
+    }
+}
+
+/* Random streams: must never touch memory outside what map() handed out
+ * (run under AddressSanitizer by tests/run.sh). */
+static void test_random_streams(void) {
+    int round;
+    for (round = 0; round < 3000; round++) {
+        long i, n = 1 + (long)(rnd() % 200);
+        ogpu_u8 *p = sbuf;
+        begin();
+        ogpu_surface(&B, (int)(rnd() % 4), T0 + (long)(rnd() % 4096), 1 + rnd() % 400, (int)(rnd() % 120), (int)(rnd() % 90), 1 + (int)(rnd() % 3));
+        ogpu_target(&B, (int)(rnd() % 4));
+        for (i = B.words * 4; i < (B.words + n) * 4; i++) p[i] = (ogpu_u8)rnd();
+        /* Mostly real opcodes with plausible lengths. */
+        for (i = B.words; i < B.words + n; ) {
+            static const int ops[] = { 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x20, 0x01, 0x02, 0x03, 0xF0 };
+            static const int lens[] = { 4, 4, 5, 9, 8, 5, 7, 8, 6, 2, 3, 2 };
+            int k = (int)(rnd() % 12), len = lens[k] + (rnd() % 8 == 0 ? (int)(rnd() % 3) - 1 : 0);
+            if (len < 1) len = 1;
+            if (i + len > B.words + n) break;
+            p[i * 4] = 0; p[i * 4 + 1] = (ogpu_u8)ops[k]; p[i * 4 + 2] = 0; p[i * 4 + 3] = (ogpu_u8)len;
+            /* Keep coordinates small most of the time so drawing happens. */
+            {
+                long j;
+                for (j = 1; j < len; j++) if (rnd() % 4) { p[(i + j) * 4] = 0; p[(i + j) * 4 + 2] = 0; p[(i + j) * 4 + 1] &= 0x7F; }
+            }
+            i += len;
+        }
+        B.words += n;
+        run();
+    }
+    CHECK(1, "random streams");
+}
+
+/* ---- the golden scene ----------------------------------------------------------------- */
+
+static unsigned long fnv(const ogpu_u8 *p, long n, unsigned long h) {
+    while (n--) { h ^= *p++; h = (h * 16777619UL) & 0xFFFFFFFFUL; }
+    return h;
+}
+
+static unsigned long golden_scene(void) {
+    static const int fmts[3] = { OGPU_FMT_CLUT8, OGPU_FMT_RGB565, OGPU_FMT_ARGB32 };
+    unsigned long h = 2166136261UL;
+    int k, i;
+    rnd_state = 2026;
+    noise(D0, 0x4000);
+    for (i = 0; i < 64 * 48; i++) setpx(S0, 64 * 4, OGPU_FMT_ARGB32, i % 64, i / 64, ((unsigned long)(i * 37) & 255) << 24 | (unsigned long)(i * 2654435761UL & 0xFFFFFFUL));
+    for (k = 0; k < 3; k++) {
+        int f = fmts[k];
+        long bpr = 160 * bpp_of(f);
+        unsigned long white = f == OGPU_FMT_CLUT8 ? 2 : f == OGPU_FMT_RGB565 ? 0xFFFF : 0xFFFFFFFFUL;
+        unsigned long blue = f == OGPU_FMT_CLUT8 ? 3 : f == OGPU_FMT_RGB565 ? 0x2B5F : 0xFF2A5DB0UL;
+        memset(arena + T0, 0, (size_t)(bpr * 100));
+        begin();
+        ogpu_surface(&B, 0, T0, (unsigned long)bpr, 160, 100, f);
+        ogpu_surface(&B, 1, S0, 64 * 4, 64, 48, OGPU_FMT_ARGB32);
+        ogpu_target(&B, 0);
+        ogpu_fill(&B, 0, 0, 160, 100, white);
+        ogpu_fill(&B, 0, 0, 160, 11, blue);
+        ogpu_template(&B, D0, 20, 3, 4, 2, 150, 8, 1, 0, OGPU_JAM1);
+        ogpu_pattern(&B, D0 + 0x100, 8, 10, 20, 60, 30, blue, white, OGPU_JAM2);
+        for (i = 0; i < 12; i++) ogpu_line(&B, 80, 55, 80 + (i - 6) * 13, i & 1 ? 99 : 12, blue, OGPU_JAM1);
+        ogpu_invert(&B, 100, 60, 40, 30, f == OGPU_FMT_ARGB32 ? 0x00FFFFFFUL : 0xFFFF);
+        ogpu_copy(&B, 0, 0, 0, 30, 70, 80, 25);
+        ogpu_clip(&B, 2, 2, 150, 90);
+        if (f != OGPU_FMT_CLUT8) {
+            ogpu_composite(&B, 1, 0, 0, 64, 48, 90, 15, 96, 72, 200, OGPU_COMP_SRCALPHA | OGPU_COMP_BILINEAR);
+            ogpu_composite(&B, 1, 8, 8, 16, 16, 5, 60, 40, 30, 255, 0);
+            ogpu_pixels(&B, S0, 64 * 4, OGPU_FMT_ARGB32, 0, 120, 70, 64, 48);
+        } else {
+            ogpu_pixels(&B, D0 + 0x200, 32, OGPU_FMT_CLUT8, 0, 120, 70, 32, 32);
+        }
+        ogpu_fence(&B, (unsigned long)k);
+        run();
+        CHECK(C.last_error == OGPU_OK && nfences == 1, "golden scene fmt %d ran (%d)", f, C.last_error);
+        h = fnv(arena + T0, bpr * 100, h);
+    }
+    return h;
+}
+
+int main(int argc, char **argv) {
+    static const int fmts[3] = { OGPU_FMT_CLUT8, OGPU_FMT_RGB565, OGPU_FMT_ARGB32 };
+    unsigned long golden;
+    int k;
+    for (k = 0; k < 3; k++) {
+        test_fill(fmts[k]);
+        test_copy_overlap(fmts[k], 5, 3); test_copy_overlap(fmts[k], -5, -3);
+        test_copy_overlap(fmts[k], 7, -2); test_copy_overlap(fmts[k], -7, 2);
+        test_copy_overlap(fmts[k], 3, 0); test_copy_overlap(fmts[k], 0, 0);
+        test_template(fmts[k], OGPU_JAM1); test_template(fmts[k], OGPU_JAM2);
+        test_template(fmts[k], OGPU_COMPLEMENT); test_template(fmts[k], OGPU_JAM2 | OGPU_INVERSVID);
+    }
+    test_copy_between();
+    test_pattern();
+    test_lines();
+    test_pixels();
+    test_composite();
+    test_errors();
+    test_random_streams();
+    golden = golden_scene();
+    if (argc > 1) {
+        FILE *f = fopen(argv[1], "r");
+        unsigned long want = 0;
+        CHECK(f && fscanf(f, "%lx", &want) == 1, "golden file %s", argv[1]);
+        if (f) fclose(f);
+        CHECK(golden == want, "golden scene checksum %08lx, golden file says %08lx", golden, want);
+    }
+    CHECK(ogpu_core_supports(OGPU_OP_COMPOSITE, OGPU_FMT_CLUT8) == OGPU_NONE
+          && ogpu_core_supports(OGPU_OP_PIXELS, OGPU_FMT_CLUT8) == OGPU_PARTIAL
+          && ogpu_core_supports(OGPU_OP_FILL, OGPU_FMT_ARGB32) == OGPU_FULL, "supports");
+    printf("opengpu core: golden scene %08lx; %s\n", golden, failures ? "FAILED" : "all tests passed");
+    return failures != 0;
+}

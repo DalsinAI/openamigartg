@@ -47,7 +47,7 @@ monitors sit beside the AGA chipset, never switched into one picture.
 | `cybergraphics.library` | `LIBS:OpenRTG/` | The CyberGraphX API (GetCyberMapAttr, LockBitMapTagList, Read/Write/FillPixelArray, BestCModeIDTagList and the rest) over `openrtg.library`. |
 | `Picasso96API.library` | `LIBS:OpenRTG/` | The Picasso96 API (p96AllocBitMap, p96GetBitMapAttr, p96OpenScreenTags, p96LockBitMap, p96WritePixelArray, p96BestModeIDTags and the rest) over `openrtg.library`. |
 | `opengpu.library` | `LIBS:`, drivers in `LIBS:OpenGPU/` | One acceleration layer for 2D, compositing, 3D and batched maths (section 5): chip drivers (`ACRTG.gpu`, `AGA.gpu`, later VideoCore and real cards), CPU fallback per operation. On AmigaChrome its commands run on the host. |
-| `Warp3D.library` | `LIBS:OpenRTG/` | The Warp3D V4 API, part of every install, over OpenGPU through `W3D_OpenGPU.library`. |
+| `Warp3D.library` | `LIBS:OpenRTG/` | The Warp3D V4 API (exported as V5's table, section 5), part of every install, over OpenGPU through `W3D_OpenGPU.library`. |
 | AmigaChrome SDK, Amiga half | ACBuild's stoves, and an archive | Headers, FD and SFD files, autodocs, link libraries and examples for `openrtg.library` (with the OS 4-named calls and the `os4` header), the Warp3D driver interface, ACNet and `accontrol.device`. It sits beside the OS's own kit (NDK 3.2, the AROS SDK, the OS 4.1 SDK) and never replaces it. |
 | The window look | in `openrtg.library` | The OS 4 feel for windows and screens: title bars, frames and border gadgets, on AGA and RTG screens alike. Resident once loaded. |
 | `OpenRTG` prefs | `SYS:Prefs/` | One GadTools editor for monitors, screen modes, colours and the window look, plus the pointer and 3D settings. `ENVARC:Sys/openrtg.prefs`, and the OS's own prefs files for what the OS already has. |
@@ -421,6 +421,54 @@ Workbench and every program speed up without the CPU emulating drawing loops.
 - **On OS 4 too:** the same library for PPC, so programs that use it move
   between OS 3 and OS 4 with a recompile.
 
+### OpenGPU 0.1: one stream, three back ends (6 October 2026)
+
+We, 5 October 2026: OpenGPU only with a PiStorm back end too, taking the
+same Amiga-side messages. 6 October: OpenGPU first in the next Open apps,
+and "we should tackle our compatibility layer for Warp3D and Wazp3D", as
+part of this design. The design shown to us that day
+is the artifact "OpenGPU 0.1 Design"; what it settles:
+
+- **One command stream.** Every OpenGPU call becomes OGPU stream v1
+  (`include/opengpu/stream.h`): big-endian words, an opcode and a length per
+  command, surfaces by slot, fences. Every back end gets the same bytes.
+- **One core, compiled three times.** `library/opengpu/ogpu_core.c` carries
+  out the stream in plain C with integers only: on the 68k as the CPU back
+  end (in `opengpu.library`, always there), in the Cradle's runtime behind
+  `ACRTG.gpu`, and on a PiStorm's spare ARM core behind `PiStorm.gpu`. The
+  golden scene in `tests/golden/opengpu-g1.txt` is the checksum all of them
+  must give; `tests/run.sh` checks it on the host and, big-endian, on a
+  68040 under qemu.
+- **Back ends** share one interface (`include/opengpu/driver.h`): CPU (0.1),
+  `ACRTG.gpu` over protocol v3 (G2), `PiStorm.gpu` (G3, released with G2),
+  `AGA.gpu` later, VideoCore V3D to study.
+- **The PiStorm hook.** Emu68 cannot yet start code on a spare core for an
+  Amiga program. `PiStorm.gpu` needs a small hook for that; until it exists
+  a PiStorm uses the CPU back end under Emu68's JIT. Whether the hook is
+  offered to Emu68 upstream or carried in our own build is our call, and
+  nothing goes upstream without our word.
+- **Warp3D:** `Warp3D.library` exports the V5 68k function table (97 calls,
+  a superset of V4), so V4 and V5 programs, MiniGL and StormMesa open it
+  unchanged; with no back end, OpenGPU's CPU rasterizer draws. Warp3D Nova
+  is OS 4 only and is not targeted; modern GL on OS 3 is Mesa's, over
+  OpenGPU too.
+- **Wazp3D** (GPL) is matched, never copied. Ours sits in `LIBS:OpenRTG/`,
+  first in the library list, so programs get it while Wazp3D's files stay
+  put; the installer carries Wazp3D's settings (renderer, filtering) into
+  the prefs' Acceleration page. A `soft3d.library` stand-in, which would
+  accelerate an existing Wazp3D install, is built only if a program needs it.
+- **The window** is the prefs app's Acceleration page (replacing "Pointer
+  and 3D"; the pointer moves to Monitors): who draws on each monitor, what
+  Warp3D programs see, and a Test that measures each back end.
+
+| OpenGPU phase | Delivers | Done when |
+| --- | --- | --- |
+| G1 | Stream v1, `opengpu.library` 0.1 with the CPU back end, 2D and COMPOSITE, OGPU_Query; then openrtg.library's busy calls through it | Started 6 Oct: the core and its tests, golden scene `de825f7b` on the host and a 68040. Done when Workbench and MultiView draw correctly through it on a 68040 |
+| G2 | ACRTG protocol v3 (64 MiB, ring, fences) in the runtime; `ACRTG.gpu` | The golden scene from the Cradle |
+| G3 | `PiStorm.gpu` and the Emu68 hook | The golden scene on a PiStorm; G2 and G3 released together |
+| G4 | 3D in the stream; Warp3D V5 table, `W3D_OpenGPU`, `W3D_OpenRTG`; Wazp3D migration | Warp3D demos, GLQuake and a V4 game on all three back ends |
+| G5 | Compute batches (the AmiSSL provider below), `AGA.gpu`, the PC's GPU behind `ACRTG.gpu`, V3D study | Each its own test |
+
 ### Compute for TLS: AmiSSL's maths through OpenGPU
 
 We, 4 October 2026: "consider a patch for AmiSSL that drives its key
@@ -504,6 +552,7 @@ package added later.
   to be measured on Kickstart's Zorro III allocation.
 
 Wazp3D and AROS's Warp3D are references only: their code is not copied.
+Wazp3D users move over as section 5's "OpenGPU 0.1" says.
 
 ## 7. OS 4 and MorphOS behaviours
 
