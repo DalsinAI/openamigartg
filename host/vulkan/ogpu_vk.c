@@ -757,6 +757,14 @@ no:
     return 0;
 }
 
+#ifdef OGPU_VK_MMAP
+/* Plain memory back under the caller's video RAM (its contents undefined). */
+static void unplace(struct ogpu_vk *vk) {
+    if (vk->cfg.place) vk->cfg.place(vk->cfg.user, -1, vk->cfg.vram_size);
+    else mmap(vk->cfg.host_vram, vk->cfg.vram_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+}
+#endif
+
 /* The GPU's own memory, exported and mapped over the caller's video RAM:
  * what was there is copied in first, so nothing is lost. */
 static int map_host_vram(struct ogpu_vk *vk, int dma_buf) {
@@ -796,7 +804,10 @@ static int map_host_vram(struct ogpu_vk *vk, int dma_buf) {
     memcpy(m, vk->cfg.host_vram, vk->cfg.vram_size);
     if (!(keep = malloc(vk->cfg.vram_size))) goto no;
     memcpy(keep, vk->cfg.host_vram, vk->cfg.vram_size);
-    at = mmap(vk->cfg.host_vram, vk->cfg.vram_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
+    if (vk->cfg.place)
+        at = vk->cfg.place(vk->cfg.user, fd, vk->cfg.vram_size) ? MAP_FAILED : (void *)vk->cfg.host_vram;
+    else
+        at = mmap(vk->cfg.host_vram, vk->cfg.vram_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
     close(fd);
     fd = -1;
     /* A failed MAP_FIXED leaves the old pages; check a write through the new
@@ -810,8 +821,7 @@ static int map_host_vram(struct ogpu_vk *vk, int dma_buf) {
     }
     vkUnmapMemory(vk->dev, vk->vram_mem);
     if (!same) {
-        if (at == (void *)vk->cfg.host_vram)
-            mmap(vk->cfg.host_vram, vk->cfg.vram_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        if (at == (void *)vk->cfg.host_vram) unplace(vk);
         memcpy(vk->cfg.host_vram, keep, vk->cfg.vram_size);
         goto no;
     }
@@ -1041,7 +1051,7 @@ void ogpu_vk_destroy(struct ogpu_vk *vk) {
         if (vk->vram_mapped) {
             void *keep = malloc(vk->cfg.vram_size);
             if (keep) memcpy(keep, vk->cfg.host_vram, vk->cfg.vram_size);
-            mmap(vk->cfg.host_vram, vk->cfg.vram_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+            unplace(vk);
             if (keep) { memcpy(vk->cfg.host_vram, keep, vk->cfg.vram_size); free(keep); }
         }
 #endif

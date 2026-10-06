@@ -40,6 +40,11 @@ struct ogpu_vk_config {
      * It must be page aligned and vram_size a multiple of the page size.
      * OGPU_VK_HOSTMEM=import or map tries only that way. */
     ogpu_u8 *host_vram;
+    /* "map" only, or 0: put the file fd (vram_size bytes from 0) over
+     * host_vram, shared, and return 0, as the runtime's JIT does for its own
+     * memory (jit_alias) so it knows the pages changed; fd -1 puts plain
+     * memory back (the back end then copies the contents in). 0: mmap. */
+    int (*place)(void *user, int fd, ogpu_u32 size);
 };
 
 /* 0 on failure, with the reason in err. */
