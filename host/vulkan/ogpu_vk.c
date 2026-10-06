@@ -152,6 +152,11 @@ static ogpu_u8 *core_map(void *user, ogpu_u32 address, ogpu_u32 length) {
 
 static void flush(struct ogpu_vk *vk);
 
+static int core_ext(void *user, int op, const ogpu_u8 *cmd, long words) {
+    struct ogpu_vk *vk = user;
+    return vk->cfg.ext ? vk->cfg.ext(vk->cfg.user, op, cmd, words) : OGPU_ERR_BADOP;
+}
+
 static void core_fence(void *user, ogpu_u32 id) {
     struct ogpu_vk *vk = user;
     flush(vk);
@@ -1034,6 +1039,7 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
     ogpu_core_init(&vk->core);
     vk->core.map = core_map;
     vk->core.fence = core_fence;
+    vk->core.ext = vk->cfg.ext ? core_ext : 0;
     vk->core.user = vk;
     return vk;
 bad:

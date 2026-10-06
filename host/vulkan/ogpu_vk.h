@@ -45,6 +45,9 @@ struct ogpu_vk_config {
      * memory (jit_alias) so it knows the pages changed; fd -1 puts plain
      * memory back (the back end then copies the contents in). 0: mmap. */
     int (*place)(void *user, int fd, ogpu_u32 size);
+    /* As ogpu_core's ext (OGPU_OP_VIRGL and its range), with user; called
+     * once the GPU has finished everything before the command. 0: none. */
+    int (*ext)(void *user, int op, const ogpu_u8 *cmd, long words);
 };
 
 /* 0 on failure, with the reason in err. */

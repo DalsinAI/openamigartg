@@ -494,7 +494,9 @@ long ogpu_core_run(struct ogpu_core *c, const ogpu_u8 *stream, long words) {
             if (c->last_error == OGPU_OK) { c->last_error = OGPU_ERR_BADLEN; c->error_word = at; }
             break;
         }
-        if (need < 0) r = OGPU_ERR_BADOP;
+        if (need < 0)
+            r = op >= OGPU_OP_EXT_FIRST && op <= OGPU_OP_EXT_LAST && c->ext ? c->ext(c->user, op, stream + at * 4, len)
+                                                                           : OGPU_ERR_BADOP;
         else if (op >= OGPU_OP_FILL && op < OGPU_OP_FENCE && (c->target < 0 || !c->slot[c->target].pixels))
             r = OGPU_ERR_NOSURFACE;
         else switch (op) {

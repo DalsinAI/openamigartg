@@ -121,3 +121,10 @@ void ogpu_fence(struct OGPUBatch *b, unsigned long id) {
     a[0] = id;
     cmd(b, OGPU_OP_FENCE, 1, a);
 }
+
+void ogpu_virgl(struct OGPUBatch *b, unsigned long address, unsigned long bytes) {
+    unsigned long a[2];
+    a[0] = address;
+    a[1] = bytes;
+    cmd(b, OGPU_OP_VIRGL, 2, a);
+}

@@ -40,5 +40,8 @@ void ogpu_composite_masked(struct OGPUBatch *b, int src_slot, int sx, int sy, in
 void ogpu_mask(struct OGPUBatch *b, unsigned long address, unsigned long bpr, int x, int y, int w, int h,
                unsigned long colour);
 void ogpu_fence(struct OGPUBatch *b, unsigned long id);
+/* A block of ACVirgl commands at address for the host's virglrenderer; ask
+ * OGPU_Query(OGPU_OP_VIRGL, 0) first. */
+void ogpu_virgl(struct OGPUBatch *b, unsigned long address, unsigned long bytes);
 
 #endif

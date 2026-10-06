@@ -70,6 +70,13 @@
                                            alpha (0-255), flags                          8  */
                                         /* with OGPU_COMP_MASK, then: mask slot, mask xy 10 */
 #define OGPU_OP_FENCE           0x00F0  /* id: reported when everything before is done   2  */
+/* 0x0080-0x008F: GPU APIs carried through OpenGPU, run by a back end's
+ * extension hook (ogpu_core.ext) in stream order; a back end without one
+ * reports OGPU_ERR_BADOP, and OGPU_Query answers OGPU_NONE. */
+#define OGPU_OP_VIRGL           0x0080  /* request address, request bytes: a block of
+                                           ACVirgl commands for the host's virglrenderer 3  */
+#define OGPU_OP_EXT_FIRST       0x0080
+#define OGPU_OP_EXT_LAST        0x008F
 
 /* OGPU_OP_COMPOSITE flags. */
 #define OGPU_COMP_SRCALPHA      1   /* use the source's own alpha (ARGB32 sources) */
