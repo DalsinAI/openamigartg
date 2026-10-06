@@ -495,6 +495,13 @@ uses the host's driver through Vulkan:
   compares the two. A batch is one command buffer; fences are a timeline
   semaphore. Tiny batches stay on the C core. The tests run the shaders under
   Mesa's lavapipe, with no GPU.
+- **Drawing in the board's own memory:** the runtime's 68k reaches video RAM
+  directly, so the back end can take the runtime's memory (`host_vram`)
+  instead of its own. It imports it where the driver can
+  (`VK_EXT_external_memory_host`: RADV, lavapipe), or exports its own memory
+  and maps it over the runtime's (`VK_KHR_external_memory_fd`, dma-buf: V3DV
+  on the Pi 5), keeping what was there. `tools/gpu_check.sh` runs the golden
+  scenes each way on a machine's own GPU and installs nothing.
 
 ### Compute for TLS: AmiSSL's maths through OpenGPU
 

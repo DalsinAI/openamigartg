@@ -129,6 +129,7 @@ static LONG OGPU_Submit(REG(a0, APTR stream), REG(d0, ULONG words), REG(a1, ULON
     ogpu_core_init(&core);
     core.map = cpu_map;
     core.fence = 0;
+    core.ext = 0;               /* the CPU back end carries no GPU APIs: OGPU_OP_VIRGL is BADOP */
     core.user = 0;
     ogpu_core_run(&core, (const ogpu_u8 *)stream, (long)words);
     ObtainSemaphore(&base->lock);

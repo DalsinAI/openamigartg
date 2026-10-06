@@ -648,6 +648,31 @@ static int golden_check(const char *path, unsigned long got, const char *what) {
     return got == want;
 }
 
+/* OGPU_OP_VIRGL: BADOP with no hook; with one, called in stream order with the whole command. */
+static long ext_calls, ext_order, ext_addr, ext_bytes;
+static int on_ext(void *user, int op, const ogpu_u8 *cmd, long words) {
+    (void)user;
+    ext_calls++;
+    ext_order = nfences;                    /* fences seen before it */
+    ext_addr = (long)(((unsigned long)cmd[4] << 24) | ((unsigned long)cmd[5] << 16) | ((unsigned long)cmd[6] << 8) | cmd[7]);
+    ext_bytes = (long)(((unsigned long)cmd[8] << 24) | ((unsigned long)cmd[9] << 16) | ((unsigned long)cmd[10] << 8) | cmd[11]);
+    return op == OGPU_OP_VIRGL && words == 3 ? OGPU_OK : OGPU_ERR_BADLEN;
+}
+static void test_ext(void) {
+    begin(); ogpu_fence(&B, 1); ogpu_virgl(&B, 0x1000, 256); ogpu_fence(&B, 2);
+    run();
+    CHECK(C.last_error == OGPU_ERR_BADOP && C.error_word == 2 && nfences == 2, "VIRGL with no hook: BADOP, the rest runs");
+    begin(); ogpu_fence(&B, 1); ogpu_virgl(&B, 0x1000, 256); ogpu_fence(&B, 2);
+    ogpu_core_init(&C);
+    C.map = map; C.fence = on_fence; C.ext = on_ext; C.user = 0;
+    nfences = 0; ext_calls = 0;
+    ogpu_core_run(&C, sbuf, B.words);
+    CHECK(C.last_error == OGPU_OK && ext_calls == 1 && ext_order == 1 && ext_addr == 0x1000 && ext_bytes == 256 && nfences == 2,
+          "VIRGL with a hook: called once, in order, with its words");
+    C.ext = 0;
+    CHECK(ogpu_core_supports(OGPU_OP_VIRGL, 0) == OGPU_NONE, "the core answers NONE for VIRGL");
+}
+
 int main(int argc, char **argv) {
     static const int fmts[3] = { OGPU_FMT_CLUT8, OGPU_FMT_RGB565, OGPU_FMT_ARGB32 };
     unsigned long golden, golden11;
@@ -669,6 +694,7 @@ int main(int argc, char **argv) {
     test_mask(OGPU_FMT_RGB565); test_mask(OGPU_FMT_ARGB32); test_mask(OGPU_FMT_A8);
     test_composite_v11();
     test_errors();
+    test_ext();
     test_random_streams();
     golden = golden_scene();
     golden11 = golden_scene_v11();

@@ -27,6 +27,10 @@ struct ogpu_core {
     ogpu_u8 *(*map)(void *user, ogpu_u32 address, ogpu_u32 length);
     /* Called for each FENCE once everything before it is done (may be 0). */
     void (*fence)(void *user, ogpu_u32 id);
+    /* Opcodes OGPU_OP_EXT_FIRST..LAST (OGPU_OP_VIRGL), or 0: carried out in
+     * stream order with the whole command (header first, `words` long);
+     * returns OGPU_OK or an error. Without it they are OGPU_ERR_BADOP. */
+    int (*ext)(void *user, int op, const ogpu_u8 *cmd, long words);
     void *user;
 
     struct ogpu_surface slot[OGPU_MAX_SLOTS];
