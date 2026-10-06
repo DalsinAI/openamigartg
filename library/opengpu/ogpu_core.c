@@ -89,6 +89,15 @@ static ogpu_u8 *px_at(const struct ogpu_surface *s, int x, int y) {
     return s->pixels + (long)y * s->bpr + (long)x * bytes_per_pixel(s->format);
 }
 
+/* The bytes h rows of `last` bytes take at bpr apart, in *len; 0 when that
+ * passes 32 bits (as it can on the 68k), which no Amiga memory holds. */
+static int span_len(ogpu_u32 bpr, int h, ogpu_u32 last, ogpu_u32 *len) {
+    ogpu_u32 rows = (ogpu_u32)(h - 1);
+    if (rows && bpr > (0xFFFFFFFFUL - last) / rows) return 0;
+    *len = bpr * rows + last;
+    return 1;
+}
+
 /* Clip a rectangle on the target to the target and the clip rectangle.
  * Returns 0 when nothing is left; otherwise *ox, *oy say how far its corner
  * moved, so a source can move with it. */
@@ -137,13 +146,14 @@ static int op_surface(struct ogpu_core *c, const ogpu_u8 *a) {
     int w = hi_u(wh), h = lo_u(wh), bpp = bytes_per_pixel((int)format);
     struct ogpu_surface *s;
     ogpu_u8 *mem;
+    ogpu_u32 len;
     if (slot >= OGPU_MAX_SLOTS) return OGPU_ERR_NOSURFACE;
     s = &c->slot[slot];
     s->pixels = 0;
     if (!bpp || format == OGPU_FMT_INDEX8 || !w || !h || w > OGPU_MAX_SIZE || h > OGPU_MAX_SIZE
-        || bpr < (ogpu_u32)w * bpp || bpr > 0x01000000UL)
+        || bpr < (ogpu_u32)w * bpp || bpr > 0x01000000UL || !span_len(bpr, h, (ogpu_u32)w * bpp, &len))
         return OGPU_ERR_UNSUPPORTED;
-    mem = c->map(c->user, address, bpr * (ogpu_u32)(h - 1) + (ogpu_u32)w * bpp);
+    mem = c->map(c->user, address, len);
     if (!mem) return OGPU_ERR_NOMAP;
     s->pixels = mem; s->bpr = (long)bpr; s->w = w; s->h = h; s->format = (int)format;
     if (c->target == (int)slot) { c->cx0 = c->cy0 = c->cx1 = c->cy1 = 0; }
@@ -184,9 +194,10 @@ static int op_copy(struct ogpu_core *c, const ogpu_u8 *a) {
     bpp = bytes_per_pixel(t->format);
     n = w * bpp;
     for (row = 0; row < h; row++) {
-        /* Overlap on one surface: rows bottom up when moving down, bytes
-         * backwards when the destination is to the right. */
-        int r = (s == t && y > sy) ? h - 1 - row : row;
+        /* Overlap (one surface, or two slots on the same memory): rows bottom
+         * up when the destination is later in memory, bytes backwards when
+         * a row's destination starts inside its source. */
+        int r = px_at(t, x, y) > px_at(s, sx, sy) ? h - 1 - row : row;
         const ogpu_u8 *sp = px_at(s, sx, sy + r);
         ogpu_u8 *dp = px_at(t, x, y + r);
         if (dp > sp && dp < sp + n) { for (j = n - 1; j >= 0; j--) dp[j] = sp[j]; }
@@ -265,6 +276,7 @@ static int op_pixels(struct ogpu_core *c, const ogpu_u8 *a) {
     int x = hi_s(xy), y = lo_s(xy), w = hi_u(wh), h = lo_u(wh), ox, oy, i, j;
     int sbpp = bytes_per_pixel((int)format), dbpp = bytes_per_pixel(t->format);
     const ogpu_u8 *src, *ctab = 0;
+    ogpu_u32 len;
     int raw;
     if (!sbpp || !w || !h) return sbpp ? OGPU_OK : OGPU_ERR_UNSUPPORTED;
     /* A CLUT8 target takes pens only; true-colour targets take anything
@@ -283,8 +295,9 @@ static int op_pixels(struct ogpu_core *c, const ogpu_u8 *a) {
             if (!ctab) return OGPU_ERR_NOMAP;
         }
     }
-    if (bpr < (ogpu_u32)w * sbpp || bpr > 0x01000000UL) return OGPU_ERR_UNSUPPORTED;
-    src = c->map(c->user, address, bpr * (ogpu_u32)(h - 1) + (ogpu_u32)w * sbpp);
+    if (bpr < (ogpu_u32)w * sbpp || bpr > 0x01000000UL || !span_len(bpr, h, (ogpu_u32)w * sbpp, &len))
+        return OGPU_ERR_UNSUPPORTED;
+    src = c->map(c->user, address, len);
     if (!src) return OGPU_ERR_NOMAP;
     if (!clip_rect(c, &x, &y, &w, &h, &ox, &oy)) return OGPU_OK;
     for (j = 0; j < h; j++) {
@@ -416,12 +429,12 @@ static int op_mask(struct ogpu_core *c, const ogpu_u8 *a) {
     ogpu_u32 address = rd32(a), bpr = rd32(a + 4), xy = rd32(a + 8), wh = rd32(a + 12), colour = rd32(a + 16);
     const struct ogpu_surface *t = &c->slot[c->target];
     int x = hi_s(xy), y = lo_s(xy), w = hi_u(wh), h = lo_u(wh), ox, oy, i, j, dbpp = bytes_per_pixel(t->format);
-    ogpu_u32 ca = (colour >> 24) & 255;
+    ogpu_u32 ca = (colour >> 24) & 255, len;
     const ogpu_u8 *src;
     if (t->format == OGPU_FMT_CLUT8) return OGPU_ERR_UNSUPPORTED;
     if (!w || !h) return OGPU_OK;
-    if (bpr < (ogpu_u32)w || bpr > 0x01000000UL) return OGPU_ERR_UNSUPPORTED;
-    src = c->map(c->user, address, bpr * (ogpu_u32)(h - 1) + (ogpu_u32)w);
+    if (bpr < (ogpu_u32)w || bpr > 0x01000000UL || !span_len(bpr, h, (ogpu_u32)w, &len)) return OGPU_ERR_UNSUPPORTED;
+    src = c->map(c->user, address, len);
     if (!src) return OGPU_ERR_NOMAP;
     if (!clip_rect(c, &x, &y, &w, &h, &ox, &oy)) return OGPU_OK;
     for (j = 0; j < h; j++) {
@@ -475,9 +488,13 @@ long ogpu_core_run(struct ogpu_core *c, const ogpu_u8 *stream, long words) {
             if (c->last_error == OGPU_OK) { c->last_error = OGPU_ERR_BADLEN; c->error_word = at; }
             break;
         }
+        if (need >= 0 && (len - 1 < need
+                          || (op == OGPU_OP_COMPOSITE && (rd32(a + 24) & OGPU_COMP_MASK) && len - 1 < 9))) {
+            /* Too short for its own arguments: what follows can't be trusted either. */
+            if (c->last_error == OGPU_OK) { c->last_error = OGPU_ERR_BADLEN; c->error_word = at; }
+            break;
+        }
         if (need < 0) r = OGPU_ERR_BADOP;
-        else if (len - 1 < need) r = OGPU_ERR_BADLEN;
-        else if (op == OGPU_OP_COMPOSITE && (rd32(a + 24) & OGPU_COMP_MASK) && len - 1 < 9) r = OGPU_ERR_BADLEN;
         else if (op >= OGPU_OP_FILL && op < OGPU_OP_FENCE && (c->target < 0 || !c->slot[c->target].pixels))
             r = OGPU_ERR_NOSURFACE;
         else switch (op) {
@@ -490,10 +507,10 @@ long ogpu_core_run(struct ogpu_core *c, const ogpu_u8 *stream, long words) {
         }
         case OGPU_OP_CLIP: {
             ogpu_u32 xy = rd32(a), wh = rd32(a + 4);
+            if (!hi_u(wh) || !lo_u(wh)) { c->cx0 = c->cy0 = c->cx1 = c->cy1 = 0; break; }   /* the whole target */
             c->cx0 = hi_s(xy); c->cy0 = lo_s(xy);
-            c->cx1 = hi_u(wh) ? c->cx0 + hi_u(wh) : 0;
-            c->cy1 = lo_u(wh) ? c->cy0 + lo_u(wh) : 0;
-            if (!c->cx1 || !c->cy1) c->cx0 = c->cy0 = c->cx1 = c->cy1 = 0;
+            c->cx1 = c->cx0 + hi_u(wh);
+            c->cy1 = c->cy0 + lo_u(wh);
             break;
         }
         case OGPU_OP_FILL: r = op_fill(c, a, 0); break;

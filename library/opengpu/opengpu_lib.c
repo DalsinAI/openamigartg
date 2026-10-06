@@ -144,8 +144,9 @@ static LONG OGPU_Wait(REG(d0, ULONG fence), REG(a6, struct OpenGPUBase *base))
 {
     LONG r = OGPU_OK;
     ObtainSemaphore(&base->lock);
-    /* Batches run as they are submitted; only recent results are kept. */
-    if (fence && fence <= base->fence && base->fence - fence < RESULTS) r = base->result[fence % RESULTS];
+    /* Batches run as they are submitted; only recent results are kept, and
+     * an older fence says so rather than claim the batch went well. */
+    if (fence && fence <= base->fence) r = base->fence - fence < RESULTS ? base->result[fence % RESULTS] : OGPU_ERR_EXPIRED;
     ReleaseSemaphore(&base->lock);
     return r;
 }

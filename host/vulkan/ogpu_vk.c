@@ -40,6 +40,7 @@ struct ogpu_vk {
     long dispatches;            /* recorded since it opened */
     ogpu_u32 arena_used;
     int failed;                 /* a submit failed: the GPU path is off */
+    int lost_now;               /* ... during this run, so its result is OGPU_ERR_DEVICE */
     int last_error;
     long error_word;
     struct ogpu_vk_stats stats;
@@ -213,8 +214,10 @@ static void flush(struct ogpu_vk *vk) {
     si.pCommandBuffers = &vk->cmd;
     if (vkQueueSubmit(vk->queue, 1, &si, vk->done) != VK_SUCCESS
         || vkWaitForFences(vk->dev, 1, &vk->done, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
-        /* The device is lost: from here on the C core draws everything. */
+        /* The device is lost: what was recorded may be partly drawn, and the
+         * run says so; from here on the C core draws everything. */
         vk->failed = 1;
+        vk->lost_now = 1;
     }
     vkResetFences(vk->dev, 1, &vk->done);
     vkResetCommandPool(vk->dev, vk->cpool, 0);
@@ -351,6 +354,12 @@ static int gpu_copy(struct ogpu_vk *vk, const ogpu_u8 *a) {
     return 1;
 }
 
+/* Arena bytes a source at an Amiga address needs: none when it is in video RAM. */
+static unsigned long upload_size(struct ogpu_vk *vk, ogpu_u32 address, unsigned long len) {
+    const ogpu_u8 *p = core_map(vk, address, (ogpu_u32)len);
+    return p && vram_off(vk, p, len) >= 0 ? 0 : len;
+}
+
 /* A source at an Amiga address: mapped as the core maps it, then placed. */
 static int map_place(struct ogpu_vk *vk, ogpu_u32 address, unsigned long len, ogpu_u32 *off, ogpu_u32 *in_arena) {
     const ogpu_u8 *p = core_map(vk, address, (ogpu_u32)len);
@@ -379,7 +388,7 @@ static int gpu_template(struct ogpu_vk *vk, const ogpu_u8 *a) {
     if (!w || !h) return 1;
     if (first > 0xFFFFUL || bpr > 0xFFFFUL) return 0;
     len = bpr * (unsigned long)(h - 1) + (first + (unsigned long)w + 7) / 8;
-    if (!core_map(vk, address, (ogpu_u32)len) || !arena_room(vk, len)) return 0;
+    if (!core_map(vk, address, (ogpu_u32)len) || !arena_room(vk, upload_size(vk, address, len))) return 0;
     if (!clip_rect(&vk->core, &x, &y, &w, &h, &ox, &oy)) return 1;
     if (reads_what_it_draws(vk, address, len, dst, t, x, y, w, h)) return 0;
     map_place(vk, address, len, &src, &in_arena);
@@ -454,8 +463,10 @@ static int gpu_pixels(struct ogpu_vk *vk, const ogpu_u8 *a) {
     }
     if (bpr < (ogpu_u32)w * (ogpu_u32)sbpp || bpr > 0x01000000UL) return 0;
     len = bpr * (unsigned long)(h - 1) + (unsigned long)w * (unsigned long)sbpp;
-    need = len + (use_table ? 1024 : 0);
-    if (!core_map(vk, address, (ogpu_u32)len) || !arena_room(vk, need)) return 0;
+    if (len > 0xFFFFFFFFUL) return 0;       /* the core refuses what passes 32 bits */
+    if (!core_map(vk, address, (ogpu_u32)len)) return 0;
+    need = upload_size(vk, address, len) + (use_table ? upload_size(vk, table, 1024) : 0);
+    if (!arena_room(vk, need)) return 0;
     if (!clip_rect(&vk->core, &x, &y, &w, &h, &ox, &oy)) return 1;
     if (reads_what_it_draws(vk, address, len, dst, t, x, y, w, h)
         || (use_table && reads_what_it_draws(vk, table, 1024, dst, t, x, y, w, h))) return 0;
@@ -563,7 +574,8 @@ static int gpu_mask(struct ogpu_vk *vk, const ogpu_u8 *a) {
     if (!w || !h) return 1;
     if (bpr < (ogpu_u32)w || bpr > 0x01000000UL) return 0;
     len = bpr * (unsigned long)(h - 1) + (unsigned long)w;
-    if (!core_map(vk, address, (ogpu_u32)len) || !arena_room(vk, len)) return 0;
+    if (len > 0xFFFFFFFFUL) return 0;
+    if (!core_map(vk, address, (ogpu_u32)len) || !arena_room(vk, upload_size(vk, address, len))) return 0;
     if (!clip_rect(&vk->core, &x, &y, &w, &h, &ox, &oy)) return 1;
     if (reads_what_it_draws(vk, address, len, dst, t, x, y, w, h)) return 0;
     map_place(vk, address, len, &src, &in_arena);
@@ -596,15 +608,17 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
     long at = 0, done = 0;
     vk->last_error = OGPU_OK;
     vk->error_word = 0;
+    vk->lost_now = 0;
     while (at < words) {
         ogpu_u32 hdr = rd32(stream + at * 4);
         int op = (int)OGPU_HDR_OP(hdr), len = (int)OGPU_HDR_WORDS(hdr), need = args_for(op);
-        if (len < 1 || at + len > words) {
+        if (len < 1 || at + len > words
+            || (need >= 0 && (len - 1 < need
+                              || (op == OGPU_OP_COMPOSITE && (rd32(stream + at * 4 + 28) & OGPU_COMP_MASK) && len - 1 < 9)))) {
             if (vk->last_error == OGPU_OK) { vk->last_error = OGPU_ERR_BADLEN; vk->error_word = at; }
             break;
         }
-        if (!vk->failed && need >= 0 && len - 1 >= need && op >= OGPU_OP_FILL && op < OGPU_OP_FENCE
-            && !(op == OGPU_OP_COMPOSITE && (rd32(stream + at * 4 + 28) & OGPU_COMP_MASK) && len - 1 < 9)
+        if (!vk->failed && need >= 0 && op >= OGPU_OP_FILL && op < OGPU_OP_FENCE
             && vk->core.target >= 0 && vk->core.slot[vk->core.target].pixels
             && gpu_draw(vk, op, stream + at * 4 + 4)) {
             done++;
@@ -622,6 +636,7 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
         at += len;
     }
     flush(vk);
+    if (vk->lost_now && vk->last_error == OGPU_OK) { vk->last_error = OGPU_ERR_DEVICE; vk->error_word = 0; }
     return done;
 }
 

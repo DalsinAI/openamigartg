@@ -90,6 +90,8 @@
 #define OGPU_ERR_NOSURFACE      -3  /* a slot that wasn't described, or no target */
 #define OGPU_ERR_NOMAP          -4  /* an address the back end can't reach */
 #define OGPU_ERR_UNSUPPORTED    -5  /* a format pair the command can't do */
+#define OGPU_ERR_DEVICE         -6  /* the GPU failed: the batch may be partly drawn (later ones run on the CPU) */
+#define OGPU_ERR_EXPIRED        -7  /* OGPU_Wait: the fence is done, but too old for its result to be kept */
 
 /* What a back end can do, per operation and target format (OGPU_Query). */
 #define OGPU_NONE               0

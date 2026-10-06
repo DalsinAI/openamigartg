@@ -324,7 +324,13 @@ int main(int argc, char **argv) {
     cfg.map = map_vk;
     cfg.fence = fence_vk;
     V = ogpu_vk_create(&cfg, err, sizeof err);
-    if (!V) { printf("opengpu vulkan: no device (%s); skipped\n", err); return 0; }
+    if (!V) {
+        /* Only a machine with no Vulkan device skips; anything else is a failure. */
+        int none = !strncmp(err, "no Vulkan device", 16) || !strncmp(err, "no device with compute", 22)
+                   || !strncmp(err, "vkCreateInstance", 16);
+        printf("opengpu vulkan: %s (%s)\n", none ? "no device; skipped" : "FAILED to start", err);
+        return none ? 0 : 1;
+    }
     vram_vk = ogpu_vk_vram(V);
     printf("opengpu vulkan: on %s\n", ogpu_vk_device(V));
 

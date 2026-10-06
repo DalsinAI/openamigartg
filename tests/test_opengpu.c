@@ -469,6 +469,41 @@ static void test_errors(void) {
     sbuf[3] = 9;
     run();
     CHECK(C.last_error == OGPU_ERR_BADLEN && nfences == 0, "length past the end");
+    /* A one-word FILL stops the run: the FENCE after it never comes. */
+    begin();
+    ogpu_surface(&B, 0, T0, W, W, H, OGPU_FMT_CLUT8); ogpu_target(&B, 0);
+    p = sbuf + B.words * 4;
+    p[0] = 0; p[1] = OGPU_OP_FILL; p[2] = 0; p[3] = 1;
+    B.words += 1;
+    ogpu_fence(&B, 5);
+    run();
+    CHECK(C.last_error == OGPU_ERR_BADLEN && nfences == 0, "a command shorter than its arguments stops the run");
+    /* Spans past 32 bits are refused, not wrapped (they would be on the 68k). */
+    begin();
+    ogpu_surface(&B, 0, 0, 0x01000000UL, 1, 257, OGPU_FMT_CLUT8);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "a surface spanning more than 4 GiB");
+    /* A clip that ends at 0 (left of the target) draws nothing, not everything. */
+    memset(arena + T0, 7, W * H);
+    begin();
+    ogpu_surface(&B, 0, T0, W, W, H, OGPU_FMT_CLUT8); ogpu_target(&B, 0);
+    ogpu_clip(&B, -10, 0, 10, H);
+    ogpu_fill(&B, 0, 0, W, H, 1);
+    run();
+    CHECK(C.last_error == OGPU_OK && arena[T0] == 7 && arena[T0 + W * H - 1] == 7, "a clip ending at 0 draws nothing");
+    /* COPY between two slots on the same memory is overlap-safe too. */
+    {
+        int r, ok = 1;
+        for (r = 0; r < 4; r++) memset(arena + T0 + r * W, r + 1, W);
+        begin();
+        ogpu_surface(&B, 0, T0, W, W, H, OGPU_FMT_CLUT8);
+        ogpu_surface(&B, 1, T0, W, W, H, OGPU_FMT_CLUT8);
+        ogpu_target(&B, 0);
+        ogpu_copy(&B, 1, 0, 0, 0, 1, W, 3);
+        run();
+        for (r = 1; r < 4; r++) ok &= arena[T0 + r * W] == r;
+        CHECK(C.last_error == OGPU_OK && ok, "copy down through an aliased slot");
+    }
     /* A batch that runs out of room says so. */
     {
         unsigned char small[16];
