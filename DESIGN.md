@@ -464,7 +464,7 @@ is the artifact "OpenGPU 0.1 Design"; what it settles:
 | OpenGPU phase | Delivers | Done when |
 | --- | --- | --- |
 | G1 | Stream v1, `opengpu.library` 0.1 with the CPU back end, 2D and COMPOSITE, OGPU_Query; then openrtg.library's busy calls through it | Started 6 Oct: the core and its tests, golden scene `de825f7b` on the host and a 68040. Done when Workbench and MultiView draw correctly through it on a 68040 |
-| G2 | ACRTG protocol v3 (64 MiB, ring, fences) in the runtime; `ACRTG.gpu` drawing on the host's GPU through Vulkan (Pi 5 and Pi 4 Nano first, then Radeon/Ryzen and NVIDIA), the C core as fallback | The golden scene from the C core and from the GPU, on a Pi 5 Nano and on daletop |
+| G2 | ACRTG protocol v3 (64 MiB, ring, fences) in the runtime; `ACRTG.gpu` drawing on the host's GPU through Vulkan (Pi 5 and Pi 4 Nano first, then Radeon/Ryzen and NVIDIA), the C core as fallback | Started 6 Oct: `host/vulkan/` draws the stream with compute shaders; on lavapipe it gives golden `de825f7b` and matches the core on 20,000 random streams. Done when the golden scene comes from the C core and from the GPU, on a Pi 5 Nano and on daletop |
 | G3 | `PiStorm.gpu` and the Emu68 hook | The golden scene on a PiStorm; G2 and G3 released together |
 | G4 | 3D in the stream; Warp3D V5 table, `W3D_OpenGPU`, `W3D_OpenRTG`; Wazp3D migration | Warp3D demos, GLQuake and a V4 game on all three back ends |
 | G5 | Compute batches (the AmiSSL provider below) on the same Vulkan device, `AGA.gpu`, VideoCore on a PiStorm (study) | Each its own test |

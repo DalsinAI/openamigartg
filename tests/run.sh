@@ -13,6 +13,16 @@ OGPU="$HERE/../library/opengpu"
 cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined \
     -o "$OUT/test_opengpu" "$HERE/test_opengpu.c" "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c"
 "$OUT/test_opengpu" "$HERE/golden/opengpu-g1.txt"
+# The Vulkan back end against the core, when Vulkan's loader and headers are there
+# (it skips itself when no device is found; lavapipe will do).
+if [ -e /usr/include/vulkan/vulkan.h ] && { ldconfig -p 2>/dev/null | grep -q libvulkan.so.1; }; then
+    cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+        -o "$OUT/test_opengpu_vk" "$HERE/test_opengpu_vk.c" "$HERE/../host/vulkan/ogpu_vk.c" \
+        "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c" -lvulkan
+    ASAN_OPTIONS=detect_leaks=0 "$OUT/test_opengpu_vk" "$HERE/golden/opengpu-g1.txt"
+else
+    echo "no Vulkan headers or loader; the GPU run is skipped"
+fi
 # The same tests big-endian on a 68040, when a Linux m68k compiler and qemu are installed.
 if command -v m68k-linux-gnu-gcc >/dev/null && command -v qemu-m68k >/dev/null; then
     m68k-linux-gnu-gcc -std=c99 -O2 -m68040 -static -Wall -Wextra -Werror \
