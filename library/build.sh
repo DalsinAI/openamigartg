@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # openrtg.library and cybergraphics.library (bare: no startup code or C
-# library; the RomTag's stub comes first) and C:OpenRTG, with the os32 stove (bebbo's m68k-amigaos-gcc).
+# library; the RomTag's stub comes first), C:OpenRTG and its monitor driver, with the os32 stove (bebbo's m68k-amigaos-gcc).
 #   library/build.sh [OUT_DIR]     (default build/)
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -21,3 +21,5 @@ echo "$OUT/openrtg.library ($(wc -c < "$OUT/openrtg.library") bytes)"
 echo "$OUT/cybergraphics.library ($(wc -c < "$OUT/cybergraphics.library") bytes)"
 "$CC" -m68020 -O2 -Wall -Werror -Wno-pointer-sign -noixemul -I"$ROOT/include" -o "$OUT/OpenRTG" "$ROOT/tools/openrtg_cmd.c"
 echo "$OUT/OpenRTG ($(wc -c < "$OUT/OpenRTG") bytes)"
+"$CC" -m68020 -O2 -Wall -Werror -Wno-pointer-sign -noixemul -I"$ROOT/include" -o "$OUT/OpenRTG-Monitor" "$ROOT/tools/openrtg_monitor.c"
+echo "$OUT/OpenRTG-Monitor ($(wc -c < "$OUT/OpenRTG-Monitor") bytes)"
