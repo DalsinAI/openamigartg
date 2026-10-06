@@ -15,16 +15,18 @@
 struct size { uint16_t w, h; uint8_t standard, large; };
 
 static const struct size SIZES[] = {
-    /* Standard: the popular PC resolutions. */
+    /* Standard: the popular PC resolutions (and three game sizes, below). */
     {  640,  480, 1, 0 }, {  800,  600, 1, 0 }, { 1024,  768, 1, 0 }, { 1280,  720, 1, 0 },
     { 1280,  800, 1, 0 }, { 1280, 1024, 1, 0 }, { 1366,  768, 1, 0 }, { 1440,  900, 1, 0 },
     { 1600,  900, 1, 0 }, { 1680, 1050, 1, 0 }, { 1920, 1080, 1, 0 }, { 1920, 1200, 1, 0 },
     /* Standard on 64 MiB boards (protocol v3). */
     { 2560, 1440, 1, 1 }, { 3840, 2160, 1, 1 },
-    /* All adds the rest: Amiga-shaped sizes that programs and games ask for. */
-    {  320,  200, 0, 0 }, {  320,  240, 0, 0 }, {  320,  256, 0, 0 }, {  320,  400, 0, 0 },
+    /* All adds the rest: Amiga-shaped sizes that programs and games ask for.
+     * 320x200, 320x240 and 640x400 are in Standard too (0.8): games and SDL
+     * ask for them (6 Oct 2026). */
+    {  320,  200, 1, 0 }, {  320,  240, 1, 0 }, {  320,  256, 0, 0 }, {  320,  400, 0, 0 },
     {  320,  480, 0, 0 }, {  320,  512, 0, 0 }, {  400,  300, 0, 0 }, {  512,  384, 0, 0 },
-    {  640,  200, 0, 0 }, {  640,  256, 0, 0 }, {  640,  400, 0, 0 }, {  640,  512, 0, 0 },
+    {  640,  200, 0, 0 }, {  640,  256, 0, 0 }, {  640,  400, 1, 0 }, {  640,  512, 0, 0 },
     {  720,  480, 0, 0 }, {  720,  576, 0, 0 }, {  800,  480, 0, 0 }, { 1024,  384, 0, 0 },
     { 1024,  600, 0, 0 }, { 1152,  864, 0, 0 }, { 1280,  960, 0, 0 }, { 1600, 1200, 0, 0 },
 };
