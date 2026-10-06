@@ -454,12 +454,48 @@ static inline ULONG minterm(UBYTE m, ULONG s, ULONG d)
 /* A rectangle from any bitmap to an OpenRTG one, or from an OpenRTG one to
  * a planar one; overlapping copies within one bitmap are ordered so the
  * source is read before it is written. */
+/* n bytes from s to d, either way round (the rows of one bitmap may overlap),
+ * a longword at a time where both are longword aligned. */
+static void move_bytes(UBYTE *d, const UBYTE *s, ULONG n)
+{
+    if (d == s || !n) return;
+    if (d < s || d >= s + n) {
+        if (!(((ULONG)d | (ULONG)s) & 3)) {
+            ULONG *dl = (ULONG *)d; const ULONG *sl = (const ULONG *)s;
+            for (; n >= 16; n -= 16) { dl[0] = sl[0]; dl[1] = sl[1]; dl[2] = sl[2]; dl[3] = sl[3]; dl += 4; sl += 4; }
+            for (; n >= 4; n -= 4) *dl++ = *sl++;
+            d = (UBYTE *)dl; s = (const UBYTE *)sl;
+        }
+        while (n--) *d++ = *s++;
+    } else {
+        d += n; s += n;
+        if (!(((ULONG)d | (ULONG)s) & 3)) {
+            ULONG *dl = (ULONG *)d; const ULONG *sl = (const ULONG *)s;
+            for (; n >= 4; n -= 4) *--dl = *--sl;
+            d = (UBYTE *)dl; s = (const UBYTE *)sl;
+        }
+        while (n--) *--d = *--s;
+    }
+}
+
 static void blit(struct BitMap *src, LONG sx, LONG sy, struct BitMap *dst, LONG dx, LONG dy, LONG w, LONG h, UBYTE m, UBYTE mask,
                  const UBYTE *cookie, LONG cookie_x, LONG cookie_y, LONG cookie_mod)
 {
     struct ortg_bitmap *os = ortg_of(src), *od = ortg_of(dst);
     int same = os && os == od;
     int down = !(same && sy < dy), right = !(same && sy == dy && sx < dx);
+    if (os && od && os->bpp == od->bpp && !cookie && (m & 0xF0) == 0xC0 && (od->bpp == 1 ? mask == 0xFF : mask != 0)) {
+        /* a plain copy between bitmaps of one format: whole rows (the usual
+         * case: window moves, scrolling, tiles of a backdrop), as fast on a
+         * 68040 as the CPU's own moves (6 Oct 2026: a tiled backdrop drew a
+         * pixel at a time, slowly, without a JIT) */
+        ULONG bytes = (ULONG)w * od->bpp;
+        for (LONG j = 0; j < h; j++) {
+            LONG yy = down ? j : h - 1 - j;
+            move_bytes(od->mem + (dy + yy) * od->stride + dx * od->bpp, os->mem + (sy + yy) * os->stride + sx * os->bpp, bytes);
+        }
+        return;
+    }
     for (LONG j = 0; j < h; j++) {
         LONG yy = down ? j : h - 1 - j;
         for (LONG i = 0; i < w; i++) {
