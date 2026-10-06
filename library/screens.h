@@ -35,6 +35,9 @@ struct ortg_bitmap {
  * the front screen's palette whenever it changes (OpenRTG 0.5). */
 extern ULONG ortg_pen_rgb[][256];
 
+/* 1 when any monitor shows an OpenRTG screen. */
+int ortg_any_shown(void);
+
 static inline ULONG ortg_encode(const struct ortg_bitmap *o, ULONG rgb)
 {
     if (o->bpp == 2) return ((rgb >> 8) & 0xF800) | ((rgb >> 5) & 0x07E0) | ((rgb >> 3) & 0x001F);

@@ -200,6 +200,13 @@ static struct ortg_bitmap *ortg_of(struct BitMap *bm)
 
 int ortg_is(struct BitMap *bm) { return ortg_of(bm) != NULL; }
 
+/* 1 when any monitor shows an OpenRTG screen (BestModeIDA, displaydb.c). */
+int ortg_any_shown(void)
+{
+    for (int n = 1; n <= ORTG_MAX_MONITORS; n++) if (shown[n].bm) return 1;
+    return 0;
+}
+
 /* A chunky bitmap of a format: in monitor's video RAM when monitor > 0 (and
  * it fits), else in fast RAM. Its pens use monitor's table (0: the first's). */
 struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear, int format)
