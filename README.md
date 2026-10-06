@@ -14,10 +14,14 @@ Status, 4 October 2026: designed; phase 0 (measuring what programs call)
 done; phase 1 (several RTG monitors) built in AmigaChrome; `openrtg.library`
 is next.
 
+6 October 2026: OpenGPU G1 started: the stream (`include/opengpu/`), the
+core every back end shares (`library/opengpu/ogpu_core.c`) with its tests
+and golden scene, and `opengpu.library` 0.1 with the CPU back end.
+
 ## Licence and credit
 
 OpenRTG is free software under the MIT licence (`LICENSE`): anyone may use
-it, change it, fork it and ship it, commercially too (We, 4 October 2026:
+it, change it, fork it and ship it, commercially too (Team, 4 October 2026:
 "I want anyone to be able to run with it, fork it etc").
 
 OpenRTG was created by Dalsin Limited, for AmigaChrome.

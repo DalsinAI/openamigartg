@@ -1,0 +1,236 @@
+// Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+// SPDX-License-Identifier: MIT
+//
+// OpenGPU's compute shader (G2, DESIGN.md section 5): the drawing commands of
+// OGPU stream v1, as library/opengpu/ogpu_core.c does them, on the host's
+// GPU. ogpu_vk.c decodes the stream, clips each command as the core does and
+// dispatches this shader once per command, so the GPU only draws.
+//
+// Video RAM and the upload arena are byte arrays in the Amiga's order, seen
+// here as 32-bit words (byte a is bits 8*(a&3) of word a>>2). Each word of
+// the target belongs to one invocation, which alone reads and writes it, so
+// no two invocations touch the same memory. A target's pixels never straddle a word:
+// ogpu_vk.c sends a command here only when the target's address and row
+// length are multiples of its pixel size.
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) buffer Vram  { uint vram[]; };
+layout(std430, set = 0, binding = 1) buffer Arena { uint arena[]; };
+
+layout(push_constant) uniform P { uint p[32]; } pc;
+
+// Opcodes as stream.h's
+const uint OP_FILL = 0x10u, OP_INVERT = 0x11u, OP_COPY = 0x12u, OP_TEMPLATE = 0x13u,
+           OP_PATTERN = 0x14u, OP_LINE = 0x15u, OP_PIXELS = 0x16u, OP_COMPOSITE = 0x20u;
+const uint FMT_CLUT8 = 1u, FMT_RGB565 = 2u, FMT_ARGB32 = 3u, FMT_INDEX8 = 4u;
+const uint JAM2 = 1u, COMPLEMENT = 2u, INVERSVID = 4u;
+const uint COMP_SRCALPHA = 1u, COMP_BILINEAR = 2u;
+
+// The push constants (ogpu_vk.c fills them; see its struct ogpu_vk_args)
+#define A_OP        pc.p[0]
+#define A_DST       pc.p[1]     // the target's byte 0 in its buffer
+#define A_DBPR      pc.p[2]
+#define A_DFMT      pc.p[3]
+#define A_X         int(pc.p[4])  // the clipped rectangle on the target (LINE: the clip x0, y0, x1, y1)
+#define A_Y         int(pc.p[5])
+#define A_W         int(pc.p[6])
+#define A_H         int(pc.p[7])
+#define A_OX        int(pc.p[8])  // how far clipping moved the corner
+#define A_OY        int(pc.p[9])
+#define A_SRC       pc.p[10]    // the source's byte 0 (bits, pattern, pixels or surface)
+#define A_SBUF      pc.p[11]    // bit 0: the source is in the arena; bit 1: the target is; bit 2: the table is
+#define A_SBPR      pc.p[12]
+#define A_SFMT      pc.p[13]
+#define A_FG        pc.p[14]    // FILL's colour, INVERT's mask
+#define A_BG        pc.p[15]
+#define A_MODE      pc.p[16]
+#define A_FIRST     pc.p[17]    // TEMPLATE's first bit; PATTERN's rows
+#define A_TABLE     pc.p[18]    // PIXELS' INDEX8 table, or 0xFFFFFFFF
+#define A_SX        int(pc.p[20])
+#define A_SY        int(pc.p[21])
+#define A_SW        int(pc.p[22])
+#define A_SH        int(pc.p[23])
+#define A_STEPX     pc.p[24]
+#define A_STEPY     pc.p[25]
+#define A_ALPHA     pc.p[26]
+#define A_FLAGS     pc.p[27]
+#define A_X0        int(pc.p[28]) // LINE's ends
+#define A_Y0        int(pc.p[29])
+#define A_X1        int(pc.p[30])
+#define A_Y1        int(pc.p[31])
+
+uint ld8(uint inArena, uint a) {
+    uint w = inArena != 0u ? arena[a >> 2] : vram[a >> 2];
+    return (w >> ((a & 3u) * 8u)) & 255u;
+}
+uint ld32be(uint inArena, uint a) {
+    return (ld8(inArena, a) << 24) | (ld8(inArena, a + 1u) << 16) | (ld8(inArena, a + 2u) << 8) | ld8(inArena, a + 3u);
+}
+uint bpp_of(uint f) { return f == FMT_RGB565 ? 2u : f == FMT_ARGB32 ? 4u : 1u; }
+uint get_px(uint inArena, uint a, uint f) {
+    if (f == FMT_RGB565) return (ld8(inArena, a) << 8) | ld8(inArena, a + 1u);
+    if (f == FMT_ARGB32) return ld32be(inArena, a);
+    return ld8(inArena, a);
+}
+// A pixel's bytes inside the word an invocation holds (k: its first byte's place in the word).
+uint word_px(uint word, uint k, uint f) {
+    uint b0 = (word >> (k * 8u)) & 255u;
+    if (f == FMT_RGB565) return (b0 << 8) | ((word >> ((k + 1u) * 8u)) & 255u);
+    if (f == FMT_ARGB32) return (b0 << 24) | (((word >> 8) & 255u) << 16) | (((word >> 16) & 255u) << 8) | (word >> 24);
+    return b0;
+}
+uint word_put(uint word, uint k, uint f, uint v) {
+    if (f == FMT_ARGB32) return (v >> 24) | (((v >> 16) & 255u) << 8) | (((v >> 8) & 255u) << 16) | ((v & 255u) << 24);
+    if (f == FMT_RGB565) {
+        uint m = 0xFFFFu << (k * 8u);
+        uint n = ((v >> 8) & 255u) | ((v & 255u) << 8);
+        return (word & ~m) | (n << (k * 8u));
+    }
+    uint m = 255u << (k * 8u);
+    return (word & ~m) | ((v & 255u) << (k * 8u));
+}
+uint flip_mask(uint f) { return f == FMT_RGB565 ? 0xFFFFu : f == FMT_ARGB32 ? 0x00FFFFFFu : 0xFFu; }
+uint to_argb(uint v, uint f) {
+    if (f == FMT_RGB565) {
+        uint r = (v >> 11) & 31u, g = (v >> 5) & 63u, b = v & 31u;
+        r = (r << 3) | (r >> 2); g = (g << 2) | (g >> 4); b = (b << 3) | (b >> 2);
+        return 0xFF000000u | (r << 16) | (g << 8) | b;
+    }
+    return v;
+}
+uint from_argb(uint v, uint f) {
+    if (f == FMT_RGB565) return (((v >> 19) & 31u) << 11) | (((v >> 10) & 63u) << 5) | ((v >> 3) & 31u);
+    return v;
+}
+uint mul255(uint x, uint y) { uint t = x * y + 128u; return (t + (t >> 8)) >> 8; }
+uint mix_px(uint a, uint b, uint f) {
+    uint r = 0u;
+    for (uint s = 0u; s < 32u; s += 8u) {
+        uint ca = (a >> s) & 255u, cb = (b >> s) & 255u;
+        r |= ((ca * (256u - f) + cb * f) >> 8) << s;
+    }
+    return r;
+}
+// One pixel of a 1-bit source by a draw mode: the pixel's new value.
+uint plot_bit(uint old, uint f, uint bit, uint fg, uint bg, uint mode) {
+    if ((mode & INVERSVID) != 0u) bit = bit ^ 1u;
+    if ((mode & COMPLEMENT) != 0u) return bit != 0u ? old ^ flip_mask(f) : old;
+    if (bit != 0u) return fg;
+    if ((mode & JAM2) != 0u) return bg;
+    return old;
+}
+uint sample_src(int x, int y) {
+    uint f = A_SFMT;
+    return to_argb(get_px(A_SBUF & 1u, A_SRC + uint(y) * A_SBPR + uint(x) * bpp_of(f), f), f);
+}
+
+// The new value of pixel (i, j) of the clipped rectangle, which was `old`.
+uint pixel(int i, int j, uint old) {
+    uint op = A_OP, f = A_DFMT, sb = A_SBUF & 1u;
+    if (op == OP_FILL) return A_FG;
+    if (op == OP_INVERT) return old ^ A_FG;
+    if (op == OP_COPY)
+        return get_px(sb, A_SRC + uint(A_SY + j) * A_SBPR + uint(A_SX + i) * bpp_of(f), f);
+    if (op == OP_TEMPLATE) {
+        uint bit = A_FIRST + uint(A_OX + i);
+        uint by = ld8(sb, A_SRC + uint(A_OY + j) * A_SBPR + (bit >> 3));
+        return plot_bit(old, f, (by >> (7u - (bit & 7u))) & 1u, A_FG, A_BG, A_MODE);
+    }
+    if (op == OP_PATTERN) {
+        uint a = A_SRC + ((uint(A_Y + j) & (A_FIRST - 1u)) << 1);
+        uint bits = (ld8(sb, a) << 8) | ld8(sb, a + 1u);
+        return plot_bit(old, f, (bits >> (15u - (uint(A_X + i) & 15u))) & 1u, A_FG, A_BG, A_MODE);
+    }
+    if (op == OP_PIXELS) {
+        uint sf = A_SFMT, sbpp = bpp_of(sf);
+        uint a = A_SRC + uint(A_OY + j) * A_SBPR + uint(A_OX + i) * sbpp;
+        if (f == FMT_CLUT8 || sf == f) return get_px(sb, a, f);     // raw bytes
+        uint argb = A_TABLE != 0xFFFFFFFFu ? ld32be((A_SBUF >> 2) & 1u, A_TABLE + (ld8(sb, a) << 2))
+                                           : to_argb(get_px(sb, a, sf), sf);
+        return from_argb(argb, f);
+    }
+    if (op == OP_COMPOSITE) {
+        uint px = uint(A_OX + i) * A_STEPX + (A_STEPX >> 1), py = uint(A_OY + j) * A_STEPY + (A_STEPY >> 1), sp;
+        int sw = A_SW, sh = A_SH;
+        if ((A_FLAGS & COMP_BILINEAR) != 0u) {
+            int fx = int(px) - 0x8000, fy = int(py) - 0x8000;
+            if (fx < 0) fx = 0;
+            if (fy < 0) fy = 0;
+            int x0 = fx >> 16, y0 = fy >> 16;
+            uint wx = uint(fx >> 8) & 255u, wy = uint(fy >> 8) & 255u;
+            if (x0 >= sw - 1) { x0 = sw - 1; wx = 0u; }
+            if (y0 >= sh - 1) { y0 = sh - 1; wy = 0u; }
+            int x1 = x0 + 1 < sw ? x0 + 1 : x0, y1 = y0 + 1 < sh ? y0 + 1 : y0;
+            sp = mix_px(mix_px(sample_src(A_SX + x0, A_SY + y0), sample_src(A_SX + x1, A_SY + y0), wx),
+                        mix_px(sample_src(A_SX + x0, A_SY + y1), sample_src(A_SX + x1, A_SY + y1), wx), wy);
+        } else {
+            int nx = int(px >> 16), ny = int(py >> 16);
+            if (nx >= sw) nx = sw - 1;
+            if (ny >= sh) ny = sh - 1;
+            sp = sample_src(A_SX + nx, A_SY + ny);
+        }
+        uint ea = mul255((A_FLAGS & COMP_SRCALPHA) != 0u ? (sp >> 24) & 255u : 255u, A_ALPHA);
+        if (ea == 255u) return from_argb(sp | 0xFF000000u, f);
+        uint d = to_argb(old, f);
+        uint r = min(mul255((sp >> 16) & 255u, ea) + mul255((d >> 16) & 255u, 255u - ea), 255u);
+        uint g = min(mul255((sp >> 8) & 255u, ea) + mul255((d >> 8) & 255u, 255u - ea), 255u);
+        uint b = min(mul255(sp & 255u, ea) + mul255(d & 255u, 255u - ea), 255u);
+        uint oa = min(ea + mul255((d >> 24) & 255u, 255u - ea), 255u);
+        return from_argb((oa << 24) | (r << 16) | (g << 8) | b, f);
+    }
+    return old;
+}
+
+void store_word(uint inArena, uint wi, uint v) {
+    if (inArena != 0u) arena[wi] = v; else vram[wi] = v;
+}
+uint load_word(uint inArena, uint wi) {
+    return inArena != 0u ? arena[wi] : vram[wi];
+}
+
+// LINE: one invocation walks it, as the core does (both ends drawn).
+void line() {
+    uint f = A_DFMT, bpp = bpp_of(f), mode = A_MODE & ~INVERSVID, db = (A_SBUF >> 1) & 1u;
+    int x0 = A_X0, y0 = A_Y0, x1 = A_X1, y1 = A_Y1;
+    int dx = abs(x1 - x0), dy = abs(y1 - y0);
+    int stepx = x0 < x1 ? 1 : -1, stepy = y0 < y1 ? 1 : -1, err = dx - dy;
+    for (;;) {
+        if (x0 >= A_X && y0 >= A_Y && x0 < A_W && y0 < A_H) {
+            uint a = A_DST + uint(y0) * A_DBPR + uint(x0) * bpp, k = a & 3u, wi = a >> 2;
+            uint w = load_word(db, wi);
+            store_word(db, wi, word_put(w, k, f, plot_bit(word_px(w, k, f), f, 1u, A_FG, 0u, mode)));
+        }
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x0 += stepx; }
+        if (e2 < dx) { err += dx; y0 += stepy; }
+    }
+}
+
+void main() {
+    if (A_OP == OP_LINE) {
+        if (gl_GlobalInvocationID.x == 0u && gl_GlobalInvocationID.y == 0u) line();
+        return;
+    }
+    int j = int(gl_GlobalInvocationID.y);
+    if (j >= A_H) return;
+    uint f = A_DFMT, bpp = bpp_of(f), db = (A_SBUF >> 1) & 1u, bpr = A_DBPR;
+    uint base0 = A_DST + uint(A_Y) * bpr + uint(A_X) * bpp, wb = uint(A_W) * bpp;
+    uint rowstart = base0 + uint(j) * bpr, rowend = rowstart + wb;
+    uint wa = (rowstart & ~3u) + gl_GlobalInvocationID.x * 4u;
+    if (wa >= rowend) return;
+    // When rows are closer than a word, one word holds pixels of two or more
+    // rows. It belongs to the first of them, which does all its pixels.
+    if (j > 0 && rowstart - bpr + wb > wa) return;
+    uint w = load_word(db, wa >> 2), nw = w;
+    for (uint k = 0u; k < 4u; k += bpp) {
+        uint b = wa + k;
+        if (b < base0) continue;
+        uint r = (b - base0) / bpr, col = (b - base0) - r * bpr;
+        if (r >= uint(A_H) || col >= wb) continue;
+        nw = word_put(nw, k, f, pixel(int(col / bpp), int(r), word_px(w, k, f)));
+    }
+    if (nw != w) store_word(db, wa >> 2, nw);
+}

@@ -1,0 +1,14 @@
+==id $Id: opengpu_lib.sfd 0.1 (6.10.2026) $
+* "opengpu.library"
+==base _OpenGPUBase
+==basetype struct Library *
+==libname opengpu.library
+==bias 30
+==public
+==include <exec/types.h>
+==include <opengpu/opengpu.h>
+ULONG OGPU_Query(ULONG op, ULONG format)(d0,d1)
+STRPTR OGPU_BackEndName(ULONG index)(d0)
+LONG OGPU_Submit(APTR stream, ULONG words, ULONG *fence)(a0,d0,a1)
+LONG OGPU_Wait(ULONG fence)(d0)
+==end
