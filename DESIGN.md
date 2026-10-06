@@ -432,6 +432,13 @@ is the artifact "OpenGPU 0.1 Design"; what it settles:
 - **One command stream.** Every OpenGPU call becomes OGPU stream v1
   (`include/opengpu/stream.h`): big-endian words, an opcode and a length per
   command, surfaces by slot, fences. Every back end gets the same bytes.
+  Stream v1.1 (6 October, agreed with the team designing OpenGfx, the
+  accelerated graphics.library) adds A8 coverage for anti-aliased text and
+  clip paths: the A8 format, MASK (a colour through an A8 mask in memory),
+  and COMPOSITE's MASK (an A8 surface's coverage), ADD and IN flags. Its
+  scene is `tests/golden/opengpu-v11.txt`; the Vulkan back end draws it too.
+  A program asks `OGPU_Query(OGPU_OP_MASK, format)` first: a v1.0 back end
+  answers OGPU_NONE.
 - **One core, compiled three times.** `library/opengpu/ogpu_core.c` carries
   out the stream in plain C with integers only: on the 68k as the CPU back
   end (in `opengpu.library`, always there), in the Cradle's runtime behind

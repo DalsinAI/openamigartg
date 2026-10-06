@@ -27,7 +27,7 @@ static int lo_u(ogpu_u32 w) { return u16(w); }
 
 static int bytes_per_pixel(int format) {
     switch (format) {
-    case OGPU_FMT_CLUT8: case OGPU_FMT_INDEX8: return 1;
+    case OGPU_FMT_CLUT8: case OGPU_FMT_INDEX8: case OGPU_FMT_A8: return 1;
     case OGPU_FMT_RGB565: return 2;
     case OGPU_FMT_ARGB32: return 4;
     }
@@ -63,6 +63,7 @@ static ogpu_u32 flip_mask(int format) {
 }
 
 static ogpu_u32 to_argb(ogpu_u32 v, int format) {
+    if (format == OGPU_FMT_A8) return (v & 255) << 24;     /* coverage only: black */
     if (format == OGPU_FMT_RGB565) {
         ogpu_u32 r = (v >> 11) & 31, g = (v >> 5) & 63, b = v & 31;
         r = (r << 3) | (r >> 2); g = (g << 2) | (g >> 4); b = (b << 3) | (b >> 2);
@@ -72,6 +73,7 @@ static ogpu_u32 to_argb(ogpu_u32 v, int format) {
 }
 
 static ogpu_u32 from_argb(ogpu_u32 v, int format) {
+    if (format == OGPU_FMT_A8) return (v >> 24) & 255;
     if (format == OGPU_FMT_RGB565)
         return (((v >> 19) & 31) << 11) | (((v >> 10) & 63) << 5) | ((v >> 3) & 31);
     return v & 0xFFFFFFFFUL;
@@ -272,6 +274,8 @@ static int op_pixels(struct ogpu_core *c, const ogpu_u8 *a) {
         raw = 1;
     } else {
         if (format == OGPU_FMT_CLUT8) return OGPU_ERR_UNSUPPORTED;
+        /* A8 goes only to A8: coverage has no colour, and colours no coverage. */
+        if ((format == OGPU_FMT_A8) != (t->format == OGPU_FMT_A8)) return OGPU_ERR_UNSUPPORTED;
         raw = (int)format == t->format;
         if (format == OGPU_FMT_INDEX8) {
             if (!table) return OGPU_ERR_UNSUPPORTED;
@@ -313,16 +317,59 @@ static ogpu_u32 sample(const struct ogpu_surface *s, int x, int y) {
     return to_argb(get_px(px_at(s, x, y), s->format), s->format);
 }
 
+/* Put source pixel sp (ARGB) on dp with coverage ea, by the COMPOSITE
+ * operator in flags: OVER, ADD or IN. */
+static void blend(ogpu_u8 *dp, int format, ogpu_u32 sp, ogpu_u32 ea, ogpu_u32 flags) {
+    ogpu_u32 d, r, g, b, oa;
+    if (flags & OGPU_COMP_IN) {
+        d = to_argb(get_px(dp, format), format);
+        r = mul255((d >> 16) & 255, ea); g = mul255((d >> 8) & 255, ea); b = mul255(d & 255, ea);
+        oa = mul255((d >> 24) & 255, ea);
+    } else if (flags & OGPU_COMP_ADD) {
+        if (!ea) return;
+        d = to_argb(get_px(dp, format), format);
+        r = ((d >> 16) & 255) + mul255((sp >> 16) & 255, ea);
+        g = ((d >> 8) & 255) + mul255((sp >> 8) & 255, ea);
+        b = (d & 255) + mul255(sp & 255, ea);
+        oa = ((d >> 24) & 255) + ea;
+    } else {
+        if (ea == 255) {
+            put_px(dp, format, from_argb(sp | 0xFF000000UL, format));
+            return;
+        }
+        if (!ea) return;
+        d = to_argb(get_px(dp, format), format);
+        r = mul255((sp >> 16) & 255, ea) + mul255((d >> 16) & 255, 255 - ea);
+        g = mul255((sp >> 8) & 255, ea) + mul255((d >> 8) & 255, 255 - ea);
+        b = mul255(sp & 255, ea) + mul255(d & 255, 255 - ea);
+        oa = ea + mul255((d >> 24) & 255, 255 - ea);
+    }
+    if (r > 255) r = 255;
+    if (g > 255) g = 255;
+    if (b > 255) b = 255;
+    if (oa > 255) oa = 255;
+    put_px(dp, format, from_argb((oa << 24) | (r << 16) | (g << 8) | b, format));
+}
+
 static int op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
     ogpu_u32 slot = rd32(a), sxy = rd32(a + 4), swh = rd32(a + 8), dxy = rd32(a + 12), dwh = rd32(a + 16);
     ogpu_u32 alpha = rd32(a + 20) & 255, flags = rd32(a + 24);
-    const struct ogpu_surface *t = &c->slot[c->target], *s;
+    const struct ogpu_surface *t = &c->slot[c->target], *s, *m = 0;
     int sx = hi_s(sxy), sy = lo_s(sxy), sw = hi_u(swh), sh = lo_u(swh);
-    int x = hi_s(dxy), y = lo_s(dxy), w = hi_u(dwh), h = lo_u(dwh), ox, oy, i, j, dbpp;
+    int x = hi_s(dxy), y = lo_s(dxy), w = hi_u(dwh), h = lo_u(dwh), ox, oy, i, j, dbpp, mx = 0, my = 0;
     ogpu_u32 stepx, stepy;
     if (slot >= OGPU_MAX_SLOTS || !c->slot[slot].pixels) return OGPU_ERR_NOSURFACE;
     s = &c->slot[slot];
     if (t->format == OGPU_FMT_CLUT8 || s->format == OGPU_FMT_CLUT8) return OGPU_ERR_UNSUPPORTED;
+    if ((flags & OGPU_COMP_ADD) && (flags & OGPU_COMP_IN)) return OGPU_ERR_UNSUPPORTED;
+    if (flags & OGPU_COMP_MASK) {
+        ogpu_u32 mslot = rd32(a + 28), mxy = rd32(a + 32);
+        if (mslot >= OGPU_MAX_SLOTS || !c->slot[mslot].pixels) return OGPU_ERR_NOSURFACE;
+        m = &c->slot[mslot];
+        if (m->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
+        mx = hi_s(mxy); my = lo_s(mxy);
+        if (mx < 0 || my < 0 || mx + w > m->w || my + h > m->h) return OGPU_ERR_UNSUPPORTED;
+    }
     if (!sw || !sh || !w || !h) return OGPU_OK;
     if (sx < 0 || sy < 0 || sx + sw > s->w || sy + sh > s->h) return OGPU_ERR_UNSUPPORTED;
     stepx = ((ogpu_u32)sw << 16) / (ogpu_u32)w;
@@ -332,8 +379,9 @@ static int op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
     for (j = 0; j < h; j++) {
         ogpu_u32 py = (ogpu_u32)(oy + j) * stepy + (stepy >> 1);    /* 16.16, the pixel's centre */
         ogpu_u8 *dp = px_at(t, x, y + j);
+        const ogpu_u8 *mp = m ? px_at(m, mx + ox, my + oy + j) : 0;
         for (i = 0; i < w; i++, dp += dbpp) {
-            ogpu_u32 px = (ogpu_u32)(ox + i) * stepx + (stepx >> 1), sp, d, ea;
+            ogpu_u32 px = (ogpu_u32)(ox + i) * stepx + (stepx >> 1), sp, ea;
             if (flags & OGPU_COMP_BILINEAR) {
                 long fx = (long)px - 0x8000L, fy = (long)py - 0x8000L;
                 int x0, y0, x1, y1;
@@ -355,23 +403,32 @@ static int op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
                 sp = sample(s, sx + nx, sy + ny);
             }
             ea = mul255((flags & OGPU_COMP_SRCALPHA) ? (sp >> 24) & 255 : 255, alpha);
-            if (ea == 255) {
-                put_px(dp, t->format, from_argb(sp | 0xFF000000UL, t->format));
-                continue;
-            }
-            d = to_argb(get_px(dp, t->format), t->format);
-            {
-                ogpu_u32 r = mul255((sp >> 16) & 255, ea) + mul255((d >> 16) & 255, 255 - ea);
-                ogpu_u32 g = mul255((sp >> 8) & 255, ea) + mul255((d >> 8) & 255, 255 - ea);
-                ogpu_u32 b = mul255(sp & 255, ea) + mul255(d & 255, 255 - ea);
-                ogpu_u32 oa = ea + mul255((d >> 24) & 255, 255 - ea);
-                if (r > 255) r = 255;
-                if (g > 255) g = 255;
-                if (b > 255) b = 255;
-                if (oa > 255) oa = 255;
-                put_px(dp, t->format, from_argb((oa << 24) | (r << 16) | (g << 8) | b, t->format));
-            }
+            if (mp) ea = mul255(ea, mp[i]);
+            blend(dp, t->format, sp, ea, flags);
         }
+    }
+    return OGPU_OK;
+}
+
+/* MASK (v1.1): one ARGB32 colour drawn OVER the target through an A8 mask
+ * in memory, as anti-aliased glyphs are. */
+static int op_mask(struct ogpu_core *c, const ogpu_u8 *a) {
+    ogpu_u32 address = rd32(a), bpr = rd32(a + 4), xy = rd32(a + 8), wh = rd32(a + 12), colour = rd32(a + 16);
+    const struct ogpu_surface *t = &c->slot[c->target];
+    int x = hi_s(xy), y = lo_s(xy), w = hi_u(wh), h = lo_u(wh), ox, oy, i, j, dbpp = bytes_per_pixel(t->format);
+    ogpu_u32 ca = (colour >> 24) & 255;
+    const ogpu_u8 *src;
+    if (t->format == OGPU_FMT_CLUT8) return OGPU_ERR_UNSUPPORTED;
+    if (!w || !h) return OGPU_OK;
+    if (bpr < (ogpu_u32)w || bpr > 0x01000000UL) return OGPU_ERR_UNSUPPORTED;
+    src = c->map(c->user, address, bpr * (ogpu_u32)(h - 1) + (ogpu_u32)w);
+    if (!src) return OGPU_ERR_NOMAP;
+    if (!clip_rect(c, &x, &y, &w, &h, &ox, &oy)) return OGPU_OK;
+    for (j = 0; j < h; j++) {
+        const ogpu_u8 *sp = src + (long)(oy + j) * (long)bpr + ox;
+        ogpu_u8 *dp = px_at(t, x, y + j);
+        for (i = 0; i < w; i++, dp += dbpp)
+            blend(dp, t->format, colour, mul255(sp[i], ca), 0);
     }
     return OGPU_OK;
 }
@@ -400,7 +457,8 @@ static int args_for(int op) {
     case OGPU_OP_PATTERN: return 7;
     case OGPU_OP_LINE: return 4;
     case OGPU_OP_PIXELS: return 6;
-    case OGPU_OP_COMPOSITE: return 7;
+    case OGPU_OP_MASK: return 5;
+    case OGPU_OP_COMPOSITE: return 7;       /* 9 with OGPU_COMP_MASK, checked in the run */
     case OGPU_OP_FENCE: return 1;
     }
     return -1;
@@ -419,6 +477,7 @@ long ogpu_core_run(struct ogpu_core *c, const ogpu_u8 *stream, long words) {
         }
         if (need < 0) r = OGPU_ERR_BADOP;
         else if (len - 1 < need) r = OGPU_ERR_BADLEN;
+        else if (op == OGPU_OP_COMPOSITE && (rd32(a + 24) & OGPU_COMP_MASK) && len - 1 < 9) r = OGPU_ERR_BADLEN;
         else if (op >= OGPU_OP_FILL && op < OGPU_OP_FENCE && (c->target < 0 || !c->slot[c->target].pixels))
             r = OGPU_ERR_NOSURFACE;
         else switch (op) {
@@ -444,6 +503,7 @@ long ogpu_core_run(struct ogpu_core *c, const ogpu_u8 *stream, long words) {
         case OGPU_OP_PATTERN: r = op_pattern(c, a); break;
         case OGPU_OP_LINE: r = op_line(c, a); break;
         case OGPU_OP_PIXELS: r = op_pixels(c, a); break;
+        case OGPU_OP_MASK: r = op_mask(c, a); break;
         case OGPU_OP_COMPOSITE: r = op_composite(c, a); break;
         case OGPU_OP_FENCE: if (c->fence) c->fence(c->user, rd32(a)); break;
         }
@@ -455,15 +515,16 @@ long ogpu_core_run(struct ogpu_core *c, const ogpu_u8 *stream, long words) {
 }
 
 int ogpu_core_supports(int op, int format) {
-    if (format != OGPU_FMT_CLUT8 && format != OGPU_FMT_RGB565 && format != OGPU_FMT_ARGB32) return OGPU_NONE;
+    if (format != OGPU_FMT_CLUT8 && format != OGPU_FMT_RGB565 && format != OGPU_FMT_ARGB32
+        && format != OGPU_FMT_A8) return OGPU_NONE;
     switch (op) {
     case OGPU_OP_NOP: case OGPU_OP_SURFACE: case OGPU_OP_TARGET: case OGPU_OP_CLIP: case OGPU_OP_FENCE:
     case OGPU_OP_FILL: case OGPU_OP_INVERT: case OGPU_OP_COPY: case OGPU_OP_TEMPLATE:
     case OGPU_OP_PATTERN: case OGPU_OP_LINE:
         return OGPU_FULL;
-    case OGPU_OP_PIXELS:
-        return format == OGPU_FMT_CLUT8 ? OGPU_PARTIAL : OGPU_FULL;    /* pens only on CLUT8 */
-    case OGPU_OP_COMPOSITE:
+    case OGPU_OP_PIXELS:    /* pens only on CLUT8, coverage only on A8 */
+        return format == OGPU_FMT_CLUT8 || format == OGPU_FMT_A8 ? OGPU_PARTIAL : OGPU_FULL;
+    case OGPU_OP_COMPOSITE: case OGPU_OP_MASK:
         return format == OGPU_FMT_CLUT8 ? OGPU_NONE : OGPU_FULL;
     }
     return OGPU_NONE;

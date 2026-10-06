@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * opengpu.library 0.1 (G1, DESIGN.md section 5): the library and its
+ * opengpu.library 0.2 (G1 with stream v1.1, DESIGN.md section 5): the library and its
  * built-in CPU back end, which runs ogpu_core.c on the Amiga's own 68k.
  * Batches are carried out as they are submitted, so a fence is done by the
  * time OGPU_Submit returns; OGPU_Wait gives the batch's first error. The
@@ -21,7 +21,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 1
+#define LIB_REVISION 2
 #define RESULTS 16                              /* the last batches' results, by fence */
 
 struct OpenGPUBase {
@@ -39,7 +39,9 @@ struct ExecBase *SysBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.1 (6.10.2026) OpenGPU, Dalsin Limited\r\n";
+static const char lib_id[] = "opengpu.library 0.2 (6.10.2026) OpenGPU, Dalsin Limited\r\n";
+/* For C:Version, which looks for "$VER:" in the file. */
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.2 (6.10.2026) OpenGPU, Dalsin Limited";
 static const char cpu_name[] = "CPU";
 
 static struct Library *lib_init(REG(d0, struct OpenGPUBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));

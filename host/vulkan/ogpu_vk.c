@@ -51,9 +51,15 @@ enum {
     A_FG, A_BG, A_MODE, A_FIRST, A_TABLE, A_PAD19, A_SX, A_SY, A_SW, A_SH, A_STEPX, A_STEPY,
     A_ALPHA, A_FLAGS, A_X0, A_Y0, A_X1, A_Y1, A_COUNT
 };
+/* COMPOSITE's mask (v1.1) shares LINE's words. */
+#define A_MSRC A_X0
+#define A_MBPR A_Y0
+#define A_MX   A_X1
+#define A_MY   A_Y1
 #define SBUF_SRC_ARENA   1u
 #define SBUF_DST_ARENA   2u
 #define SBUF_TABLE_ARENA 4u
+#define SBUF_MASK_ARENA  8u
 
 /* ---- the stream's words and the core's rules (as ogpu_core.c) ---------------------- */
 
@@ -68,7 +74,7 @@ static int lo_u(ogpu_u32 w) { return (int)(w & 0xFFFFUL); }
 
 static int bytes_per_pixel(int format) {
     switch (format) {
-    case OGPU_FMT_CLUT8: case OGPU_FMT_INDEX8: return 1;
+    case OGPU_FMT_CLUT8: case OGPU_FMT_INDEX8: case OGPU_FMT_A8: return 1;
     case OGPU_FMT_RGB565: return 2;
     case OGPU_FMT_ARGB32: return 4;
     }
@@ -91,6 +97,7 @@ static int args_for(int op) {
     case OGPU_OP_PATTERN: return 7;
     case OGPU_OP_LINE: return 4;
     case OGPU_OP_PIXELS: return 6;
+    case OGPU_OP_MASK: return 5;
     case OGPU_OP_COMPOSITE: return 7;
     case OGPU_OP_FENCE: return 1;
     }
@@ -227,6 +234,7 @@ static const struct ogpu_surface *gpu_target(const struct ogpu_vk *vk, ogpu_u32 
     t = &vk->core.slot[vk->core.target];
     if (!t->pixels) return 0;
     bpp = bytes_per_pixel(t->format);
+    if (!bpp) return 0;
     o = vram_off(vk, t->pixels, (unsigned long)(t->bpr * (t->h - 1) + (long)t->w * bpp));
     if (o < 0 || o % bpp || t->bpr % bpp) return 0;
     *off = (ogpu_u32)o;
@@ -438,6 +446,7 @@ static int gpu_pixels(struct ogpu_vk *vk, const ogpu_u8 *a) {
         if (format != OGPU_FMT_CLUT8 && !(format == OGPU_FMT_INDEX8 && !table)) return 0;
     } else {
         if (format == OGPU_FMT_CLUT8) return 0;
+        if ((format == OGPU_FMT_A8) != (t->format == OGPU_FMT_A8)) return 0;
         if (format == OGPU_FMT_INDEX8) {
             if (!table || !core_map(vk, table, 1024)) return 0;
             use_table = 1;
@@ -463,46 +472,106 @@ static int gpu_pixels(struct ogpu_vk *vk, const ogpu_u8 *a) {
 
 static int gpu_composite(struct ogpu_vk *vk, const ogpu_u8 *a) {
     ogpu_u32 slot = rd32(a), sxy = rd32(a + 4), swh = rd32(a + 8), dxy = rd32(a + 12), dwh = rd32(a + 16);
-    ogpu_u32 dst, args[A_COUNT];
+    ogpu_u32 flags = rd32(a + 24), dst, args[A_COUNT];
     int sx = hi_s(sxy), sy = lo_s(sxy), sw = hi_u(swh), sh = lo_u(swh);
-    int x = hi_s(dxy), y = lo_s(dxy), w = hi_u(dwh), h = lo_u(dwh), ox, oy, sbpp, dbpp, r;
-    const struct ogpu_surface *t = gpu_target(vk, &dst), *s;
+    int x = hi_s(dxy), y = lo_s(dxy), w = hi_u(dwh), h = lo_u(dwh), ox, oy, sbpp, dbpp, r, mx = 0, my = 0, w0, h0;
+    const struct ogpu_surface *t = gpu_target(vk, &dst), *s, *m = 0;
     long so;
     if (!t || slot >= OGPU_MAX_SLOTS || !vk->core.slot[slot].pixels) return 0;
     s = &vk->core.slot[slot];
     if (t->format == OGPU_FMT_CLUT8 || s->format == OGPU_FMT_CLUT8) return 0;
+    if ((flags & OGPU_COMP_ADD) && (flags & OGPU_COMP_IN)) return 0;
+    if (flags & ~(ogpu_u32)(OGPU_COMP_SRCALPHA | OGPU_COMP_BILINEAR | OGPU_COMP_MASK | OGPU_COMP_ADD | OGPU_COMP_IN))
+        return 0;
+    if (flags & OGPU_COMP_MASK) {
+        ogpu_u32 mslot = rd32(a + 28), mxy = rd32(a + 32);
+        if (mslot >= OGPU_MAX_SLOTS || !vk->core.slot[mslot].pixels) return 0;
+        m = &vk->core.slot[mslot];
+        mx = hi_s(mxy); my = lo_s(mxy);
+        if (m->format != OGPU_FMT_A8 || mx < 0 || my < 0 || mx + w > m->w || my + h > m->h) return 0;
+    }
     if (!sw || !sh || !w || !h) return 1;
     if (sx < 0 || sy < 0 || sx + sw > s->w || sy + sh > s->h) return 0;
     base_args(args, OGPU_OP_COMPOSITE, dst, t);
     args[A_STEPX] = ((ogpu_u32)sw << 16) / (ogpu_u32)w;
     args[A_STEPY] = ((ogpu_u32)sh << 16) / (ogpu_u32)h;
     sbpp = bytes_per_pixel(s->format); dbpp = bytes_per_pixel(t->format);
+    w0 = w; h0 = h;
     if (!clip_rect(&vk->core, &x, &y, &w, &h, &ox, &oy)) return 1;
-    so = vram_off(vk, s->pixels, (unsigned long)(s->bpr * (s->h - 1) + (long)s->w * sbpp));
-    if (so >= 0) {
-        /* The core blends in place, reading as it writes; when the source
-         * shares bytes with what is drawn, only the core gives its result. */
-        unsigned long s0 = (unsigned long)so + (unsigned long)(sy * s->bpr + (long)sx * sbpp);
-        unsigned long s1 = (unsigned long)so + (unsigned long)((sy + sh - 1) * s->bpr + (long)(sx + sw) * sbpp);
+    {
         unsigned long d0 = dst + (unsigned long)(y * t->bpr + (long)x * dbpp);
         unsigned long d1 = dst + (unsigned long)((y + h - 1) * t->bpr + (long)(x + w) * dbpp);
-        if (overlap(s0, s1, d0, d1)) return 0;
+        long mo = -1;
+        /* The core blends in place, reading as it writes; when the source or
+         * the mask shares bytes with what is drawn, only the core gives its result. */
+        so = vram_off(vk, s->pixels, (unsigned long)(s->bpr * (s->h - 1) + (long)s->w * sbpp));
+        if (so >= 0) {
+            unsigned long s0 = (unsigned long)so + (unsigned long)(sy * s->bpr + (long)sx * sbpp);
+            unsigned long s1 = (unsigned long)so + (unsigned long)((sy + sh - 1) * s->bpr + (long)(sx + sw) * sbpp);
+            if (overlap(s0, s1, d0, d1)) return 0;
+        }
+        if (m) {
+            mo = vram_off(vk, m->pixels, (unsigned long)(m->bpr * (m->h - 1) + (long)m->w));
+            if (mo >= 0) {
+                unsigned long m0 = (unsigned long)mo + (unsigned long)(my * m->bpr + mx);
+                unsigned long m1 = (unsigned long)mo + (unsigned long)((my + h0 - 1) * m->bpr + mx + w0);
+                if (overlap(m0, m1, d0, d1)) return 0;
+            } else if (!arena_room(vk, (unsigned long)w0 * (unsigned long)h0
+                                       + (so >= 0 ? 0 : (unsigned long)sw * sbpp * (unsigned long)sh)))
+                return 0;
+            if (mo >= 0) {
+                args[A_MSRC] = (ogpu_u32)mo; args[A_MBPR] = (ogpu_u32)m->bpr;
+                args[A_MX] = (ogpu_u32)mx; args[A_MY] = (ogpu_u32)my;
+            }
+        }
+        if (so < 0 && !arena_room(vk, (unsigned long)sw * sbpp * (unsigned long)sh)) return 0;
+        if (m && mo < 0) {
+            /* The mask's part under the rectangle, packed, into the arena. */
+            ogpu_u32 at = arena_take(vk, (unsigned long)w0 * (unsigned long)h0);
+            for (r = 0; r < h0; r++)
+                memcpy(vk->arena + at + (unsigned long)r * (unsigned long)w0, m->pixels + (long)(my + r) * m->bpr + mx, (size_t)w0);
+            args[A_MSRC] = at; args[A_MBPR] = (ogpu_u32)w0; args[A_MX] = 0; args[A_MY] = 0;
+            args[A_SBUF] |= SBUF_MASK_ARENA;
+        }
+    }
+    if (so >= 0) {
         args[A_SRC] = (ogpu_u32)so; args[A_SBPR] = (ogpu_u32)s->bpr;
         args[A_SX] = (ogpu_u32)sx; args[A_SY] = (ogpu_u32)sy;
     } else {
         unsigned long rowb = (unsigned long)sw * sbpp;
-        ogpu_u32 at;
-        if (!arena_room(vk, rowb * (unsigned long)sh)) return 0;
-        at = arena_take(vk, rowb * (unsigned long)sh);
+        ogpu_u32 at = arena_take(vk, rowb * (unsigned long)sh);
         for (r = 0; r < sh; r++)
             memcpy(vk->arena + at + (unsigned long)r * rowb, s->pixels + (long)(sy + r) * s->bpr + (long)sx * sbpp, rowb);
-        args[A_SRC] = at; args[A_SBUF] = SBUF_SRC_ARENA; args[A_SBPR] = (ogpu_u32)rowb;
+        args[A_SRC] = at; args[A_SBUF] |= SBUF_SRC_ARENA; args[A_SBPR] = (ogpu_u32)rowb;
     }
     set_rect(args, x, y, w, h, ox, oy);
     args[A_SFMT] = (ogpu_u32)s->format;
     args[A_SW] = (ogpu_u32)sw; args[A_SH] = (ogpu_u32)sh;
-    args[A_ALPHA] = rd32(a + 20) & 255; args[A_FLAGS] = rd32(a + 24);
+    args[A_ALPHA] = rd32(a + 20) & 255; args[A_FLAGS] = flags;
     dispatch_rect(vk, args, w, h, dbpp);
+    return 1;
+}
+
+/* MASK (v1.1): an A8 mask in memory, placed as TEMPLATE's bits are. */
+static int gpu_mask(struct ogpu_vk *vk, const ogpu_u8 *a) {
+    ogpu_u32 address = rd32(a), bpr = rd32(a + 4), xy = rd32(a + 8), wh = rd32(a + 12);
+    ogpu_u32 dst, src, in_arena, args[A_COUNT];
+    int x = hi_s(xy), y = lo_s(xy), w = hi_u(wh), h = lo_u(wh), ox, oy;
+    const struct ogpu_surface *t = gpu_target(vk, &dst);
+    unsigned long len;
+    if (!t || t->format == OGPU_FMT_CLUT8) return 0;
+    if (!w || !h) return 1;
+    if (bpr < (ogpu_u32)w || bpr > 0x01000000UL) return 0;
+    len = bpr * (unsigned long)(h - 1) + (unsigned long)w;
+    if (!core_map(vk, address, (ogpu_u32)len) || !arena_room(vk, len)) return 0;
+    if (!clip_rect(&vk->core, &x, &y, &w, &h, &ox, &oy)) return 1;
+    if (reads_what_it_draws(vk, address, len, dst, t, x, y, w, h)) return 0;
+    map_place(vk, address, len, &src, &in_arena);
+    base_args(args, OGPU_OP_MASK, dst, t);
+    set_rect(args, x, y, w, h, ox, oy);
+    args[A_SRC] = src; args[A_SBUF] = in_arena ? SBUF_SRC_ARENA : 0; args[A_SBPR] = bpr;
+    args[A_FG] = rd32(a + 16);
+    dispatch_rect(vk, args, w, h, bytes_per_pixel(t->format));
     return 1;
 }
 
@@ -515,6 +584,7 @@ static int gpu_draw(struct ogpu_vk *vk, int op, const ogpu_u8 *a) {
     case OGPU_OP_PATTERN: return gpu_pattern(vk, a);
     case OGPU_OP_LINE: return gpu_line(vk, a);
     case OGPU_OP_PIXELS: return gpu_pixels(vk, a);
+    case OGPU_OP_MASK: return gpu_mask(vk, a);
     case OGPU_OP_COMPOSITE: return gpu_composite(vk, a);
     }
     return 0;
@@ -534,6 +604,7 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
             break;
         }
         if (!vk->failed && need >= 0 && len - 1 >= need && op >= OGPU_OP_FILL && op < OGPU_OP_FENCE
+            && !(op == OGPU_OP_COMPOSITE && (rd32(stream + at * 4 + 28) & OGPU_COMP_MASK) && len - 1 < 9)
             && vk->core.target >= 0 && vk->core.slot[vk->core.target].pixels
             && gpu_draw(vk, op, stream + at * 4 + 4)) {
             done++;

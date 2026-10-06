@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //
 // OpenGPU's compute shader (G2, DESIGN.md section 5): the drawing commands of
-// OGPU stream v1, as library/opengpu/ogpu_core.c does them, on the host's
+// OGPU stream v1.1, as library/opengpu/ogpu_core.c does them, on the host's
 // GPU. ogpu_vk.c decodes the stream, clips each command as the core does and
 // dispatches this shader once per command, so the GPU only draws.
 //
@@ -23,10 +23,10 @@ layout(push_constant) uniform P { uint p[32]; } pc;
 
 // Opcodes as stream.h's
 const uint OP_FILL = 0x10u, OP_INVERT = 0x11u, OP_COPY = 0x12u, OP_TEMPLATE = 0x13u,
-           OP_PATTERN = 0x14u, OP_LINE = 0x15u, OP_PIXELS = 0x16u, OP_COMPOSITE = 0x20u;
-const uint FMT_CLUT8 = 1u, FMT_RGB565 = 2u, FMT_ARGB32 = 3u, FMT_INDEX8 = 4u;
+           OP_PATTERN = 0x14u, OP_LINE = 0x15u, OP_PIXELS = 0x16u, OP_MASK = 0x17u, OP_COMPOSITE = 0x20u;
+const uint FMT_CLUT8 = 1u, FMT_RGB565 = 2u, FMT_ARGB32 = 3u, FMT_INDEX8 = 4u, FMT_A8 = 5u;
 const uint JAM2 = 1u, COMPLEMENT = 2u, INVERSVID = 4u;
-const uint COMP_SRCALPHA = 1u, COMP_BILINEAR = 2u;
+const uint COMP_SRCALPHA = 1u, COMP_BILINEAR = 2u, COMP_MASK = 4u, COMP_ADD = 8u, COMP_IN = 16u;
 
 // The push constants (ogpu_vk.c fills them; see its struct ogpu_vk_args)
 #define A_OP        pc.p[0]
@@ -40,7 +40,8 @@ const uint COMP_SRCALPHA = 1u, COMP_BILINEAR = 2u;
 #define A_OX        int(pc.p[8])  // how far clipping moved the corner
 #define A_OY        int(pc.p[9])
 #define A_SRC       pc.p[10]    // the source's byte 0 (bits, pattern, pixels or surface)
-#define A_SBUF      pc.p[11]    // bit 0: the source is in the arena; bit 1: the target is; bit 2: the table is
+#define A_SBUF      pc.p[11]    // bit 0: the source is in the arena; bit 1: the target is; bit 2: the table is;
+                                // bit 3: COMPOSITE's mask is
 #define A_SBPR      pc.p[12]
 #define A_SFMT      pc.p[13]
 #define A_FG        pc.p[14]    // FILL's colour, INVERT's mask
@@ -60,6 +61,10 @@ const uint COMP_SRCALPHA = 1u, COMP_BILINEAR = 2u;
 #define A_Y0        int(pc.p[29])
 #define A_X1        int(pc.p[30])
 #define A_Y1        int(pc.p[31])
+#define A_MSRC      pc.p[28]      // COMPOSITE's A8 mask: its byte 0, bytes per row, and corner
+#define A_MBPR      pc.p[29]
+#define A_MX        int(pc.p[30])
+#define A_MY        int(pc.p[31])
 
 uint ld8(uint inArena, uint a) {
     uint w = inArena != 0u ? arena[a >> 2] : vram[a >> 2];
@@ -93,6 +98,7 @@ uint word_put(uint word, uint k, uint f, uint v) {
 }
 uint flip_mask(uint f) { return f == FMT_RGB565 ? 0xFFFFu : f == FMT_ARGB32 ? 0x00FFFFFFu : 0xFFu; }
 uint to_argb(uint v, uint f) {
+    if (f == FMT_A8) return (v & 255u) << 24;
     if (f == FMT_RGB565) {
         uint r = (v >> 11) & 31u, g = (v >> 5) & 63u, b = v & 31u;
         r = (r << 3) | (r >> 2); g = (g << 2) | (g >> 4); b = (b << 3) | (b >> 2);
@@ -101,6 +107,7 @@ uint to_argb(uint v, uint f) {
     return v;
 }
 uint from_argb(uint v, uint f) {
+    if (f == FMT_A8) return v >> 24;
     if (f == FMT_RGB565) return (((v >> 19) & 31u) << 11) | (((v >> 10) & 63u) << 5) | ((v >> 3) & 31u);
     return v;
 }
@@ -124,6 +131,32 @@ uint plot_bit(uint old, uint f, uint bit, uint fg, uint bg, uint mode) {
 uint sample_src(int x, int y) {
     uint f = A_SFMT;
     return to_argb(get_px(A_SBUF & 1u, A_SRC + uint(y) * A_SBPR + uint(x) * bpp_of(f), f), f);
+}
+
+// Source pixel sp put on `old` with coverage ea, by OVER, ADD or IN (as ogpu_core.c's blend).
+uint blend(uint old, uint f, uint sp, uint ea, uint flags) {
+    uint d, r, g, b, oa;
+    if ((flags & COMP_IN) != 0u) {
+        d = to_argb(old, f);
+        r = mul255((d >> 16) & 255u, ea); g = mul255((d >> 8) & 255u, ea); b = mul255(d & 255u, ea);
+        oa = mul255((d >> 24) & 255u, ea);
+    } else if ((flags & COMP_ADD) != 0u) {
+        if (ea == 0u) return old;
+        d = to_argb(old, f);
+        r = ((d >> 16) & 255u) + mul255((sp >> 16) & 255u, ea);
+        g = ((d >> 8) & 255u) + mul255((sp >> 8) & 255u, ea);
+        b = (d & 255u) + mul255(sp & 255u, ea);
+        oa = ((d >> 24) & 255u) + ea;
+    } else {
+        if (ea == 255u) return from_argb(sp | 0xFF000000u, f);
+        if (ea == 0u) return old;
+        d = to_argb(old, f);
+        r = mul255((sp >> 16) & 255u, ea) + mul255((d >> 16) & 255u, 255u - ea);
+        g = mul255((sp >> 8) & 255u, ea) + mul255((d >> 8) & 255u, 255u - ea);
+        b = mul255(sp & 255u, ea) + mul255(d & 255u, 255u - ea);
+        oa = ea + mul255((d >> 24) & 255u, 255u - ea);
+    }
+    return from_argb((min(oa, 255u) << 24) | (min(r, 255u) << 16) | (min(g, 255u) << 8) | min(b, 255u), f);
 }
 
 // The new value of pixel (i, j) of the clipped rectangle, which was `old`.
@@ -172,13 +205,13 @@ uint pixel(int i, int j, uint old) {
             sp = sample_src(A_SX + nx, A_SY + ny);
         }
         uint ea = mul255((A_FLAGS & COMP_SRCALPHA) != 0u ? (sp >> 24) & 255u : 255u, A_ALPHA);
-        if (ea == 255u) return from_argb(sp | 0xFF000000u, f);
-        uint d = to_argb(old, f);
-        uint r = min(mul255((sp >> 16) & 255u, ea) + mul255((d >> 16) & 255u, 255u - ea), 255u);
-        uint g = min(mul255((sp >> 8) & 255u, ea) + mul255((d >> 8) & 255u, 255u - ea), 255u);
-        uint b = min(mul255(sp & 255u, ea) + mul255(d & 255u, 255u - ea), 255u);
-        uint oa = min(ea + mul255((d >> 24) & 255u, 255u - ea), 255u);
-        return from_argb((oa << 24) | (r << 16) | (g << 8) | b, f);
+        if ((A_FLAGS & COMP_MASK) != 0u)
+            ea = mul255(ea, ld8((A_SBUF >> 3) & 1u, A_MSRC + uint(A_MY + A_OY + j) * A_MBPR + uint(A_MX + A_OX + i)));
+        return blend(old, f, sp, ea, A_FLAGS);
+    }
+    if (op == OP_MASK) {
+        uint m = ld8(sb, A_SRC + uint(A_OY + j) * A_SBPR + uint(A_OX + i));
+        return blend(old, f, A_FG, mul255(m, A_FG >> 24), 0u);
     }
     return old;
 }
