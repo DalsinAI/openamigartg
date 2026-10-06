@@ -4,7 +4,8 @@
  * OpenGPU core tests (G1): each command against a plain per-pixel
  * reference, the errors, random streams that must never reach outside the
  * memory they were given, and a golden scene whose checksum every back end
- * (68k, Cradle, PiStorm) must reproduce: tests/golden/opengpu-g1.txt. */
+ * (68k, Cradle, PiStorm) must reproduce: tests/golden/opengpu-g1.txt, and
+ * for stream v1.1 (A8 masks) a second one: tests/golden/opengpu-v11.txt. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -287,6 +288,164 @@ static void test_composite(void) {
     CHECK(d == 0xFF, "bilinear right edge (%02lx)", d);
 }
 
+/* ---- v1.1: A8, MASK, and COMPOSITE's MASK, ADD and IN ---------------------------------- */
+
+static unsigned long m255(unsigned long x, unsigned long y) { return (x * y + 127) / 255; }
+
+static void test_a8(void) {
+    long bpr = W + 3;
+    int x, y, bad = 0;
+    /* FILL, COPY and A8 PIXELS on an A8 surface are plain bytes. */
+    noise(T0, bpr * H);
+    for (x = 0; x < 16; x++) arena[D0 + x] = (ogpu_u8)(x * 17);
+    begin();
+    ogpu_surface(&B, 0, T0, (unsigned long)bpr, W, H, OGPU_FMT_A8); ogpu_target(&B, 0);
+    ogpu_fill(&B, 0, 0, W, H, 0x40);
+    ogpu_pixels(&B, D0, 16, OGPU_FMT_A8, 0, 2, 2, 16, 1);
+    ogpu_copy(&B, 0, 2, 2, 2, 3, 16, 1);
+    run();
+    CHECK(C.last_error == OGPU_OK, "A8 ran (%d)", C.last_error);
+    for (x = 0; x < 16; x++) bad += px(T0, bpr, OGPU_FMT_A8, 2 + x, 3) != (unsigned long)(x * 17);
+    CHECK(!bad && px(T0, bpr, OGPU_FMT_A8, 0, 0) == 0x40, "A8 fill, pixels and copy");
+    begin();
+    ogpu_surface(&B, 0, T0, (unsigned long)bpr, W, H, OGPU_FMT_A8); ogpu_target(&B, 0);
+    ogpu_pixels(&B, D0, 64, OGPU_FMT_ARGB32, 0, 0, 0, 4, 1);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "colours don't go into A8");
+    begin();
+    ogpu_surface(&B, 0, T0, W * 4, W, H, OGPU_FMT_ARGB32); ogpu_target(&B, 0);
+    ogpu_pixels(&B, D0, 16, OGPU_FMT_A8, 0, 0, 0, 4, 1);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "coverage doesn't go into colours");
+    (void)y;
+}
+
+/* MASK: a colour through an A8 mask, against a per-pixel reference. */
+static void test_mask(int f) {
+    long bpr = W * bpp_of(f) + 2, mbpr = 37;
+    unsigned long colour = 0xC0FF8020UL;
+    int x, y, bad = 0;
+    noise(T0, bpr * H);
+    noise(D0, mbpr * 30);
+    memcpy(arena + REF, arena + T0, (size_t)(bpr * H));
+    begin();
+    ogpu_surface(&B, 0, T0, (unsigned long)bpr, W, H, f); ogpu_target(&B, 0);
+    ogpu_clip(&B, 4, 2, 50, 30);
+    ogpu_mask(&B, D0, (unsigned long)mbpr, -3, 1, 36, 30, colour);
+    run();
+    CHECK(C.last_error == OGPU_OK, "mask fmt %d ran (%d)", f, C.last_error);
+    for (y = 0; y < H; y++)
+        for (x = 0; x < W; x++) {
+            unsigned long d = px(REF, bpr, f, x, y), want = d;
+            if (x >= 4 && x < 33 && y >= 2 && y < 31) {
+                unsigned long m = arena[D0 + (y - 1) * mbpr + (x + 3)], ea = m255(m, 0xC0), da, dr, dg, db;
+                if (f == OGPU_FMT_RGB565) {
+                    dr = (d >> 11) & 31; dr = (dr << 3) | (dr >> 2); dg = (d >> 5) & 63; dg = (dg << 2) | (dg >> 4);
+                    db = d & 31; db = (db << 3) | (db >> 2); da = 255;
+                } else if (f == OGPU_FMT_A8) { da = d; dr = dg = db = 0; }
+                else { da = d >> 24; dr = (d >> 16) & 255; dg = (d >> 8) & 255; db = d & 255; }
+                if (ea == 255) { dr = 0xFF; dg = 0x80; db = 0x20; da = 255; }
+                else if (ea) {
+                    dr = m255(0xFF, ea) + m255(dr, 255 - ea); dg = m255(0x80, ea) + m255(dg, 255 - ea);
+                    db = m255(0x20, ea) + m255(db, 255 - ea); da = ea + m255(da, 255 - ea);
+                }
+                if (dr > 255) dr = 255;
+                if (dg > 255) dg = 255;
+                if (db > 255) db = 255;
+                if (da > 255) da = 255;
+                want = f == OGPU_FMT_RGB565 ? ((dr >> 3) << 11) | ((dg >> 2) << 5) | (db >> 3)
+                     : f == OGPU_FMT_A8 ? da : (da << 24) | (dr << 16) | (dg << 8) | db;
+            }
+            if (px(T0, bpr, f, x, y) != want && bad++ < 3)
+                printf("  mask fmt %d at %d,%d: %08lx, want %08lx\n", f, x, y, px(T0, bpr, f, x, y), want);
+        }
+    CHECK(!bad, "mask fmt %d matches the reference (%d differ)", f, bad);
+}
+
+/* COMPOSITE with a mask, ADD and IN, into ARGB32 and A8. */
+static void test_composite_v11(void) {
+    long bpr = W * 4, abpr = W;
+    unsigned long d;
+    int x, y, bad = 0;
+    /* A grey source through a mask ramp onto black. */
+    memset(arena + T0, 0, (size_t)(bpr * H));
+    for (x = 0; x < 16; x++) setpx(S0, 64, OGPU_FMT_ARGB32, x, 0, 0xFFC8C8C8UL);
+    for (x = 0; x < 16; x++) arena[D0 + x] = (ogpu_u8)(x * 17);
+    begin();
+    ogpu_surface(&B, 0, T0, (unsigned long)bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 1, S0, 64, 16, 1, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 2, D0, 16, 16, 1, OGPU_FMT_A8);
+    ogpu_target(&B, 0);
+    ogpu_composite_masked(&B, 1, 0, 0, 16, 1, 0, 0, 16, 1, 255, 0, 2, 0, 0);
+    run();
+    CHECK(C.last_error == OGPU_OK, "masked composite ran (%d)", C.last_error);
+    for (x = 0; x < 16; x++) {
+        unsigned long m = (unsigned long)x * 17, c = m255(0xC8, m), want = (m << 24) | (c << 16) | (c << 8) | c;
+        if (x == 15) want = 0xFFC8C8C8UL;
+        bad += px(T0, bpr, OGPU_FMT_ARGB32, x, 0) != want;
+    }
+    CHECK(!bad, "masked composite follows the mask");
+    /* ADD and IN on A8: combining clip masks. */
+    for (x = 0; x < 8; x++) { arena[S0 + 0x1000 + x] = (ogpu_u8)(x * 32); arena[T0 + x] = 200; }
+    begin();
+    ogpu_surface(&B, 0, T0, (unsigned long)abpr, W, H, OGPU_FMT_A8);
+    ogpu_surface(&B, 1, S0 + 0x1000, 8, 8, 1, OGPU_FMT_A8);
+    ogpu_target(&B, 0);
+    ogpu_composite(&B, 1, 0, 0, 8, 1, 0, 0, 8, 1, 255, OGPU_COMP_SRCALPHA | OGPU_COMP_ADD);
+    run();
+    CHECK(C.last_error == OGPU_OK, "ADD ran");
+    for (x = 0; x < 8; x++) {
+        unsigned long want = 200 + (unsigned long)x * 32;
+        if (want > 255) want = 255;
+        bad += px(T0, abpr, OGPU_FMT_A8, x, 0) != want;
+    }
+    CHECK(!bad, "A8 ADD saturates");
+    for (x = 0; x < 8; x++) arena[T0 + x] = 200;
+    begin();
+    ogpu_surface(&B, 0, T0, (unsigned long)abpr, W, H, OGPU_FMT_A8);
+    ogpu_surface(&B, 1, S0 + 0x1000, 8, 8, 1, OGPU_FMT_A8);
+    ogpu_target(&B, 0);
+    ogpu_composite(&B, 1, 0, 0, 8, 1, 0, 0, 8, 1, 255, OGPU_COMP_SRCALPHA | OGPU_COMP_IN);
+    run();
+    for (x = 0; x < 8; x++) bad += px(T0, abpr, OGPU_FMT_A8, x, 0) != m255(200, (unsigned long)x * 32);
+    CHECK(C.last_error == OGPU_OK && !bad, "A8 IN multiplies");
+    /* The errors: ADD with IN; a mask that isn't A8 or doesn't cover the rect; a short command. */
+    begin();
+    ogpu_surface(&B, 0, T0, (unsigned long)bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 1, S0, 64, 16, 1, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_composite(&B, 1, 0, 0, 1, 1, 0, 0, 1, 1, 255, OGPU_COMP_ADD | OGPU_COMP_IN);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "ADD with IN refused");
+    begin();
+    ogpu_surface(&B, 0, T0, (unsigned long)bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 1, S0, 64, 16, 1, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_composite_masked(&B, 1, 0, 0, 1, 1, 0, 0, 1, 1, 255, 0, 1, 0, 0);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "an ARGB mask refused");
+    begin();
+    ogpu_surface(&B, 0, T0, (unsigned long)bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 1, S0, 64, 16, 1, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 2, D0, 16, 16, 1, OGPU_FMT_A8);
+    ogpu_target(&B, 0);
+    ogpu_composite_masked(&B, 1, 0, 0, 16, 1, 0, 0, 16, 2, 255, 0, 2, 0, 0);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "a mask smaller than the rect refused");
+    begin();
+    ogpu_surface(&B, 0, T0, (unsigned long)bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 1, S0, 64, 16, 1, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_composite(&B, 1, 0, 0, 1, 1, 0, 0, 1, 1, 255, OGPU_COMP_MASK);
+    run();
+    CHECK(C.last_error == OGPU_ERR_BADLEN, "a masked composite without its mask words");
+    d = (unsigned long)ogpu_core_supports(OGPU_OP_MASK, OGPU_FMT_ARGB32);
+    CHECK(d == OGPU_FULL && ogpu_core_supports(OGPU_OP_MASK, OGPU_FMT_CLUT8) == OGPU_NONE
+          && ogpu_core_supports(OGPU_OP_COMPOSITE, OGPU_FMT_A8) == OGPU_FULL
+          && ogpu_core_supports(OGPU_OP_PIXELS, OGPU_FMT_A8) == OGPU_PARTIAL, "v1.1 supports");
+    (void)y;
+}
+
 static void test_errors(void) {
     unsigned char *p;
     begin();
@@ -310,6 +469,41 @@ static void test_errors(void) {
     sbuf[3] = 9;
     run();
     CHECK(C.last_error == OGPU_ERR_BADLEN && nfences == 0, "length past the end");
+    /* A one-word FILL stops the run: the FENCE after it never comes. */
+    begin();
+    ogpu_surface(&B, 0, T0, W, W, H, OGPU_FMT_CLUT8); ogpu_target(&B, 0);
+    p = sbuf + B.words * 4;
+    p[0] = 0; p[1] = OGPU_OP_FILL; p[2] = 0; p[3] = 1;
+    B.words += 1;
+    ogpu_fence(&B, 5);
+    run();
+    CHECK(C.last_error == OGPU_ERR_BADLEN && nfences == 0, "a command shorter than its arguments stops the run");
+    /* Spans past 32 bits are refused, not wrapped (they would be on the 68k). */
+    begin();
+    ogpu_surface(&B, 0, 0, 0x01000000UL, 1, 257, OGPU_FMT_CLUT8);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "a surface spanning more than 4 GiB");
+    /* A clip that ends at 0 (left of the target) draws nothing, not everything. */
+    memset(arena + T0, 7, W * H);
+    begin();
+    ogpu_surface(&B, 0, T0, W, W, H, OGPU_FMT_CLUT8); ogpu_target(&B, 0);
+    ogpu_clip(&B, -10, 0, 10, H);
+    ogpu_fill(&B, 0, 0, W, H, 1);
+    run();
+    CHECK(C.last_error == OGPU_OK && arena[T0] == 7 && arena[T0 + W * H - 1] == 7, "a clip ending at 0 draws nothing");
+    /* COPY between two slots on the same memory is overlap-safe too. */
+    {
+        int r, ok = 1;
+        for (r = 0; r < 4; r++) memset(arena + T0 + r * W, r + 1, W);
+        begin();
+        ogpu_surface(&B, 0, T0, W, W, H, OGPU_FMT_CLUT8);
+        ogpu_surface(&B, 1, T0, W, W, H, OGPU_FMT_CLUT8);
+        ogpu_target(&B, 0);
+        ogpu_copy(&B, 1, 0, 0, 0, 1, W, 3);
+        run();
+        for (r = 1; r < 4; r++) ok &= arena[T0 + r * W] == r;
+        CHECK(C.last_error == OGPU_OK && ok, "copy down through an aliased slot");
+    }
     /* A batch that runs out of room says so. */
     {
         unsigned char small[16];
@@ -400,9 +594,63 @@ static unsigned long golden_scene(void) {
     return h;
 }
 
+/* v1.1's scene: anti-aliased "glyphs" (MASK), a rounded clip (masked
+ * COMPOSITE) and clip masks combined with ADD and IN. */
+static unsigned long golden_scene_v11(void) {
+    static const int fmts[2] = { OGPU_FMT_RGB565, OGPU_FMT_ARGB32 };
+    unsigned long h = 2166136261UL;
+    int k, i, x, y;
+    rnd_state = 1101;
+    for (y = 0; y < 48; y++)        /* a disc's coverage, soft-edged */
+        for (x = 0; x < 64; x++) {
+            long dx = x * 2 - 63, dy = y * 2 - 47, r2 = dx * dx + dy * dy, c = (2200 - r2) / 4;
+            arena[D0 + 0x2000 + y * 64 + x] = (ogpu_u8)(c < 0 ? 0 : c > 255 ? 255 : c);
+        }
+    for (i = 0; i < 64 * 48; i++) arena[D0 + 0x3000 + i] = (ogpu_u8)((i * 7) ^ (i >> 5));
+    for (i = 0; i < 64 * 48; i++) setpx(S0, 64 * 4, OGPU_FMT_ARGB32, i % 64, i / 64, 0xFF000000UL | (unsigned long)(i * 2654435761UL & 0xFFFFFFUL));
+    for (k = 0; k < 2; k++) {
+        int f = fmts[k];
+        long bpr = 160 * bpp_of(f);
+        memset(arena + T0, 0, (size_t)(bpr * 100));
+        memset(arena + T0 + 0x10000, 0, 64 * 48);
+        begin();
+        ogpu_surface(&B, 0, T0, (unsigned long)bpr, 160, 100, f);
+        ogpu_surface(&B, 1, S0, 64 * 4, 64, 48, OGPU_FMT_ARGB32);
+        ogpu_surface(&B, 2, D0 + 0x2000, 64, 64, 48, OGPU_FMT_A8);
+        ogpu_surface(&B, 3, D0 + 0x3000, 64, 64, 48, OGPU_FMT_A8);
+        ogpu_surface(&B, 4, T0 + 0x10000, 64, 64, 48, OGPU_FMT_A8);
+        /* Combine two clip masks in slot 4: disc ADD noise, then IN the disc. */
+        ogpu_target(&B, 4);
+        ogpu_composite(&B, 2, 0, 0, 64, 48, 0, 0, 64, 48, 255, OGPU_COMP_SRCALPHA | OGPU_COMP_ADD);
+        ogpu_composite(&B, 3, 0, 0, 64, 48, 0, 0, 64, 48, 128, OGPU_COMP_SRCALPHA | OGPU_COMP_ADD);
+        ogpu_composite(&B, 2, 0, 0, 64, 48, 0, 0, 64, 48, 255, OGPU_COMP_SRCALPHA | OGPU_COMP_IN);
+        ogpu_target(&B, 0);
+        ogpu_fill(&B, 0, 0, 160, 100, f == OGPU_FMT_RGB565 ? 0xC618 : 0xFFC0C0C0UL);
+        for (i = 0; i < 6; i++) ogpu_mask(&B, D0 + 0x3000 + (unsigned long)i * 3, 64, 4 + i * 25, 4, 20, 14, 0xFF000000UL | (unsigned long)(i * 0x2A1F37));
+        ogpu_composite_masked(&B, 1, 0, 0, 64, 48, 20, 30, 64, 48, 255, 0, 4, 0, 0);
+        ogpu_clip(&B, 90, 25, 60, 70);
+        ogpu_composite_masked(&B, 1, 0, 0, 32, 24, 80, 30, 64, 48, 200, OGPU_COMP_BILINEAR, 2, 0, 0);
+        ogpu_fence(&B, (unsigned long)k);
+        run();
+        CHECK(C.last_error == OGPU_OK && nfences == 1, "v1.1 scene fmt %d ran (%d)", f, C.last_error);
+        h = fnv(arena + T0, bpr * 100, h);
+        h = fnv(arena + T0 + 0x10000, 64 * 48, h);
+    }
+    return h;
+}
+
+static int golden_check(const char *path, unsigned long got, const char *what) {
+    FILE *f = fopen(path, "r");
+    unsigned long want = 0;
+    CHECK(f && fscanf(f, "%lx", &want) == 1, "golden file %s", path);
+    if (f) fclose(f);
+    CHECK(got == want, "%s checksum %08lx, golden file says %08lx", what, got, want);
+    return got == want;
+}
+
 int main(int argc, char **argv) {
     static const int fmts[3] = { OGPU_FMT_CLUT8, OGPU_FMT_RGB565, OGPU_FMT_ARGB32 };
-    unsigned long golden;
+    unsigned long golden, golden11;
     int k;
     for (k = 0; k < 3; k++) {
         test_fill(fmts[k]);
@@ -417,19 +665,18 @@ int main(int argc, char **argv) {
     test_lines();
     test_pixels();
     test_composite();
+    test_a8();
+    test_mask(OGPU_FMT_RGB565); test_mask(OGPU_FMT_ARGB32); test_mask(OGPU_FMT_A8);
+    test_composite_v11();
     test_errors();
     test_random_streams();
     golden = golden_scene();
-    if (argc > 1) {
-        FILE *f = fopen(argv[1], "r");
-        unsigned long want = 0;
-        CHECK(f && fscanf(f, "%lx", &want) == 1, "golden file %s", argv[1]);
-        if (f) fclose(f);
-        CHECK(golden == want, "golden scene checksum %08lx, golden file says %08lx", golden, want);
-    }
+    golden11 = golden_scene_v11();
+    if (argc > 1) golden_check(argv[1], golden, "golden scene");
+    if (argc > 2) golden_check(argv[2], golden11, "v1.1 scene");
     CHECK(ogpu_core_supports(OGPU_OP_COMPOSITE, OGPU_FMT_CLUT8) == OGPU_NONE
           && ogpu_core_supports(OGPU_OP_PIXELS, OGPU_FMT_CLUT8) == OGPU_PARTIAL
           && ogpu_core_supports(OGPU_OP_FILL, OGPU_FMT_ARGB32) == OGPU_FULL, "supports");
-    printf("opengpu core: golden scene %08lx; %s\n", golden, failures ? "FAILED" : "all tests passed");
+    printf("opengpu core: golden scene %08lx, v1.1 scene %08lx; %s\n", golden, golden11, failures ? "FAILED" : "all tests passed");
     return failures != 0;
 }

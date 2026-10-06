@@ -157,6 +157,59 @@ static unsigned long golden_scene(int data_in_vram) {
     return h;
 }
 
+/* v1.1's scene (as tests/test_opengpu.c's golden_scene_v11): the target and
+ * the clip mask in video RAM, the rest in video RAM or Fast RAM. */
+static unsigned long golden_scene_v11(int data_in_vram) {
+    static const int fmts[2] = { OGPU_FMT_RGB565, OGPU_FMT_ARGB32 };
+    const unsigned long T0 = VBASE + 0x1000;
+    const unsigned long S0 = data_in_vram ? VBASE + 0x40000 : 0x40000;
+    const unsigned long D0 = data_in_vram ? VBASE + 0x80000 : 0x80000;
+    ogpu_u8 *s0 = data_in_vram ? vram_vk + 0x40000 : ram_vk + 0x40000;
+    ogpu_u8 *d0 = data_in_vram ? vram_vk + 0x80000 : ram_vk + 0x80000;
+    unsigned long h = 2166136261UL;
+    int k, i, x, y;
+    for (y = 0; y < 48; y++)
+        for (x = 0; x < 64; x++) {
+            long dx = x * 2 - 63, dy = y * 2 - 47, r2 = dx * dx + dy * dy, c = (2200 - r2) / 4;
+            d0[0x2000 + y * 64 + x] = (ogpu_u8)(c < 0 ? 0 : c > 255 ? 255 : c);
+        }
+    for (i = 0; i < 64 * 48; i++) d0[0x3000 + i] = (ogpu_u8)((i * 7) ^ (i >> 5));
+    for (i = 0; i < 64 * 48; i++) {
+        unsigned long v = 0xFF000000UL | (unsigned long)(i * 2654435761UL & 0xFFFFFFUL);
+        ogpu_u8 *p = s0 + (long)(i / 64) * 256 + (i % 64) * 4;
+        p[0] = (ogpu_u8)(v >> 24); p[1] = (ogpu_u8)(v >> 16); p[2] = (ogpu_u8)(v >> 8); p[3] = (ogpu_u8)v;
+    }
+    for (k = 0; k < 2; k++) {
+        int f = fmts[k];
+        long bpr = 160 * bpp_of(f);
+        memset(vram_vk + 0x1000, 0, (size_t)(bpr * 100));
+        memset(vram_vk + 0x11000, 0, 64 * 48);
+        begin();
+        ogpu_surface(&B, 0, T0, (unsigned long)bpr, 160, 100, f);
+        ogpu_surface(&B, 1, S0, 64 * 4, 64, 48, OGPU_FMT_ARGB32);
+        ogpu_surface(&B, 2, D0 + 0x2000, 64, 64, 48, OGPU_FMT_A8);
+        ogpu_surface(&B, 3, D0 + 0x3000, 64, 64, 48, OGPU_FMT_A8);
+        ogpu_surface(&B, 4, T0 + 0x10000, 64, 64, 48, OGPU_FMT_A8);
+        ogpu_target(&B, 4);
+        ogpu_composite(&B, 2, 0, 0, 64, 48, 0, 0, 64, 48, 255, OGPU_COMP_SRCALPHA | OGPU_COMP_ADD);
+        ogpu_composite(&B, 3, 0, 0, 64, 48, 0, 0, 64, 48, 128, OGPU_COMP_SRCALPHA | OGPU_COMP_ADD);
+        ogpu_composite(&B, 2, 0, 0, 64, 48, 0, 0, 64, 48, 255, OGPU_COMP_SRCALPHA | OGPU_COMP_IN);
+        ogpu_target(&B, 0);
+        ogpu_fill(&B, 0, 0, 160, 100, f == OGPU_FMT_RGB565 ? 0xC618 : 0xFFC0C0C0UL);
+        for (i = 0; i < 6; i++) ogpu_mask(&B, D0 + 0x3000 + (unsigned long)i * 3, 64, 4 + i * 25, 4, 20, 14, 0xFF000000UL | (unsigned long)(i * 0x2A1F37));
+        ogpu_composite_masked(&B, 1, 0, 0, 64, 48, 20, 30, 64, 48, 255, 0, 4, 0, 0);
+        ogpu_clip(&B, 90, 25, 60, 70);
+        ogpu_composite_masked(&B, 1, 0, 0, 32, 24, 80, 30, 64, 48, 200, OGPU_COMP_BILINEAR, 2, 0, 0);
+        ogpu_fence(&B, (unsigned long)k);
+        nf_vk = 0;
+        ogpu_vk_run(V, sbuf, B.words);
+        CHECK(ogpu_vk_last_error(V) == OGPU_OK && nf_vk == 1, "v1.1 scene fmt %d ran (%d)", f, ogpu_vk_last_error(V));
+        h = fnv(vram_vk + 0x1000, bpr * 100, h);
+        h = fnv(vram_vk + 0x11000, 64 * 48, h);
+    }
+    return h;
+}
+
 /* ---- random streams ------------------------------------------------------------- */
 
 /* An address for a surface or data: video RAM or Fast RAM, usually aligned. */
@@ -171,9 +224,9 @@ static unsigned long some_colour(void) { return rnd() << 8 | (rnd() & 255); }
 
 static void random_command(void) {
     int x = (int)(rnd() % 140) - 20, y = (int)(rnd() % 100) - 20, w = (int)(rnd() % 120), h = (int)(rnd() % 80);
-    switch (rnd() % 13) {
+    switch (rnd() % 15) {
     case 0: {
-        int f = 1 + (int)(rnd() % 3), sw = 1 + (int)(rnd() % 120), sh = 1 + (int)(rnd() % 90);
+        int f = rnd() % 5 ? 1 + (int)(rnd() % 3) : OGPU_FMT_A8, sw = 1 + (int)(rnd() % 120), sh = 1 + (int)(rnd() % 90);
         long bpr = (long)sw * bpp_of(f) + (rnd() % 3 ? 0 : (long)(rnd() % 9));
         if (rnd() % 4 == 0) bpr &= ~3L;
         ogpu_surface(&B, (int)(rnd() % 4), some_address(bpr * sh), (unsigned long)bpr, sw, sh, f);
@@ -189,7 +242,7 @@ static void random_command(void) {
     case 7: ogpu_pattern(&B, some_address(512), 1UL << (rnd() % 9), x, y, w, h, some_colour(), some_colour(), some_mode()); break;
     case 8: ogpu_line(&B, x, y, (int)(rnd() % 160) - 20, (int)(rnd() % 120) - 20, some_colour(), some_mode()); break;
     case 9: {
-        int f = 1 + (int)(rnd() % 4);
+        int f = rnd() % 6 ? 1 + (int)(rnd() % 4) : OGPU_FMT_A8;
         unsigned long table = f == OGPU_FMT_INDEX8 && rnd() % 4 ? some_address(1024) : 0;
         w %= 64; h %= 48;
         ogpu_pixels(&B, some_address(0x4000), (unsigned long)w * bpp_of(f) + rnd() % 8, f, table, x, y, w, h);
@@ -197,9 +250,15 @@ static void random_command(void) {
     }
     case 10: case 11:
         ogpu_composite(&B, (int)(rnd() % 4), (int)(rnd() % 40), (int)(rnd() % 30), (int)(rnd() % 80), (int)(rnd() % 60),
-                       x, y, w, h, (int)(rnd() % 256), rnd() % 4);
+                       x, y, w, h, (int)(rnd() % 256), rnd() % 4 ? rnd() % 4 : rnd() % 32);
         break;
     case 12: ogpu_fence(&B, rnd()); break;
+    case 13:        /* v1.1 */
+        ogpu_composite_masked(&B, (int)(rnd() % 4), (int)(rnd() % 40), (int)(rnd() % 30), (int)(rnd() % 80), (int)(rnd() % 60),
+                              x, y, w % 70, h % 50, (int)(rnd() % 256), rnd() % 32, (int)(rnd() % 4),
+                              (int)(rnd() % 20) - 2, (int)(rnd() % 20) - 2);
+        break;
+    case 14: ogpu_mask(&B, some_address(0x2000), (unsigned long)(w % 64) + rnd() % 8, x, y, w % 64, h % 48, some_colour()); break;
     }
 }
 
@@ -217,9 +276,9 @@ static void test_random(int rounds) {
             long k;
             for (k = 0; k < n * 6 * 4; k++) p[k] = (ogpu_u8)rnd();
             for (k = 0; k < n * 6; ) {
-                static const int ops[] = { 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x20, 0x01, 0x02, 0x03, 0xF0, 0x99 };
-                static const int lens[] = { 4, 4, 5, 9, 8, 5, 7, 8, 6, 2, 3, 2, 3 };
-                int j = (int)(rnd() % 13), len = lens[j] + (rnd() % 10 == 0 ? (int)(rnd() % 3) - 1 : 0), q;
+                static const int ops[] = { 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x20, 0x01, 0x02, 0x03, 0xF0, 0x99, 0x17, 0x20 };
+                static const int lens[] = { 4, 4, 5, 9, 8, 5, 7, 8, 6, 2, 3, 2, 3, 6, 10 };
+                int j = (int)(rnd() % 15), len = lens[j] + (rnd() % 10 == 0 ? (int)(rnd() % 3) - 1 : 0), q;
                 if (len < 1) len = 1;
                 if (k + len > n * 6) break;
                 p[k * 4] = 0; p[k * 4 + 1] = (ogpu_u8)ops[j]; p[k * 4 + 2] = 0; p[k * 4 + 3] = (ogpu_u8)len;
@@ -265,12 +324,35 @@ int main(int argc, char **argv) {
     cfg.map = map_vk;
     cfg.fence = fence_vk;
     V = ogpu_vk_create(&cfg, err, sizeof err);
-    if (!V) { printf("opengpu vulkan: no device (%s); skipped\n", err); return 0; }
+    if (!V) {
+        /* Only a machine with no Vulkan device skips; anything else is a failure. */
+        int none = !strncmp(err, "no Vulkan device", 16) || !strncmp(err, "no device with compute", 22)
+                   || !strncmp(err, "vkCreateInstance", 16);
+        printf("opengpu vulkan: %s (%s)\n", none ? "no device; skipped" : "FAILED to start", err);
+        return none ? 0 : 1;
+    }
     vram_vk = ogpu_vk_vram(V);
     printf("opengpu vulkan: on %s\n", ogpu_vk_device(V));
 
     golden_v = golden_scene(1);
     golden_r = golden_scene(0);
+    {
+        unsigned long before = 0, g11v, g11r;
+        ogpu_vk_stats(V, &st);
+        before = st.gpu;
+        g11v = golden_scene_v11(1);
+        g11r = golden_scene_v11(0);
+        ogpu_vk_stats(V, &st);
+        if (argc > 3) {
+            FILE *f = fopen(argv[3], "r");
+            unsigned long w11 = 0;
+            CHECK(f && fscanf(f, "%lx", &w11) == 1, "golden file %s", argv[3]);
+            if (f) fclose(f);
+            CHECK(g11v == w11 && g11r == w11, "v1.1 scene %08lx and %08lx, golden file says %08lx", g11v, g11r, w11);
+        }
+        CHECK(st.gpu - before >= 30, "the v1.1 scene drew on the GPU (%lu commands)", st.gpu - before);
+        printf("opengpu vulkan: v1.1 scene %08lx and %08lx, %lu commands on the GPU\n", g11v, g11r, st.gpu - before);
+    }
     if (argc > 1) {
         FILE *f = fopen(argv[1], "r");
         CHECK(f && fscanf(f, "%lx", &want) == 1, "golden file %s", argv[1]);

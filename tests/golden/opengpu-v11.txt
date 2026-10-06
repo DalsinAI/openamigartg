@@ -1,0 +1,3 @@
+400d1333
+# OpenGPU stream v1.1 scene (tests/test_opengpu.c golden_scene_v11): FNV-1a of the RGB565 and ARGB32 pictures and the A8 clip mask.
+# Every back end must give this: the host, the 68k (qemu-m68k -cpu m68040), the Cradle, the PiStorm.
