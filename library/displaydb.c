@@ -4,7 +4,8 @@
  * The display database (DESIGN.md, section 4): graphics.library's
  * NextDisplayInfo, FindDisplayInfo, GetDisplayInfoData and ModeNotAvailable
  * answer for OpenRTG's ModeIDs from the mode table (modes.c), so ScreenMode
- * prefs, the ASL screen mode requester and programs see the monitors.
+ * prefs, the ASL screen mode requester and programs see the monitors; and
+ * BestModeIDA picks an OpenRTG mode when the request is for one (0.8).
  *
  * OS-friendly (DESIGN.md, section 4): SetFunction() under Forbid() with the
  * caches cleared; every call that isn't ours goes to the vector SetFunction()
@@ -25,6 +26,7 @@
 
 #include "modes.h"
 #include "displaydb.h"
+#include "screens.h"
 
 #define REG(r, decl) register decl __asm(#r)
 #define NO_ID ((ULONG)INVALID_ID)
@@ -36,11 +38,13 @@ typedef ULONG (*next_fn)(REG(d0, ULONG), REG(a6, struct Library *));
 typedef APTR (*find_fn)(REG(d0, ULONG), REG(a6, struct Library *));
 typedef ULONG (*data_fn)(REG(a0, APTR), REG(a1, UBYTE *), REG(d0, ULONG), REG(d1, ULONG), REG(d2, ULONG), REG(a6, struct Library *));
 typedef ULONG (*avail_fn)(REG(d0, ULONG), REG(a6, struct Library *));
+typedef ULONG (*best_fn)(REG(a0, struct TagItem *), REG(a6, struct Library *));
 
 static next_fn old_next;
 static find_fn old_find;
 static data_fn old_data;
 static avail_fn old_avail;
+static best_fn old_best;
 static struct ortg_mode_table **tables;        /* [1..4], the library's */
 static volatile int db_on, patched;
 static struct MonitorSpec mspec[ORTG_MAX_MONITORS + 1];
@@ -202,7 +206,7 @@ static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag)
         break;
     case DTAG_DIMS:
         len = sizeof r.dm;
-        r.dm.MaxDepth = m->depth == 32 ? 24 : m->depth;
+        r.dm.MaxDepth = m->depth;      /* 32 for ARGB32, as CyberGraphX and Picasso96 accept it (0.8; SDL asks for 32) */
         r.dm.MinRasterWidth = 16; r.dm.MinRasterHeight = 16;
         r.dm.MaxRasterWidth = 4096; r.dm.MaxRasterHeight = 4096;
         r.dm.Nominal.MaxX = r.dm.MaxOScan.MaxX = r.dm.VideoOScan.MaxX = r.dm.TxtOScan.MaxX = r.dm.StdOScan.MaxX = (WORD)(m->width - 1);
@@ -256,6 +260,70 @@ static ULONG avail_patch(REG(d0, ULONG id), REG(a6, struct Library *gfx))
 {
     if (db_on && table_for(id)) return ours(id) ? 0 : DI_AVAIL_NOMONITOR;
     return old_avail(id, gfx);
+}
+
+/* The property flags OpenRTG's modes have (fill(), DTAG_DISP). */
+#define ORTG_PROPS (0x02000000UL | DIPF_IS_DBUFFER | DIPF_IS_SPRITES_CHNG_RES | DIPF_IS_DRAGGABLE | DIPF_IS_WB | DIPF_IS_GENLOCK)
+
+/* BestModeIDA. Graphics' own answer stands unless the request is for a
+ * board's mode: the RTG property (0x02000000) is a must-have, more than 8
+ * bits are asked for, the monitor or the source mode is OpenRTG's, graphics
+ * found nothing, or an 8-bit mode is asked for while an OpenRTG screen is
+ * showing (6 Oct 2026: SDL's 320x200x8 got PAL Low Res). A must-have flag
+ * OpenRTG's modes lack, or the RTG flag as a must-not-have, keeps graphics'
+ * answer. The size is the desired one, else the nominal one, else the
+ * source mode's, else 640x480. */
+static ULONG best_patch(REG(a0, struct TagItem *tags), REG(a6, struct Library *gfx))
+{
+    ULONG r = old_best(tags, gfx);
+    ULONG must = 0, mustnot = 0, monitor = NO_ID, source = NO_ID, depth = 1;
+    LONG nw = 0, nh = 0, dw = 0, dh = 0;
+    struct TagItem *t = tags;
+    int want = 0, from = 1, to = ORTG_MAX_MONITORS;
+    if (!db_on || !tables) return r;
+    while (t) {
+        switch (t->ti_Tag) {
+        case TAG_DONE: t = NULL; continue;
+        case TAG_MORE: t = (struct TagItem *)t->ti_Data; continue;
+        case TAG_SKIP: t += t->ti_Data + 1; continue;
+        case BIDTAG_DIPFMustHave: must = t->ti_Data; break;
+        case BIDTAG_DIPFMustNotHave: mustnot = t->ti_Data; break;
+        case BIDTAG_ViewPort:
+            if (t->ti_Data && source == NO_ID) source = GetVPModeID((struct ViewPort *)t->ti_Data);
+            break;
+        case BIDTAG_NominalWidth: nw = (LONG)t->ti_Data; break;
+        case BIDTAG_NominalHeight: nh = (LONG)t->ti_Data; break;
+        case BIDTAG_DesiredWidth: dw = (LONG)t->ti_Data; break;
+        case BIDTAG_DesiredHeight: dh = (LONG)t->ti_Data; break;
+        case BIDTAG_Depth: depth = t->ti_Data; break;
+        case BIDTAG_MonitorID: monitor = t->ti_Data; break;
+        case BIDTAG_SourceID: source = t->ti_Data; break;
+        }
+        t++;
+    }
+    if ((must & ~ORTG_PROPS) || (mustnot & ORTG_PROPS & 0x02000000UL)) return r;
+    if (monitor != NO_ID) {
+        ULONG n = (monitor >> 24) - 0x60;
+        if ((monitor >> 28) != 6 || n < 1 || n > ORTG_MAX_MONITORS) return r;   /* a chipset monitor */
+        from = to = (int)n; want = 1;
+    }
+    if (must & 0x02000000UL) want = 1;
+    if (depth > 8) want = 1;
+    if (r == NO_ID) want = 1;
+    if (source != NO_ID && ours(source)) want = 1;
+    if (depth == 8 && ortg_any_shown()) want = 1;
+    if (!want) return r;
+    if (!dw) dw = nw;
+    if (!dh) dh = nh;
+    if ((!dw || !dh) && source != NO_ID && ours(source)) { const struct ortg_mode *m = ours(source); if (!dw) dw = m->width; if (!dh) dh = m->height; }
+    if (!dw) dw = 640;
+    if (!dh) dh = 480;
+    for (int n = from; n <= to; n++)
+        if (tables[n] && tables[n]->count) {
+            ULONG id = ortg_best_mode(tables[n], (int)dw, (int)dh, (int)depth);
+            if (id) return id;
+        }
+    return r;
 }
 
 int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
@@ -345,6 +413,7 @@ int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
         old_find = (find_fn)SetFunction(gfx, -726, (APTR)find_patch);
         old_data = (data_fn)SetFunction(gfx, -756, (APTR)data_patch);
         old_avail = (avail_fn)SetFunction(gfx, -798, (APTR)avail_patch);
+        old_best = (best_fn)SetFunction(gfx, -1050, (APTR)best_patch);
         patched = 1;
         CacheClearU();
         Permit();

@@ -18,12 +18,14 @@ int main(void) {
     static struct ortg_mode_table std16, all16, std64, mon2, small, nodeep;
     struct ortg_caps b16 = { 16u << 20, 4096, 4096, 7 }, b64 = { 64u << 20, 4096, 4096, 7 };
 
-    /* Standard: twelve sizes in three depths; 64 MiB boards add 2560x1440 and 3840x2160. */
-    CHECK(ortg_build_modes(&std16, 1, &b16, 0) == 36);
-    CHECK(ortg_build_modes(&std64, 1, &b64, 0) == 42);
+    /* Standard: twelve PC sizes and three game sizes (320x200, 320x240,
+     * 640x400) in three depths; 64 MiB boards add 2560x1440 and 3840x2160. */
+    CHECK(ortg_build_modes(&std16, 1, &b16, 0) == 45);
+    CHECK(ortg_build_modes(&std64, 1, &b64, 0) == 51);
+    CHECK(by_size(&std16, 320, 200, 8) != 0 && by_size(&std16, 320, 240, 8) != 0 && by_size(&std16, 640, 400, 8) != 0);
     CHECK(by_size(&std64, 3840, 2160, 32) != 0);
     CHECK(by_size(&std16, 2560, 1440, 8) == 0);
-    /* All adds twenty Amiga-shaped sizes. */
+    /* All adds the other seventeen Amiga-shaped sizes. */
     CHECK(ortg_build_modes(&all16, 1, &b16, 1) == 96);
     CHECK(by_size(&all16, 320, 256, 8) != 0 && by_size(&std16, 320, 256, 8) == 0);
 
@@ -41,7 +43,7 @@ int main(void) {
     uint32_t pal = by_size(&all16, 320, 256, 8)->mode_id;
     CHECK(ortg_find_mode(&std16, pal) != 0 && ortg_find_mode(&std16, pal)->height == 256);
     /* Another monitor's ModeID is not this monitor's. */
-    CHECK(ortg_build_modes(&mon2, 2, &b16, 0) == 36);
+    CHECK(ortg_build_modes(&mon2, 2, &b16, 0) == 45);
     CHECK(ortg_find_mode(&std16, by_size(&mon2, 640, 480, 8)->mode_id) == 0);
     CHECK(by_size(&mon2, 640, 480, 8)->mode_id != by_size(&std16, 640, 480, 8)->mode_id);
 
@@ -59,11 +61,12 @@ int main(void) {
     CHECK(ortg_best_mode(&std16, 800, 600, 24) == by_size(&std16, 800, 600, 32)->mode_id);
     CHECK(ortg_best_mode(&std16, 5000, 5000, 8) == by_size(&std16, 1920, 1200, 8)->mode_id);
     CHECK(ortg_best_mode(&all16, 320, 200, 8) == by_size(&all16, 320, 200, 8)->mode_id);
-    CHECK(ortg_best_mode(&std16, 320, 200, 8) == by_size(&std16, 640, 480, 8)->mode_id);
+    CHECK(ortg_best_mode(&std16, 320, 200, 8) == by_size(&std16, 320, 200, 8)->mode_id);
+    CHECK(ortg_best_mode(&std16, 300, 220, 8) == by_size(&std16, 320, 240, 8)->mode_id);
 
     /* A board without 32-bit: the deepest it has. A small board: what fits. */
     struct ortg_caps no32 = { 16u << 20, 4096, 4096, 3 }, tiny = { 2u << 20, 4096, 4096, 7 };
-    CHECK(ortg_build_modes(&nodeep, 1, &no32, 0) == 24);
+    CHECK(ortg_build_modes(&nodeep, 1, &no32, 0) == 30);
     CHECK(ortg_best_mode(&nodeep, 640, 480, 32) == by_size(&nodeep, 1920, 1200, 16)->mode_id);
     ortg_build_modes(&small, 1, &tiny, 0);
     CHECK(by_size(&small, 1024, 768, 16) != 0 && by_size(&small, 1024, 768, 32) == 0);
