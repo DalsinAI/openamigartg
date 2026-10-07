@@ -75,6 +75,9 @@ that it is based on OpenRTG by Dalsin Limited.
   - `OpenRTG LISTDB` lists every mode the display database has, as ScreenMode
     prefs sees them.
 - `library/build.sh`: builds both with the os32 stove.
+- `tools/probes/`: debugging probes used while bringing up screens (AlertSpy,
+  IBaseScan, ICtrlTrace, Priv1Trace, PatchScan, OSTrace, MouseProbe). They
+  print to the serial port, are built by hand and are not shipped.
 - `tests/run.sh`: the host tests (`tests/test_modes.c`), plus a check that
   the library's C builds for the 68k with the stove.
 - `measurements/`: LibCount's raw counts from the OS 3.2.3 scratch copy with
