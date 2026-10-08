@@ -1,0 +1,116 @@
+OpenGPU developer kit
+=====================
+
+Everything for building programs on OpenGPU: SDL 2, OpenGL and GLES, GLA,
+Warp3D, MiniGL and opengpu.library itself, for AmigaOS 3.2 on a 68040 or
+68060 with an FPU, with bebbo's m68k-amigaos-gcc (GCC 6.5 or GCC 16).
+
+Programs built with it run on OpenGPU's runtime, which OpenUp installs:
+opengpu.library, and LIBS:OpenGPU/SDL2.module and GL.module. The kit has no
+runtime files of its own. SDL_GL_* needs SDL2.module 3 (OpenGPU 0.6 and
+later); an older SDL2.module runs the same programs without OpenGL.
+
+
+What is in it
+-------------
+
+  bin/sdl2-config         flags for SDL 2, as on any other system
+  include/SDL2/           SDL 2.32.10, SDL_image, SDL_mixer, SDL_ttf, SDL_net
+  include/GL/ GLES2/ GLES3/ KHR/
+                          OpenGL and GLES (Mesa's and Khronos's headers)
+  include/gla/            GLA: OpenGPU's own GL interface (displays, contexts,
+                          buffers shown in a window)
+  include/opengpu/ proto/ inline/ clib/ libraries/
+                          opengpu.library, OpenRTG, Warp3D and MiniGL
+  include/Warp3D/ mgl/    Warp3D and MiniGL
+  lib/libSDL2.a           SDL 2 (the program's half: SDL2.module does the work)
+  lib/libSDL2main.a       empty: SDL needs no main of its own here; it is
+                          there for build systems that link -lSDL2main
+  lib/libSDL2_test.a      SDL's test framework (for SDL's own test programs)
+  lib/libSDL2_image.a libSDL2_mixer.a libSDL2_ttf.a libSDL2_net.a
+  lib/libGL.a             OpenGL, GLES and GLA (GL.module does the work)
+  lib/libminigl.a libmgl.a
+                          MiniGL (minigl.library), and its GLUT-style helpers
+  lib/pkgconfig/          sdl2, SDL2_image, SDL2_mixer, SDL2_ttf, SDL2_net,
+                          gl and glesv2
+  lib/cmake/              find_package(SDL2) and the satellites
+  examples/               a sprite program, an SDL_GL program and a GLA one
+  AutoDocs-OpenGPU.md     the reference: how it all works, and what's there
+  Licences/               every notice; Licences/README says what is whose
+
+One set of libraries serves both compilers: the GCC 16 builds link with
+GCC 6.5 too (the same libnix, objects and FPU calling convention).
+
+
+On the PC
+---------
+
+Unpack OpenGPU-SDK-0.6.tar.gz anywhere, and put its bin/ on PATH beside the
+compiler's:
+
+  export PATH=/path/to/OpenGPU-SDK-0.6/bin:$PATH
+  export PKG_CONFIG_LIBDIR=/path/to/OpenGPU-SDK-0.6/lib/pkgconfig
+  m68k-amigaos-gcc -O2 game.c -o Game $(sdl2-config --cflags --libs)
+
+On AmigaChrome, ACKitchen's stoves can carry the kit (scripts/os32_stove.py
+--kit): then sdl2-config is in the stove's bin/, the headers and libraries
+are in its m68k-amigaos/, so no -I or -L is needed:
+
+  m68k-amigaos-gcc -noixemul -m68040 -m68881 game.c -o Game -lSDL2 -lGL -lm
+
+finds <SDL2/SDL.h> and the libraries by itself (a program that includes
+"SDL.h" adds -I for include/SDL2, as `sdl2-config --cflags` does). Keep
+-noixemul (GCC 6.5's default is ixemul) and the FPU flags.
+
+sdl2-config --cflags gives -noixemul -m68040 -m68881 (SDL is built for the
+68040 with its FPU, and the FPU calling convention must match), and for
+GCC 16 also -fno-tree-loop-distribute-patterns (GCC 16's loop miscompile).
+SDL2_CPU in the environment gives other CPU flags, such as -m68060, and
+SDL2_RUNTIME=-mcrt=nix20 replaces -noixemul for builds that pick libnix
+that way (GCC must not get both).
+
+CMake: point CMAKE_PREFIX_PATH at the kit; find_package(SDL2) gives
+SDL2::SDL2 (and SDL2::SDL2main, empty), find_package(SDL2_mixer) and the
+others give their targets.
+
+
+On the Amiga
+------------
+
+Unpack OpenGPU-SDK-0.6.lha (or install OpenUp's "OpenGPU developer files"),
+and point an assign at it:
+
+  Assign OpenGPU-SDK: Work:OpenGPU-SDK-0.6
+
+A GCC on the Amiga takes -IOpenGPU-SDK:include/SDL2 and -LOpenGPU-SDK:lib.
+
+
+Building the examples
+---------------------
+
+Each has its build command at its top:
+
+  examples/sprite     m68k-amigaos-gcc -O2 sprite.c -o Sprite $(sdl2-config --cflags --libs)
+  examples/sdl_gl     m68k-amigaos-gcc -O2 glspin.c -o GLSpin $(sdl2-config --cflags --libs)
+  examples/gla        m68k-amigaos-gcc -O2 glatriangle.c -o GLATriangle $(pkg-config --cflags --libs gl)
+
+Copy the program to the Amiga and run it from a Shell. Each takes
+SECONDS n, to end by itself.
+
+
+Things to know
+--------------
+
+- GL runs on the program's stack. A GL program asks libnix for a big one:
+  unsigned long __stack = 1024 * 1024;  (the examples do).
+- A program that calls any SDL_GL_ function links libGL.a too:
+  `sdl2-config --libs` gives -lSDL2 -lGL. A program that never calls one
+  links no GL.
+- GL on AmigaChrome is the PC's graphics chip (virgl, GL 4.3, GLES 3.1); on
+  other Amigas it is softpipe on the 68k (GL 3.3, GLES 3.1). SetEnv
+  SDL_OPENGPU_GL cpu picks softpipe for SDL programs.
+- With GCC 16, run tools/fpcr_check.py (openamigartg) on what you build:
+  GCC 16 at -m68040 can put a float-to-int store in the wrong place.
+
+Copyright (c) 2026 Dalsin Limited. The kit's own files are MIT; SDL and the
+others keep their own licences (Licences/).

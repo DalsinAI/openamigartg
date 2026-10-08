@@ -79,7 +79,7 @@ for p in "$HERE"/patches/sdl2/*.patch "$HERE"/patches/amigaos3/*.patch; do
     patch -s -p1 -d "$TREE" < "$p"
 done
 cp -R "$HERE/src/." "$TREE/src/"
-cp "$HERE/include/SDL_config_amigaos.h" "$TREE/include/"
+cp -p "$HERE/include/SDL_config_amigaos.h" "$TREE/include/"   # its time: the Makefile rebuilds on a change
 
 # 4. The CyberGraphX and AHI headers the GCC 16 stove lacks.
 SDK=$WORK/sdk-include
