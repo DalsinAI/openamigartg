@@ -37,6 +37,8 @@ if [ -f "$HERE/opengpu/ogpu_3d.c" ]; then D3=-DOGPU_WITH_3D; D3SRC="$HERE/opengp
     $D3 -o "$OUT/opengpu.library" "$HERE/opengpu/opengpu_lib.c" "$HERE/opengpu/ogpu_core.c" $D3SRC "$HERE/opengpu/ogpu_module.c" "$HERE/string.c" \
     "$OUT/ogfx_lib.o" "$OUT/ogfx_leaves.o" -lgcc
 echo "$OUT/opengpu.library ($(wc -c < "$OUT/opengpu.library") bytes)"
+# No writable data: it may run from ROM, so everything it keeps is in its base.
+python3 "$ROOT/tools/hunk_rw_check.py" "$OUT/opengpu.library"
 "$CC" -m68020 -O2 -fno-delete-null-pointer-checks -Wall -Werror -Wno-pointer-sign -noixemul -I"$ROOT/include" -o "$OUT/OpenRTG" "$ROOT/tools/openrtg_cmd.c"
 echo "$OUT/OpenRTG ($(wc -c < "$OUT/OpenRTG") bytes)"
 "$CC" -m68020 -O2 -fno-delete-null-pointer-checks -Wall -Werror -Wno-pointer-sign -noixemul -I"$ROOT/include" -o "$OUT/OpenRTG-Monitor" "$ROOT/tools/openrtg_monitor.c"

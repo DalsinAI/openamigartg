@@ -643,7 +643,7 @@ has put them in (Picasso96 without the OpenRTG part).
 
 - Programs open only opengpu.library and use one include tree.
 - Mesa (about 20 MB) and SDL 2 are modules: `LIBS:OpenGPU/GL.module` and `LIBS:OpenGPU/SDL2.module`. Each loads on the first call a program makes into it, through two new LVOs: `OGPU_ModuleOpen(name, version, &table)` and `OGPU_ModuleClose(handle)`.
-- Each calling program gets its own copy of a module (LoadSeg per program, UnLoadSeg on close). So SDL's global state and Mesa's globals stay private, as with static linking, and no opener is refused. The cost is memory per program.
+- Each calling program gets its own copy of a module's data, so SDL's global state and Mesa's globals stay private, as with static linking, and no opener is refused. Step 1 did this with a LoadSeg copy per program; since step 2 the code is loaded once and shared, and since opengpu.library 0.9 it stays loaded (section 5, "Residency").
 - Link libraries:
   - `libSDL2.a` is SDL's dynapi stub. On the first SDL call, `OGPU_ModuleOpen("SDL2")` returns `SDL_DYNAPI_entry`, and every `SDL_` call jumps through that table (varargs work).
   - `libGL.a` is the same for GL. It has one entry per call, generated from the GL entry points Mesa's glapi made for the build (`stubs/gl/gen_gl.py`), with the 15 GLA calls. GL.module's table hands out the same calls by name. The first call opens it with `OGPU_ModuleOpen("GL")` and binds the whole table in one pass, so a program runs on an older or newer module (a missing call returns 0).
@@ -651,7 +651,7 @@ has put them in (Picasso96 without the OpenRTG part).
 - Module ABI (`include/opengpu/module.h`): the segment's first code is an entry taking {SysBase, DOSBase, OpenGPUBase, version} and returning the module's table. Modules call opengpu.library's LVOs like any program.
   - The table starts with the module's version; the rest is the module's own (SDL2: `dynapi_entry`, `close`; GL: `close` and its calls by name).
   - A module refuses (returns NULL) when the caller asks for a newer version than it is. `OGPU_ModuleOpen` then gives NULL with `IoErr()` `ERROR_OBJECT_WRONG_TYPE`; a missing file gives `ERROR_OBJECT_NOT_FOUND`.
-  - The caller calls the module's own close, then `OGPU_ModuleClose`, which unloads it.
+  - The caller calls the module's own close, then `OGPU_ModuleClose`, which frees that program's data. A shared module's code stays loaded (section 5); a module for each program is unloaded.
   - A name with ':' or '/' is a path (tests load `PROGDIR:Test.module`).
   - opengpu.library 0.5 has the two calls. A stub on 0.4 or older loads the module itself, the same way.
   - Modules are linked without libnix's startup. `library/modules/common` stands in for it: the module's first code and libnix's list heads (`module_start.S`, first on the link line, naming `__initlibraries` and `__initcpp`), and `module_rt.c`, which runs the init and exit lists, turns `exit()` during start into a failed open, and gives `getenv` through `GetVar` (libnix's doesn't work in a module).
@@ -733,13 +733,14 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
 opengpu.library holds 2D, the OpenGfx fork, the 3D rasteriser and the driver loader. It is built so that it can sit in the AmigaChrome boot ROM's resident list later, beside acrtg.card. What that needs:
 
 - **RomTag first, RTF_AUTOINIT.** This is already so: `start()` then the RomTag, built with `-fno-toplevel-reorder`. For the ROM it becomes RTF_COLDSTART at a priority after expansion.library and before graphics.library's patches are installed. It should not be AFTERDOS, because OpenGfx patches graphics.library early.
-- **No writable globals.** Code in ROM can't write to itself.
-  - SysBase, DOSBase and the driver-name scratch move into the library base. SysBase comes from address 4.
-  - `drivers_load`'s static name table goes onto the stack or into the base.
-  - Everything else is already const.
-  - The same build then runs from RAM (LIBS:) or from ROM, flattened with `build/os3-autoboot/hunk_flatten.py` as acrtg.card is.
-- **Nothing from disk at init.** Init only sets up semaphores. Drivers load on first use from a DOS process, as 0.3 already does.
-- **Resident drivers first.** Before scanning `LIBS:OpenGPU/`, the library looks for drivers already resident (FindResident / the library list). ACRTG.gpu can then live in the ACRTG boot ROM next to acrtg.card, and a booted Cradle needs no driver file.
+- **No writable globals (done in 0.9).** Code in ROM can't write to itself.
+  - Exec and dos.library are in the library base: exec as `lib_init` is given it (the same pointer as address 4), dos.library opened by the first DOS process that needs it. The library's functions take them from the base.
+  - `drivers_load`'s name table (8 names of 32 bytes) is in the base too, used under the driver lock.
+  - The module loader keeps its list in the base and is passed exec and dos.library on each call. OpenGfx's state has been in the base since 0.6.
+  - `library/build.sh` checks it: `tools/hunk_rw_check.py` fails the build when opengpu.library has a data or BSS hunk with anything in it (0.7 had a BSS hunk of 264 bytes).
+  - The same build then runs from RAM (LIBS:) or from ROM, flattened with `build/os3-autoboot/hunk_flatten.py` as acrtg.card is. Not done yet: the ROM build itself, and RTF_COLDSTART.
+- **Nothing from disk at init.** Init sets up semaphores and adds the low-memory handler (below). Drivers load on first use from a DOS process, as 0.3 already does.
+- **Resident drivers first (not built yet).** Before scanning `LIBS:OpenGPU/`, the library looks for drivers already resident (FindResident / the library list). ACRTG.gpu can then live in the ACRTG boot ROM next to acrtg.card, and a booted Cradle needs no driver file.
 - **Stack.** The CPU back end runs on the caller's stack. The core struct is about 400 bytes on the stack; the 3D state (1.7 KB) comes from AllocVec, so patched graphics.library calls from small-stack tasks are safe.
 - **OpenGfx's patches** are thin entry points in the core: `OGFX_InstallPatches` writes an 18-byte entry for each into the base and points graphics.library's vector at it (SetFunction at init once it is in ROM). They call the same code that programs reach through the LVOs, and OpenGfx keeps no writable globals (0.6).
 
@@ -748,7 +749,7 @@ opengpu.library holds 2D, the OpenGfx fork, the 3D rasteriser and the driver loa
 Chosen method: **-fbaserel32 (A4-relative data), with the per-program data made by OGPU_ModuleOpen. This is libnix's libinitr pattern, done by the module loader.**
 
 - **Build.** The module (GL.module, SDL2.module) is built with `-fbaserel32 -mresident32` against libnix's `libb32` (both are in the os32-gcc16 stove). Code reaches every global and static, C++ statics included, through A4. The linker writes the table of data-to-data relocations.
-- **Load once.** OGPU_ModuleOpen("SDL2") LoadSegs the module the first time. The code segment stays loaded and is shared, until the last program closes it and memory is wanted.
+- **Load once, then resident.** OGPU_ModuleOpen("SDL2") LoadSegs the module the first time a program asks. The code stays loaded and shared after the last program closes it, until the system resets or memory runs short. Nothing unloads it at a close (as built in 0.9: "Resident modules" below).
 - **Data per program.** Each program's OGPU_ModuleOpen does this:
   - allocates a copy of the module's data and BSS;
   - copies the initial data in and applies the data-to-data relocations;
@@ -778,12 +779,27 @@ A per-opener library base alone wouldn't do: SDL's and GL's calls go through fun
 
 ##### Residency, step 2: as built (8 October 2026)
 
-- **Two kinds, told apart by the first code.** A shared module (built `-fbaserel32`, linked `-resident32`) starts with a BRA.W over a header (`struct OGPUModuleHeader`: the magic "OGSM", the entry, `___a4_init`, `___data_size`, `___datadata_relocs`; `module_start.S`). Anything else is a module for each program and is loaded as in step 1. `opengpu.library` (`ogpu_module.c`) keeps shared modules in a list, found again by `SameLock` on a lock it holds, and unloads one when its last program closes it.
+- **Two kinds, told apart by the first code.** A shared module (built `-fbaserel32`, linked `-resident32`) starts with a BRA.W over a header (`struct OGPUModuleHeader`: the magic "OGSM", the entry, `___a4_init`, `___data_size`, `___datadata_relocs`; `module_start.S`). Anything else is a module for each program and is loaded as in step 1. `opengpu.library` (`ogpu_module.c`) keeps shared modules in a list. (Step 2 found them again by `SameLock` on a lock it held, and unloaded one when its last program closed it; 0.9 changed both: "Resident modules" below.)
 - **Each open:** a copy of the data and BSS from the data as loaded (which no program uses), the data-to-data relocations applied, then the entry with A4 on the copy (libnix's init list, the constructors). A stub on an older library calls the first code itself; that sets A4 on the data LoadSeg gave it, which is then the program's own.
 - **Calls.** Every module table now starts with `struct OGPUModuleTable { version, a4, caller_a4 }`, and the tables are version 2 (`OGPU_MODULE_A4_VERSION`); a version 1 caller is refused, as it would call without A4. `libSDL2.a` sets A4 in C (built `-ffixed-a4`, `OGPU_A4`); `libGL.a`'s generated entries copy each call's arguments (their size from Mesa's glapi XML) below a saved A4 and A5. `gla_get_proc_address` hands out libGL.a's own entries.
 - **Back into the program, and threads.** `ogpu_module_callout` calls the program with its A4 (SDL's audio callback, timers, thread functions, event filters and watchers). A thread a module starts takes the module's A4 from its `tc_TrapData`, set by its parent (libnix's `-resident32` convention): SDL's threads do. Mesa starts none here, and a shared GL.module refuses `pthread_create`, as the stove's libpthread would start one without A4.
 - **Checked at build.** `tools/baserel_check.py` lists every absolute reference from the code into the data and every A4-relative one to something in the code; a module's `baserel.allow` names the reviewed ones (tables that are only read, and glsl's built-in struct field tables, which each program's constructors fill with the same values). It found libnix's `__initcpp` reaching the end of its list through A4, so `module_rt.c` has its own, and Kalms' c2p keeping its sizes in a BSS of its own, so it takes them in registers now.
 - **Measured** on a scratch copy of the Showcase instance (AC090 68040, virgl): a first GL open takes 19.2 MB and a further one 345 KB (SDL 2: 1.06 MB, then 171 KB). Three softpipe Gears at once take 49.8 MB over idle, against 71.4 MB with a copy each; frame rates are as before.
+
+##### Resident modules: as built (opengpu.library 0.9, 8 October 2026)
+
+Step 2 still unloaded a shared module when its last program closed it, so each new GL program after a quiet spell loaded Mesa's 19 MB again. The decision was that the big parts stay resident once loaded. 0.9 does that:
+
+- **Loaded on first use, then kept.** The first `OGPU_ModuleOpen` of a shared module loads it, as before. `OGPU_ModuleClose` frees only that program's data and never unloads the code. Modules are not loaded at boot, so a system that runs no GL program never holds Mesa.
+- **Unloaded only when memory runs short.** The library adds an exec low-memory handler at init (`AddMemHandler`, exec 39 and later, priority 50, so before ramlib's handler expunges libraries). Exec runs it in the allocating task, under Forbid, when an allocation fails; `C:Avail FLUSH` makes one fail on purpose. It unloads every shared module no program has open and asks exec to try the allocation again. It never waits: when another task is inside the loader at that moment it does nothing that time (`AttemptSemaphore`). The library's expunge does the same unloading. Nothing else unloads a shared module; a reset clears them all.
+  - The handler is needed because the expunge alone isn't enough: opengpu.library is nearly always open (OpenLook keeps it open for the look hook), and in the lab a flush while it was open unloaded nothing through the expunge.
+- **Found again by file, with no lock held.** A loaded module is matched by the full name `NameFromLock` gives (so `PROGDIR:Test.module` from two drawers is two modules, and `LIBS:OpenGPU/GL.module` reached by two names is one), its date and its size. Step 2 held a lock on the file while it was loaded; a module kept for good would then have stopped an installer from replacing it, and unlocking from the low-memory handler isn't safe.
+- **A replaced file is a new module.** When the file's date or size has changed, the next open loads the new file. Programs on the old copy keep it; the old copy goes at once if no program has it open, or at the next low-memory flush.
+- **Modules for each program** (not built `-fbaserel32`; GL.module and SDL2.module are both shared) are still loaded at each open and unloaded at each close.
+- **Measured** on a scratch copy of the OpenUp lab instance (OS 3.2.3, AC090 68040, ACRTG with virgl, OpenUp 0.6.18's GL.module and SDL2.module), 0.7 and the resident build (this change on 0.7) on the same copy the same hour. The full figures are in `measurements/20261008-resident-modules.txt`.
+  - A GL program after all the others have closed: with 0.7 the open loads GL.module again (1,265 ms and 19,197 KB); with the resident build it takes 1 ms and 345 KB. SDL 2: 93 ms and 1,057 KB, now 1 ms and 171 KB.
+  - Memory with 1, 2 and 3 Gears on virgl: 24.0, 29.4 and 34.8 MB over idle, the same with both. When all have ended: 0.02 MB over idle with 0.7, 18.4 MB with the resident build (GL.module kept). After `Avail FLUSH`: back to idle with both.
+  - Frame rates (Mesa demos, testsprite2, W3DTest and MGLTest) are the same within the run-to-run spread.
 
 ## 6. Warp3D, built in
 

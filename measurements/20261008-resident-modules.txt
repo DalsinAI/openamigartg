@@ -1,0 +1,111 @@
+Resident modules: opengpu.library 0.9, 8 October 2026
+=====================================================
+
+Where: a scratch copy of the OpenUp lab instance (OS 3.2.3, AC090 68040,
+ACRTG with ACRTG.gpu and virgl, OpenUp 0.6.18 installed: its GL.module,
+SDL2.module, Warp3D.library and minigl.library), on its own ports, with the
+OpenBlanker line taken out of its startup so nothing else draws during the
+timed runs. Only opengpu.library changes between runs: "0.7" is openamigartg
+main at e94738f, "resident" is this change built on that same commit, each
+on a fresh boot of the same copy, the same evening. (It was numbered 0.8
+then; it ships as 0.9, on top of #48's 0.8. The rebased 0.9 was checked
+again at the end: "After the rebase" below.) The machine was shared with other builds (load average 12
+to 35 on 12 cores), so frame rates were taken in alternating 0.7 and resident boots.
+
+ModuleCheck (tests/modules)
+  resident: 43 of 43 checks passed. New ones:
+    Test.module stays loaded after its last close: the next open runs the
+      same code (same address) and takes only its data (258,808 bytes,
+      most of it libnix's malloc pool for that program)
+    a low-memory flush leaves a module a program has open
+    after a low-memory flush with no program on it, the next open loads it
+      again (21,128 bytes more: the code)
+    a replaced module file is loaded anew, and a program on the old one
+      keeps it; the next open runs the new one
+    SDL2.module and GL.module: kept when all three opens have closed; the
+      next open runs the loaded code; an open and close after that keeps
+      0 bytes; a flush leaves it while a program has it open; a flush with
+      nobody on it unloads it, and the next open loads it again
+  0.7: 28 of 28 (the residency checks are skipped below the resident build)
+
+Opening the installed modules (ModuleCheck, from nothing loaded)
+                                        0.7                   resident
+  GL.module, first open             1,513 ms, 19,204 KB   1,301 ms, 19,204 KB
+    second and third, at once           1 ms, 345 KB          1 ms, 345 KB
+    all closed, then another open   1,265 ms, 19,197 KB       1 ms, 345 KB
+    kept when all have closed               7 KB          18,859 KB
+    after a low-memory flush                -             18,858 KB given back;
+                                                          next open 1,018 ms,
+                                                          19,204 KB
+  SDL2.module, first open              98 ms, 1,064 KB       56 ms, 1,064 KB
+    second and third, at once           0 ms, 171 KB          1 ms, 171 KB
+    all closed, then another open      93 ms, 1,057 KB        1 ms, 171 KB
+    after a low-memory flush                -               892 KB given back;
+                                                          next open 55 ms
+
+Memory in use over idle (Avail), OpenDemos Gears on virgl, 320x240
+                                     0.7        resident
+  1 program                       24.04 MB   24.04 MB
+  2 programs                      29.44 MB   29.44 MB
+  3 programs                      34.85 MB   34.84 MB
+  all ended                        0.02 MB   18.43 MB   (GL.module kept)
+  another Gears run, ended         0.02 MB   18.43 MB
+  after C:Avail FLUSH             -0.12 MB   -0.12 MB   (fonts and libraries
+                                                        flushed too)
+  Gears again after the flush     -0.01 MB   18.40 MB
+
+A whole Gears run (OpenDemos gears GPU SECONDS 3, timed by the lab's RunTime:
+loading, 3 seconds of drawing, quitting), one after another
+                                     0.7        resident
+  after three Gears have ended     6,935 ms   2,639 ms
+  the next one                     9,067 ms   2,648 ms
+  after C:Avail FLUSH              5,062 ms   3,729 ms   (resident: loads it again)
+  the next one                     4,897 ms   2,710 ms
+  (0.7's runs each load Mesa; the machine's load moved these by seconds.)
+
+Frame rates, 320x240; medians of three alternating boots each
+                                     0.7        resident  the runs (0.7 / resident)
+  Boing, virgl                      230.1      216.6     230, 154, 277 / 110, 217, 315
+  Boing, softpipe                    12.9       12.3     12.9, 9.1, 14.4 / 5.7, 12.3, 14.9
+  Gears, virgl                      303.1      245.7     303, 219, 386 / 118, 246, 392
+  Gears, softpipe                     5.2        2.5     5.2, 4.6, 5.5 / 2.5, 2.3, 5.9
+  Tunnel, virgl                     412.9      376.3     413, 250, 482 / 153, 376, 679
+  Tunnel, softpipe                    0.3        0.3
+  testsprite2 (SDL2.module)         441.9      418.6     442, 411, 477 / 181, 419, 563
+  W3DTest, GPU (Warp3D)             167.6      198.7     160, 168, 203 / 76, 199, 201
+  W3DTest, CPU                       43.4       49.0     43, 41, 48 / 27, 52, 49
+  MGLTest, GPU (minigl)              94.0      101.0     94, 93, 108 / 82, 101, 103
+  MGLTest, CPU                       39.5       44.6     39, 38, 45 / 29, 45, 45
+  The first resident boot ran during a load peak (every row, CPU and GPU alike,
+  about half). Softpipe Gears draws only 25 to 55 frames in 10 seconds, so
+  it was run again for 30 seconds, twice in two alternating boots each, with
+  the load at 12 to 15:
+  Gears, softpipe, 30 s             6.0, 6.1, 6.1, 5.5   6.2, 5.7, 5.6, 5.9
+  Gears, virgl, 30 s                348.9, 315.4         361.1, 338.0
+  The library's change touches no drawing path (the module code, the stubs
+  and the core are as before); the frame rates are the same within the
+  spread.
+
+Checks at build
+  library/build.sh: tools/hunk_rw_check.py finds no data or BSS hunk in
+    opengpu.library (0.7: a 264-byte BSS hunk: SysBase, DOSBase and
+    drivers_load's name table)
+  tools/fpcr_check.py: none, in everything library/build.sh builds and in
+    ModuleCheck, Test.module and TestEach.module
+  every library call in opengpu.library is at a negative offset from A6
+    (GCC 6.5's lost sign checked by disassembly)
+  tests/run.sh: all passed
+
+After the rebase (opengpu.library 0.9, on #48's 0.8), the whole set once more
+on the same copy
+  ModuleCheck: 43 of 43. GL.module: first open 1,045 ms and 19,204 KB;
+    after all have closed, 1 ms and 345 KB; a flush gives back 18,858 KB,
+    and the next open loads it again (1,004 ms). SDL2.module: 58 ms and
+    1,064 KB, then 1 ms and 171 KB; a flush gives back 892 KB.
+  Memory over idle, Gears on virgl: 24.04, 29.44, 34.84 MB; all ended
+    18.43 MB; after C:Avail FLUSH -0.12 MB; Gears again 18.40 MB
+  Whole Gears runs: 2,654 and 2,645 ms; after the flush 3,683 ms (loads
+    again), then 2,634 ms
+  Frame rates: Boing 268.6 virgl, 13.9 softpipe; Gears 309.0 and 5.4;
+    Tunnel 466.7 and 0.3; testsprite2 426.9; W3DTest 178.6 GPU, 46.0 CPU;
+    MGLTest 101.0 GPU, 39.9 CPU. sdlcheck: all checks passed.
