@@ -1,0 +1,23 @@
+--- a/src/base/ftobjs.c
++++ b/src/base/ftobjs.c
+@@ -395,6 +395,8 @@
+ 
+ 
+       module      = FT_Get_Module( slot->library, "ot-svg" );
++      if ( !module )
++        return 1;
+       svg_service = (SVG_Service)module->clazz->module_interface;
+ 
+       return (FT_Bool)svg_service->preset_slot( module, slot, FALSE );
+--- a/src/truetype/ttinterp.c
++++ b/src/truetype/ttinterp.c
+@@ -3484,6 +3484,9 @@
+     if ( BOUNDSL( F, exc->maxFunc + 1 ) )
+       goto Fail;
+ 
++    if ( !exc->FDefs )
++      goto Fail;
++
+     /* Except for some old Apple fonts, all functions in a TrueType */
+     /* font are defined in increasing order, starting from 0.  This */
+     /* means that we normally have                                  */

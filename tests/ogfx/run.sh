@@ -42,9 +42,9 @@ STOVE=${STOVE:-$HOME/AmigaChrome/stoves/os32}
 CC68K=${CC68K:-$STOVE/prefix/bin/m68k-amigaos-gcc}
 if [ -x "$CC68K" ]; then
     P=${CC68K%gcc}
-    "$CC68K" -m68020 -mnobitfield -O2 -fomit-frame-pointer -fno-lto -fno-builtin -fno-tree-loop-distribute-patterns \
+    "$CC68K" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-lto -fno-builtin -fno-tree-loop-distribute-patterns \
         -Wall -Wextra -Werror -c -o "$OUT/ogfx_leaves.o" "$GFX/ogfx_leaves.c"
-    "$CC68K" -m68020 -mnobitfield -O2 -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
+    "$CC68K" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
         -I"$HERE/../../include" -c -o "$OUT/ogfx_lib.o" "$GFX/ogfx_lib.c"
     und=$("${P}nm" -u "$OUT/ogfx_leaves.o" | awk '{print $2}' | grep -v '^___mulsi3$' | tr '\n' ' ' || true)
     [ -z "$und" ] || { echo "FAIL os32: the leaves call $und"; fail=1; }

@@ -15,7 +15,7 @@ for build in "-O0 -m68020" "-O2 -m68020" "-O0 -m68040" "-O2 -m68040"; do
     set -- $build
     opt=$1 cpu=$2
     # shellcheck disable=SC2086
-    "$cc" -std=gnu99 $opt $cpu -fno-lto -fno-builtin \
+    "$cc" -std=gnu99 $opt $cpu -fno-delete-null-pointer-checks -fno-lto -fno-builtin \
         -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror \
         -c "$gfx/ogfx_composite.c" -o "$tmp/composite.o"
     und=$("${prefix}nm" -u "$tmp/composite.o" | tr -d ' U' | tr -d '\n' || true)
@@ -25,7 +25,7 @@ for build in "-O0 -m68020" "-O2 -m68020" "-O0 -m68040" "-O2 -m68040"; do
         continue
     fi
     # shellcheck disable=SC2086
-    "$cc" -std=gnu99 $opt $cpu -static -Wall -Wextra -Werror \
+    "$cc" -std=gnu99 $opt $cpu -fno-delete-null-pointer-checks -static -Wall -Wextra -Werror \
         "$here/ogfx_composite_test.c" "$tmp/composite.o" -o "$tmp/t"
     if command -v "$qemu" >/dev/null; then
         out=$("$qemu" -cpu m68040 "$tmp/t") || {

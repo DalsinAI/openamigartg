@@ -154,11 +154,13 @@ Nothing third-party is committed. `build.sh`:
    back ends it started (video, AGA c2p, Paula, threads, timer, filesystem);
 3. copies SDL's software renderer to `src/render/opengpu/`, then applies
    `patches/sdl2` (the platform in SDL's lists, three fixes, the
-   environment, and the opengpu renderer as a change to that copy) and
+   environment, the opengpu renderer as a change to that copy, and null
+   checks where SDL used a display or surface it had not got) and
    `patches/amigaos3` (the Team's changes to libSDL2-amigaos3's back ends);
 4. adds `src/` (the Team's own files: AHI, the joystick, the clipboard,
    OpenGPU's helpers) and `include/SDL_config_amigaos.h`;
-5. builds the satellites from their pinned tarballs (`satellites/`).
+5. builds the satellites from their pinned tarballs (`satellites/`), with
+   `patches/freetype` applied to FreeType (two null checks).
 
 | Library | Licence | Notes |
 | --- | --- | --- |
