@@ -108,7 +108,7 @@ int main(int argc, char **argv)
     printf("  COMPOSITE into ARGB32: %s, back end %d\n", OGPU_ANSWER(q) == OGPU_FULL ? "full" : OGPU_ANSWER(q) == OGPU_PARTIAL ? "partly" : "no",
            OGPU_BACKEND(q));
     q = OGPU_Query(OGPU_OP_VIRGL, 0);
-    printf("  virgl (Mesa on the PC's graphics chip): %s\n", OGPU_ANSWER(q) == OGPU_FULL ? "yes" : "no");
+    printf("  virgl (Mesa on the GPU): %s\n", OGPU_ANSWER(q) == OGPU_FULL ? "yes" : "no");
 
     if (!(arena = AllocVec(OGPU_SCENE_ARENA, MEMF_ANY | MEMF_CLEAR))) { printf("no memory\n"); CloseLibrary(OpenGPUBase); return 20; }
     memset(&env, 0, sizeof env);
