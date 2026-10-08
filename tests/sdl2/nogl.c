@@ -5,7 +5,7 @@
  * where no libGL.a is built (library/build.sh builds SDL without the GL
  * module). SDL's test framework calls SDL_GL_ functions, which bring in
  * libSDL2.a's SDL2_gl.o and its references to libGL.a. A program meant to
- * draw GL links -lGL instead (`sdl2-config --libs` gives it). */
+ * draw GL links -lGL instead (`sdl2-config --libs --gl` gives it). */
 #include <stddef.h>
 
 void *gla_display_create(void) { return NULL; }
