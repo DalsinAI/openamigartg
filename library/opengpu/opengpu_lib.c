@@ -15,6 +15,9 @@
  * OGPU_ModuleOpen loads a module from LIBS:OpenGPU/ (GL.module, SDL2.module)
  * for the calling program (include/opengpu/module.h): a shared one once for
  * every program, with data of each program's own (ogpu_module.c).
+ * 0.6: OpenGfx inside (library/ogfx, include/opengpu/gfx.h): opengfx.library's
+ * calls are the LVOs from 66, and graphics.library's drawing and text patches
+ * are thin entries into it.
  * Built bare by library/build.sh.
  */
 #include <exec/types.h>
@@ -36,10 +39,12 @@
 #include "../../include/opengpu/driver.h"
 #include "../../include/opengpu/module.h"
 #include "ogpu_module.h"
+#include "../ogfx/ogfx.h"
+#include <stddef.h>
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 5
+#define LIB_REVISION 6
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -58,7 +63,9 @@ struct OpenGPUBase {
     UBYTE drv_ok[256];                          /* opcodes the driver carries out (for some format) */
     unsigned long drv_last;                     /* the driver's last fence, before a batch runs on the CPU */
     struct ogpu_modules modules;                /* shared modules loaded (ogpu_module.c) */
+    struct ogfx_state ogfx;                     /* OpenGfx (library/ogfx) */
 };
+const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 
 struct ExecBase *SysBase;
 struct DosLibrary *DOSBase;
@@ -68,9 +75,9 @@ struct DosLibrary *DOSBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.5 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
+static const char lib_id[] = "opengpu.library 0.6 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.5 (8.10.2026) OpenGPU, Dalsin Limited";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.6 (8.10.2026) OpenGPU, Dalsin Limited";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";
@@ -93,7 +100,13 @@ static void drivers_close(struct OpenGPUBase *base);
 static const APTR lib_vectors[] = {
     (APTR)lib_open, (APTR)lib_close, (APTR)lib_expunge, (APTR)lib_null,
     (APTR)OGPU_Query, (APTR)OGPU_BackEndName, (APTR)OGPU_Submit, (APTR)OGPU_Wait,
-    (APTR)OGPU_ModuleOpen, (APTR)OGPU_ModuleClose, (APTR)-1,
+    (APTR)OGPU_ModuleOpen, (APTR)OGPU_ModuleClose,
+    /* 0.6: OpenGfx, from 66 (library/ogfx/ogfx.h) */
+    (APTR)OGFX_Version, (APTR)OGFX_InstallPatches, (APTR)OGFX_SetEnabled, (APTR)OGFX_Status,
+    (APTR)OGFX_RegisterProvider, (APTR)OGFX_UnregisterProvider,
+    (APTR)OGFX_Text, (APTR)OGFX_TextLength, (APTR)OGFX_TextExtent, (APTR)OGFX_TextFit,
+    (APTR)OGFX_RectFill, (APTR)OGFX_BltBitMap, (APTR)OGFX_BltTemplate, (APTR)OGFX_ScrollRaster,
+    (APTR)-1,
 };
 static const struct { ULONG size; const APTR *vectors; APTR data; APTR init; } lib_inittable = {
     sizeof(struct OpenGPUBase), lib_vectors, NULL, (APTR)lib_init,
@@ -113,6 +126,7 @@ static struct Library *lib_init(REG(d0, struct OpenGPUBase *base), REG(a0, BPTR 
     InitSemaphore(&base->lock);
     InitSemaphore(&base->drv_lock);
     ogpu_modules_init(&base->modules);
+    ogfx_init(&base->ogfx, sys);
     return &base->lib;
 }
 static struct Library *lib_open(REG(a6, struct OpenGPUBase *base))
@@ -124,15 +138,17 @@ static struct Library *lib_open(REG(a6, struct OpenGPUBase *base))
 static BPTR lib_close(REG(a6, struct OpenGPUBase *base))
 {
     base->lib.lib_OpenCnt--;
-    if (base->lib.lib_OpenCnt == 0 && (base->lib.lib_Flags & LIBF_DELEXP))
+    if (base->lib.lib_OpenCnt == 0 && (base->lib.lib_Flags & LIBF_DELEXP) && ogfx_may_expunge(&base->ogfx))
         return lib_expunge(base);
     return 0;
 }
 static BPTR lib_expunge(REG(a6, struct OpenGPUBase *base))
 {
-    if (base->lib.lib_OpenCnt) { base->lib.lib_Flags |= LIBF_DELEXP; return 0; }
+    /* graphics.library's patched vectors point into the library: it stays. */
+    if (base->lib.lib_OpenCnt || !ogfx_may_expunge(&base->ogfx)) { base->lib.lib_Flags |= LIBF_DELEXP; return 0; }
     BPTR seglist = base->seglist;
     drivers_close(base);
+    ogfx_expunge(&base->ogfx);
     Remove(&base->lib.lib_Node);
     FreeMem((UBYTE *)base - base->lib.lib_NegSize, base->lib.lib_NegSize + base->lib.lib_PosSize);
     return seglist;
