@@ -31,6 +31,7 @@ shift 2>/dev/null || true
 TARGETS=${*:-module stub static tests satellites}
 TARBALLS=${TARBALLS:-$HOME/AmigaChrome-dev/upstream-tarballs}
 SDK_HEADERS=${SDK_HEADERS:-$HOME/AmigaChrome/stoves/os32/prefix/m68k-amigaos/include}
+OPENINPUT_ROOT=${OPENINPUT_ROOT:-$HOME/AmigaChrome-dev/openamigainput}
 if [ -z "${VASM:-}" ]; then
     VASM=$(command -v vasmm68k_mot || echo "$HOME/AmigaChrome/stoves/os32/prefix/bin/vasmm68k_mot")
 fi
@@ -88,6 +89,18 @@ for f in cybergraphx/cybergraphics.h proto/cybergraphics.h inline/cybergraphics.
          clib/cybergraphics_protos.h devices/ahi.h proto/ahi.h inline/ahi.h clib/ahi_protos.h; do
     mkdir -p "$SDK/$(dirname "$f")"
     cp "$SDK_HEADERS/$f" "$SDK/$f"
+done
+
+# OpenInput is the controller authority for OpenGPU's SDL2 front end.
+# Keep its headers owned by the OpenInput repository; copy the public ABI into
+# this private build include tree rather than duplicating it in source control.
+[ -f "$OPENINPUT_ROOT/include/libraries/openinput.h" ] || {
+    echo "OpenInput headers not found: set OPENINPUT_ROOT to DalsinAI/openamigainput checkout" >&2
+    exit 2
+}
+for f in libraries/openinput.h proto/openinput.h inline/openinput.h clib/openinput_protos.h; do
+    mkdir -p "$SDK/$(dirname "$f")"
+    cp "$OPENINPUT_ROOT/include/$f" "$SDK/$f"
 done
 
 # 5. SDL's public headers for programs: OUT/include/SDL2.
