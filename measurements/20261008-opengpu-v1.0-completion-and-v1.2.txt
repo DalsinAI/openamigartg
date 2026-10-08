@@ -1,0 +1,123 @@
+OpenGPU v1.0 completion with stream v1.2 and opengpu.library 0.4 -- 8 October 2026
+================================================================================
+
+What was tested
+---------------
+openamigartg branch opengpu/stream-v12-20261008 (#27), rebased on main with
+#26 (the first v1.0 OpenRTG routing) in it, plus the rest of v1.0's routing:
+  openrtg.library 0.11, cybergraphics.library (WritePixelArrayAlpha),
+  opengpu.library 0.4 (stream v1.2, the faster 68k core), C:OpenRTG 0.3.
+
+Host:  tests/run.sh: 4873 checks, goldens de825f7b (v1.0), 400d1333 (v1.1),
+       fe04465b (v1.2), under ASan and UBSan.
+Stove: library/build.sh and tools/build.sh with ~/AmigaChrome/stoves/os32:
+       openrtg.library, cybergraphics.library, opengpu.library, C:OpenRTG,
+       OpenGPUCheck, OpenGPUBench, GfxBench, OpenRTGExact build clean.
+
+The lab: ~/AmigaChrome-dev/mesalab/Instance-ML, a scratch copy of Instance-11
+("AmigaChrome Showcase": OS 3.2.3, AC090 68040 at hyper pace, one ACRTG
+board) on its own ports (8910, 8911), audio muted, with the OpenRTG part
+installed by hand as its Part file says (DEVS:Monitors/acrtg retired, the
+OpenRTG monitor, an 800x600 16-bit Workbench). The runtime is amigachrome
+main's code with acrtg.card 2.3's boot ROM (as deployed at 04:43Z).
+
+Three ways:
+  before    main as merged: openrtg.library 0.10 (#26), opengpu.library 0.3,
+            the old C core, no driver
+  CPU core  this branch, no LIBS:OpenGPU/ACRTG.gpu: OpenGPU on the 68k
+  ring      this branch with ACRTG.gpu: OpenGPU on the board's ring, drawn
+            by the runtime's C core on the PC
+
+OpenGPUCheck (QUICK) on each: v1.0 and v1.1 goldens right through the
+library and on the linked core; the v1.2 golden right through 0.4 and the
+core (0.3 can't draw v1.2: expected).
+
+Exact, measured: OpenRTGExact
+-----------------------------
+Twelve kinds of drawing (fills, COMPLEMENT, area patterns JAM1 and JAM2,
+Text JAM1/JAM2/INVERSVID/COMPLEMENT, BltTemplate, overlapping ClipBlits,
+ScrollRaster both ways, lines across, at 45 degrees, slanted, patterned and
+COMPLEMENT, chunky and CyberGraphX pixel arrays, read-back, source-free
+minterms) drawn once with ORTG_DRAW_CPU_ONLY and once through OpenGPU, into
+two windows each partly covered by another (so in pieces), and into two
+off-screen bitmaps of the screen's format; the pixels compared:
+  through the ring:    24 of 24 the same
+  on the 68k's core:   24 of 24 the same
+
+Drawing times
+-------------
+GfxBench, 200 calls each in a 420x300 window on Workbench, microseconds a
+call, wall clock (files marked before and after each test; the Amiga's own
+clock agreed within a few percent):
+
+  call                                    before  CPU core      ring  drawn by
+  RectFill 300x200                        1188.8     243.8     109.6  OpenGPU
+  RectFill 300x200 COMPLEMENT             1675.6     283.6      84.0  OpenGPU
+  RectFill 300x200 area pattern          36855.9    1314.3     207.6  OpenGPU
+  Text 40 characters JAM1                 1766.8     516.6     461.2  OpenGPU
+  Text 40 characters JAM2                 1822.8     772.5     676.9  OpenGPU
+  BltTemplate 128x64                      2090.5     297.3     125.2  OpenGPU
+  ClipBlit 300x100 in the window           138.5     100.1      75.2  OpenGPU
+  ScrollRaster 300x200 by 8               1089.7     171.8      95.4  OpenGPU
+  BltBitMapRastPort planar 128x64         3787.6    2955.9    2553.2  CPU
+  20 lines across and down                2464.7     420.6     443.9  OpenGPU
+  20 lines at 45 degrees                  1476.8     550.1     571.5  OpenGPU
+  20 slanted lines                        3456.3    2107.8    1880.1  CPU
+  WritePixel 100 times                      68.2      62.5      46.4  CPU
+  WriteChunkyPixels 128x128               4968.1     322.9      51.5  OpenGPU
+  WritePixelArray ARGB 128x128            4694.1     388.3      55.5  OpenGPU
+  WritePixelArray LUT8 128x128            4415.5     326.5      66.0  OpenGPU
+  ReadPixelArray ARGB 128x128            30145.5     889.2     210.1  OpenGPU
+  FillPixelArray 300x200                  7243.1     259.6      68.6  OpenGPU
+  InvertPixelArray 300x200                7581.8     311.7      83.1  OpenGPU
+  WritePixelArrayAlpha 128x128            2129.9     808.4     343.6  OpenGPU
+
+  "before" of WritePixelArrayAlpha drew pixels at least half opaque, with no
+  blending; it now blends (as CyberGraphX's documents say) on 16 and 32-bit.
+  "drawn by" is from the ring run's draw statistics.
+
+Coverage: how much of Workbench and MultiView goes through OpenGPU
+------------------------------------------------------------------
+C:OpenRTG STATS (openrtg.library 0.11), ring run. Pieces are visible
+rectangles of one call; px are pixels.
+
+Workbench starting (from boot until 20 s after LoadWB):
+  drawing           OpenGPU        CPU   OpenGPU px       CPU px  GPU%
+  fill                  173          0       385196            0  100%
+  pattern                 1          0         3268            0  100%
+  template             1719          0       102607            0  100%
+  copy                  522          0       924546            0  100%
+  blit                   14          0      1279124            0  100%
+  line                    8          0           36            0  100%
+  pixels                  1        601        36480        13696   72%
+  pixels read             1          0        36480            0  100%
+  blit planar             0         52            0        10506    0%
+  blit masked             0         20            0        41912    0%
+  all                                       2767737        66114   97%
+
+MultiView opening S:Startup-Sequence on Workbench (counts reset first):
+  drawing           OpenGPU        CPU   OpenGPU px       CPU px  GPU%
+  fill                  185          0      1454977            0  100%
+  pattern                 4          0        11376            0  100%
+  template             1596          0       101792            0  100%
+  copy                    2          0       206880            0  100%
+  blit planar             0         15            0         3412    0%
+  all                                       1775025         3412   99%
+
+What stays on the CPU, and why:
+  pixels (ORTG_WritePixels) small pieces: 3-byte RGB and the like, which no
+      v1.0 format describes, and ARGB into 32-bit bitmaps (OpenRTG keeps
+      alpha 0 there; PIXELS would keep the source's)
+  blit planar: icons and images in planar bitmaps (v1.0 has no planar)
+  blit masked: BltMaskBitMapRastPort, through a one-bit mask
+  lines that are not across, down or at 45 degrees: OpenGPU's LINE and
+      OpenRTG's line() break ties differently (4960 of 14641 short lines
+      differ), so only lines without ties go there
+  patterned lines (LinePtrn), WritePixel and ReadPixel, ReadPixelArray8
+
+The 68k's JIT
+-------------
+Register shifts cost about 70 ns a bit of count on the AC090 (a shift by 24
+nearly 2 us), and mulu.l, divu.l, bfextu and bfins 70-90 ns: noted for the
+JIT's owner. opengpu.library's core avoids them in its pixel loops (see
+ogpu_core.c's header); OpenGPUBench before and after is in #27.

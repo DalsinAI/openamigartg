@@ -373,7 +373,11 @@ OP_FN op_fill(struct ogpu_core *c, const ogpu_u8 *a, int invert) {
     for (j = 0; j < h; j++, row += t->bpr) {
         ogpu_u8 *p = row;
         if (invert) {
-            for (i = 0; i < w; i++, p += bpp) xor_raw(p, bpp, pv);
+            if (bpp == 4) { ogpu_u8 b1 = pv[1], b2 = pv[2], b3 = pv[3], b0 = pv[0];
+                for (i = 0; i < w; i++, p += 4) { p[0] ^= b0; p[1] ^= b1; p[2] ^= b2; p[3] ^= b3; } }
+            else if (bpp == 2) { ogpu_u8 b0 = pv[0], b1 = pv[1];
+                for (i = 0; i < w; i++, p += 2) { p[0] ^= b0; p[1] ^= b1; } }
+            else { ogpu_u8 b0 = pv[0]; for (i = 0; i < w; i++) p[i] ^= b0; }
         } else if (bpp == 4) {
             ogpu_u8 b0 = pv[0], b1 = pv[1], b2 = pv[2], b3 = pv[3];
             for (i = 0; i < w; i++, p += 4) { p[0] = b0; p[1] = b1; p[2] = b2; p[3] = b3; }

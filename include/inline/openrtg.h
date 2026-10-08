@@ -39,4 +39,8 @@
     LP5(0x60, LONG, ORTG_InvertPixels, struct RastPort *, rp, a1, LONG, x, d0, LONG, y, d1, LONG, width, d2, LONG, height, d3, , OPENRTG_BASE_NAME)
 #define ORTG_BitMapInfo(bitmap, info) \
     LP2(0x66, BOOL, ORTG_BitMapInfo, struct BitMap *, bitmap, a0, struct OpenRTGBitMapInfo *, info, a1, , OPENRTG_BASE_NAME)
+#define ORTG_DrawStats(counts, kinds, flags) \
+    LP3(0x6c, ULONG, ORTG_DrawStats, ULONG *, counts, a0, ULONG, kinds, d0, ULONG, flags, d1, , OPENRTG_BASE_NAME)
+#define ORTG_WritePixelsAlpha(rp, x, y, pixels, alpha) \
+    LP5(0x72, LONG, ORTG_WritePixelsAlpha, struct RastPort *, rp, a1, LONG, x, d0, LONG, y, d1, const struct OpenRTGPixels *, pixels, a0, ULONG, alpha, d2, , OPENRTG_BASE_NAME)
 #endif
