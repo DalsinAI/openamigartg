@@ -65,7 +65,9 @@ finds <SDL2/SDL.h> and the libraries by itself (a program that includes
 sdl2-config --cflags gives -noixemul -m68040 -m68881 (SDL is built for the
 68040 with its FPU, and the FPU calling convention must match), and for
 GCC 16 also -fno-tree-loop-distribute-patterns (GCC 16's loop miscompile).
-SDL2_CPU in the environment gives other CPU flags, such as -m68060.
+SDL2_CPU in the environment gives other CPU flags, such as -m68060, and
+SDL2_RUNTIME=-mcrt=nix20 replaces -noixemul for builds that pick libnix
+that way (GCC must not get both).
 
 CMake: point CMAKE_PREFIX_PATH at the kit; find_package(SDL2) gives
 SDL2::SDL2 (and SDL2::SDL2main, empty), find_package(SDL2_mixer) and the

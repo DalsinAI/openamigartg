@@ -78,9 +78,12 @@ m68k-amigaos-gcc -O2 gl.c -o GLProgram $(pkg-config --cflags --libs gl)
 - **`sdl2-config`**: `--cflags` is `-I<kit>/include/SDL2 -noixemul -m68040
   -m68881`, and with GCC 16 also `-fno-tree-loop-distribute-patterns`.
   `--libs` is `-noixemul -m68040 -m68881 -L<kit>/lib -lSDL2 -lGL -lm`.
-  `SDL2_CPU` replaces the CPU flags.
+  `SDL2_CPU` replaces the CPU flags and `SDL2_RUNTIME` the `-noixemul`.
 - **libnix.** The libraries are built for libnix (`-noixemul`). GCC 6.5's
-  default is ixemul, so the flag matters there.
+  default is ixemul, so the flag matters there. `-mcrt=nix20` is the same
+  libnix, but GCC must not get both, or it links libnix's start code twice:
+  a build that uses `-mcrt=nix20` sets `SDL2_RUNTIME=-mcrt=nix20` for
+  `sdl2-config` (ACKitchen does the same for its stoves).
 - **The FPU.** SDL2.module is built `-m68040 -m68881`, and SDL functions
   that return `float` or `double` return them in FP0. A program must be
   built for an FPU (`-m68881`, `-m68040` or `-m68060`).
