@@ -1,0 +1,11 @@
+diff -ruN a/src/audio/amigaos3/SDL_os3paula.c b/src/audio/amigaos3/SDL_os3paula.c
+--- a/src/audio/amigaos3/SDL_os3paula.c	2026-10-08 05:33:48.367847777 +0100
++++ b/src/audio/amigaos3/SDL_os3paula.c	2026-10-08 05:33:48.370280827 +0100
+@@ -38,6 +38,7 @@
+ #include <proto/graphics.h>
+ #include <graphics/gfxbase.h>
+ #include <devices/audio.h>
++#include <clib/alib_protos.h> /* BeginIO: GCC 14 and later need its prototype */
+ #include <exec/memory.h>
+ #ifdef WARPUP
+ #pragma pop
