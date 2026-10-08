@@ -13,7 +13,7 @@ OUT=${1:-$ROOT/build}
 mkdir -p "$OUT"
 "$CC" -m68020 -O2 -fomit-frame-pointer -fno-toplevel-reorder -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
     -nostartfiles -nostdlib -I"$ROOT/include" \
-    -o "$OUT/openrtg.library" "$HERE/openrtg_lib.c" "$HERE/modes.c" "$HERE/displaydb.c" "$HERE/screens.c" "$HERE/pixels.c" "$HERE/string.c" -lgcc
+    -o "$OUT/openrtg.library" "$HERE/openrtg_lib.c" "$HERE/modes.c" "$HERE/displaydb.c" "$HERE/screens.c" "$HERE/pixels.c" "$HERE/opengpu/ogpu_build.c" "$HERE/string.c" -lgcc
 echo "$OUT/openrtg.library ($(wc -c < "$OUT/openrtg.library") bytes)"
 "$CC" -m68020 -O2 -fomit-frame-pointer -fno-toplevel-reorder -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
     -nostartfiles -nostdlib -I"$ROOT/include" \
