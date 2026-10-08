@@ -589,6 +589,13 @@ back is a diff of `FORK.md`'s list against opengfx.library at the time.
   - `libGL.a` is the same for GL: a table generated from Mesa's glapi XML, filled by `OGPU_ModuleOpen("GL")`.
 - So there is no gl.library and no SDL2 library: one library open, and the big code loads lazily.
 - Module ABI (`include/opengpu/module.h`): the segment's first code is an entry taking {SysBase, DOSBase, OpenGPUBase, version} and returning the module's table. Modules call opengpu.library's LVOs like any program.
+  - The table starts with the module's version; the rest is the module's own (SDL2: `dynapi_entry`, `close`; GL: `close` and its calls by name).
+  - A module refuses (returns NULL) when the caller asks for a newer version than it is. `OGPU_ModuleOpen` then gives NULL with `IoErr()` `ERROR_OBJECT_WRONG_TYPE`; a missing file gives `ERROR_OBJECT_NOT_FOUND`.
+  - The caller calls the module's own close, then `OGPU_ModuleClose`, which unloads it.
+  - A name with ':' or '/' is a path (tests load `PROGDIR:Test.module`).
+  - opengpu.library 0.5 has the two calls. A stub on 0.4 or older loads the module itself, the same way.
+  - Modules are linked without libnix's startup. `library/modules/common` stands in for it: the entry's jump and libnix's list heads (`module_start.s`, first on the link line, naming `__initlibraries` and `__initcpp`), and `module_rt.c`, which runs the init and exit lists, turns `exit()` during start into a failed open, and gives `getenv` through `GetVar` (libnix's doesn't work in a module).
+  - `tests/modules`: Test.module and ModuleCheck check this on an Amiga, and open SDL2.module and GL.module when they are installed.
 
 #### 2. LVOs (bias 30)
 
@@ -619,7 +626,7 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
 
 ##### library/
 
-- `opengpu/`, the core (library owner): `opengpu_lib.c` (the LVO table), `ogpu_core.c/.h`, `ogpu_build.c`, `ogpu_drivers.c` and `ogpu_module.c`.
+- `opengpu/`, the core (library owner): `opengpu_lib.c` (the LVO table, the driver loader and the module loader), `ogpu_core.c/.h` and `ogpu_build.c`.
   - Exception: `ogpu_3d.c/.h`, the CPU rasteriser, belongs to the Warp3D helper. The owner wires 0x0030–0x0035 into `ogpu_core_run` with one call, `ogpu_3d_run(core, op, cmd, words)`.
   - The same files also compile into the runtime's host core, so `ogpu_3d.c` stays integer-only and free of the C library.
 - `ogfx/`, the 2D OpenGfx fork (library owner, later): a copy of amigachrome-guest `libraries/opengfx` at 90aa66f, with `FORK.md` recording the fork commit and a running change list. opengfx.library itself is untouched.
@@ -630,6 +637,7 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
   - the virgl winsys over `OGPU_OP_VIRGL`.
   - It builds softpipe and virgl. virgl is used when `OGPU_Query(OGPU_OP_VIRGL)` answers "full", softpipe otherwise.
   - openamigamesa keeps OpenDemos only, built against `libGL.a`.
+- `modules/common/` (library owner): what a module has in place of libnix's startup (`module_start.s`, `module_rt.c`).
 - `modules/sdl2/` (SDL 2 helper): SDL2.module, with the backends (video on openrtg, render on opengpu, audio on AHI, input, threads) and the SDL build (source fetched pinned).
 - `stubs/sdl2/` (SDL 2 helper: libSDL2.a, the dynapi stub plus the ModuleOpen glue) and `stubs/gl/` (library owner: libGL.a, generated).
 - `build.sh` builds everything. Each part has its own build script, and a helper adds one line to `library/build.sh` and nothing else.
