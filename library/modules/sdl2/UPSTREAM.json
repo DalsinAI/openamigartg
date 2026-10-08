@@ -1,0 +1,73 @@
+{
+  "sdl2": {
+    "name": "SDL 2",
+    "version": "2.32.10",
+    "file": "SDL2-2.32.10.tar.gz",
+    "dir": "SDL2-2.32.10",
+    "url": "https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz",
+    "sha256": "5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165",
+    "licence": "Zlib"
+  },
+  "amigaos3": {
+    "name": "libSDL2-amigaos3",
+    "version": "0.7.0",
+    "url": "https://github.com/bdgscotland/libSDL2-amigaos3",
+    "commit": "1eefa8f35c5ad4b63fa835e251e801a9315dff5c",
+    "licence": "Zlib",
+    "used_for": "the AmigaOS 3.x back ends (video, AGA c2p, Paula audio, threads, timer, filesystem) that patches/amigaos3 changes"
+  },
+  "sdl2_image": {
+    "version": "2.8.12",
+    "file": "SDL2_image-2.8.12.tar.gz",
+    "dir": "SDL2_image-2.8.12",
+    "url": "https://github.com/libsdl-org/SDL_image/releases/download/release-2.8.12/SDL2_image-2.8.12.tar.gz",
+    "sha256": "393f5efb50536ec13ca4f4affb69cc9966d3c3f969e6c5e701faddf9f9785381",
+    "licence": "Zlib",
+    "used_for": "satellites/"
+  },
+  "sdl2_mixer": {
+    "version": "2.8.2",
+    "file": "SDL2_mixer-2.8.2.tar.gz",
+    "dir": "SDL2_mixer-2.8.2",
+    "url": "https://github.com/libsdl-org/SDL_mixer/releases/download/release-2.8.2/SDL2_mixer-2.8.2.tar.gz",
+    "sha256": "938dff531d00ace2296557a6599abe6f34599e2f34f0a4a08a397e2ccac8b8f7",
+    "licence": "Zlib",
+    "used_for": "satellites/"
+  },
+  "sdl2_ttf": {
+    "version": "2.24.0",
+    "file": "SDL2_ttf-2.24.0.tar.gz",
+    "dir": "SDL2_ttf-2.24.0",
+    "url": "https://github.com/libsdl-org/SDL_ttf/releases/download/release-2.24.0/SDL2_ttf-2.24.0.tar.gz",
+    "sha256": "0b2bf1e7b6568adbdbc9bb924643f79d9dedafe061fa1ed687d1d9ac4e453bfd",
+    "licence": "Zlib",
+    "used_for": "satellites/"
+  },
+  "sdl2_net": {
+    "version": "2.4.0",
+    "file": "SDL2_net-2.4.0.tar.gz",
+    "dir": "SDL2_net-2.4.0",
+    "url": "https://github.com/libsdl-org/SDL_net/releases/download/release-2.4.0/SDL2_net-2.4.0.tar.gz",
+    "sha256": "9cbca2527feb3f1a622d48ba65cc7dee9b1e3f2c55ceafb7d7720bb058aafb30",
+    "licence": "Zlib",
+    "used_for": "satellites/"
+  },
+  "freetype": {
+    "version": "2.14.3",
+    "file": "freetype-2.14.3.tar.xz",
+    "dir": "freetype-2.14.3",
+    "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz",
+    "sha256": "36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f",
+    "licence": "FreeType Licence (BSD-style)",
+    "used_for": "SDL2_ttf"
+  },
+  "libxmp": {
+    "version": "4.7.3",
+    "file": "libxmp-4.7.3.tar.gz",
+    "dir": "libxmp-4.7.3",
+    "url": "https://github.com/libxmp/libxmp/releases/download/libxmp-4.7.3/libxmp-4.7.3.tar.gz",
+    "sha256": "b6a98797e4fb9c9a705f5d53112aa5214561857e929a644928b9e658930d9440",
+    "licence": "MIT",
+    "used_for": "SDL2_mixer's MOD, XM, S3M, IT and Amiga tracker formats"
+  }
+}

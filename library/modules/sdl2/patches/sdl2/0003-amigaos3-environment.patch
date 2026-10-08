@@ -1,0 +1,82 @@
+diff --git a/src/stdlib/SDL_getenv.c b/src/stdlib/SDL_getenv.c
+index 2421f51..79e2861 100644
+--- a/src/stdlib/SDL_getenv.c
++++ b/src/stdlib/SDL_getenv.c
+@@ -167,7 +167,76 @@ int SDL_setenv(const char *name, const char *value, int overwrite)
+ #endif
+ 
+ /* Retrieve a variable named "name" from the environment */
+-#if defined(HAVE_GETENV)
++#if defined(__AMIGAOS3__)
++/* AmigaOS 3.x (Open, 2026): the program's own variables first (SDL_setenv,
++   SDL's own list: SDL_config_amigaos.h leaves HAVE_SETENV out), then the
++   Shell's local and global variables (SetEnv, ENV:) through dos.library.
++   libnix's getenv is not used: it reads neither, and needs libnix's program
++   startup, which SDL2.module doesn't have. Each name keeps its own buffer,
++   so a value stays valid until that name is asked for again. */
++#include <proto/dos.h>
++typedef struct SDL_OS3EnvVar
++{
++    struct SDL_OS3EnvVar *next;
++    char *name;
++    char *value;
++    size_t cap;
++} SDL_OS3EnvVar;
++static SDL_OS3EnvVar *SDL_os3env = NULL;
++
++char *SDL_getenv(const char *name)
++{
++    char buf[256];
++    LONG n;
++    SDL_OS3EnvVar *v;
++
++    if (!name || *name == '\0') {
++        return NULL;
++    }
++#if !defined(HAVE_SETENV)
++    if (SDL_env) {
++        size_t len = SDL_strlen(name), i;
++        for (i = 0; SDL_env[i]; ++i) {
++            if (SDL_strncmp(SDL_env[i], name, len) == 0 && SDL_env[i][len] == '=') {
++                return &SDL_env[i][len + 1];
++            }
++        }
++    }
++#endif
++    n = GetVar((CONST_STRPTR)name, (STRPTR)buf, sizeof(buf), 0);
++    if (n < 0) {
++        return NULL;
++    }
++    for (v = SDL_os3env; v; v = v->next) {
++        if (SDL_strcmp(v->name, name) == 0) {
++            break;
++        }
++    }
++    if (!v) {
++        v = (SDL_OS3EnvVar *)SDL_calloc(1, sizeof(*v));
++        if (!v) {
++            return NULL;
++        }
++        v->name = SDL_strdup(name);
++        if (!v->name) {
++            SDL_free(v);
++            return NULL;
++        }
++        v->next = SDL_os3env;
++        SDL_os3env = v;
++    }
++    if ((size_t)n + 1 > v->cap) {
++        char *nv = (char *)SDL_realloc(v->value, (size_t)n + 1);
++        if (!nv) {
++            return NULL;
++        }
++        v->value = nv;
++        v->cap = (size_t)n + 1;
++    }
++    SDL_memcpy(v->value, buf, (size_t)n + 1);
++    return v->value;
++}
++#elif defined(HAVE_GETENV)
+ char *SDL_getenv(const char *name)
+ {
+ #if defined(__ANDROID__)
