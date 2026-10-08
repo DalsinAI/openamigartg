@@ -9,6 +9,8 @@
  *   OpenRTG ACTIVATE [FORCE] | OFF  OpenRTG's modes in the display database
  *                                 (FORCE: even beside Picasso96, for tests)
  *   OpenRTG LISTDB                  every mode the display database lists
+ *   OpenRTG STATS [RESET]           how its drawing went: through OpenGPU or on
+ *                                 the CPU, by kind (openrtg.library 0.11 on)
  */
 #include <exec/types.h>
 #include <dos/dos.h>
@@ -19,13 +21,13 @@
 #include <graphics/modeid.h>
 #include <proto/openrtg.h>
 
-static const char version[] = "$VER: OpenRTG 0.2 (4.10.2026) Dalsin Limited";
+static const char version[] = "$VER: OpenRTG 0.3 (8.10.2026) Dalsin Limited";
 struct Library *OpenRTGBase;
 
 int main(void)
 {
-    LONG args[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    struct RDArgs *rd = ReadArgs("MODES/S,ALL/S,STANDARD/S,MONITOR/K/N,ACTIVATE/S,OFF/S,FORCE/S,LISTDB/S,SCREENS/S", args, NULL);
+    LONG args[11] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    struct RDArgs *rd = ReadArgs("MODES/S,ALL/S,STANDARD/S,MONITOR/K/N,ACTIVATE/S,OFF/S,FORCE/S,LISTDB/S,SCREENS/S,STATS/S,RESET/S", args, NULL);
     int rc = RETURN_OK;
     (void)version;
     if (!rd) { PrintFault(IoErr(), "OpenRTG"); return RETURN_FAIL; }
@@ -111,6 +113,28 @@ int main(void)
             }
             Printf("The display database lists %ld modes.\n", (LONG)count);
             CloseLibrary(GfxBase);
+        }
+    }
+    if (args[9] || args[10]) {
+        static const char *const names[] = ORTG_STAT_NAMES;
+        static ULONG c[ORTG_STAT_COUNT * 4];
+        ULONG tg = 0, tc = 0, k;
+        if (OpenRTGBase->lib_Version == 0 && OpenRTGBase->lib_Revision < 11) {
+            Printf("OpenRTG: this openrtg.library has no drawing statistics (0.11 on).\n");
+            rc = RETURN_WARN;
+        } else {
+            ORTG_DrawStats(c, ORTG_STAT_COUNT, args[10] ? 1 : 0);
+            Printf("%-14s %10s %10s %12s %12s %5s\n", (LONG)"drawing", (LONG)"OpenGPU", (LONG)"CPU", (LONG)"OpenGPU px", (LONG)"CPU px", (LONG)"GPU%");
+            for (k = 0; k < ORTG_STAT_COUNT; k++) {
+                ULONG *v = c + k * 4, all = v[2] + v[3];
+                if (!v[0] && !v[1]) continue;
+                Printf("%-14s %10lu %10lu %12lu %12lu %4lu%%\n", (LONG)names[k], v[0], v[1], v[2], v[3],
+                       all ? (v[2] / 16 * 100) / ((all / 16) ? all / 16 : 1) : 0);
+                tg += v[2]; tc += v[3];
+            }
+            Printf("%-14s %10s %10s %12lu %12lu %4lu%%\n", (LONG)"all", (LONG)"", (LONG)"", tg, tc,
+                   tg + tc ? (tg / 16 * 100) / (((tg + tc) / 16) ? (tg + tc) / 16 : 1) : 0);
+            if (args[10]) Printf("(the counts are now back at 0)\n");
         }
     }
     if (only && !ORTG_BoardAddress(only)) { Printf("OpenRTG: there is no monitor %ld.\n", (LONG)only); rc = RETURN_WARN; }

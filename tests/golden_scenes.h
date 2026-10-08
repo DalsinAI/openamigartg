@@ -20,5 +20,6 @@ struct ogpu_scene_env {
 unsigned long ogpu_fnv(const ogpu_u8 *p, long n, unsigned long h);
 unsigned long ogpu_golden_g1(struct ogpu_scene_env *e);
 unsigned long ogpu_golden_v11(struct ogpu_scene_env *e);
+unsigned long ogpu_golden_v12(struct ogpu_scene_env *e);
 
 #endif

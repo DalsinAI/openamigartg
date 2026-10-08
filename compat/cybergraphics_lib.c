@@ -176,6 +176,19 @@ static inline BOOL ortg_info(struct BitMap *bm, struct OpenRTGBitMapInfo *info)
     return (BOOL)d0;
 }
 
+/* ORTG_WritePixelsAlpha, openrtg.library 0.11 on */
+static inline LONG ortg_alpha(struct RastPort *rp, LONG x, LONG y, struct OpenRTGPixels *px, ULONG alpha)
+{
+    register struct RastPort *a1 __asm("a1") = rp;
+    register LONG d0 __asm("d0") = x;
+    register LONG d1 __asm("d1") = y;
+    register struct OpenRTGPixels *a0 __asm("a0") = px;
+    register ULONG d2 __asm("d2") = alpha;
+    register struct Library *a6 __asm("a6") = OpenRTGBase;
+    __asm volatile ("jsr -114(a6)" : "+r"(a1), "+r"(d0), "+r"(d1), "+r"(a0), "+r"(d2), "+r"(a6) : : "cc", "memory");
+    return d0;
+}
+
 /* ---- tracing to the serial port, while OpenRTG is being brought up ---- */
 #define CGX_TRACE 0
 #if CGX_TRACE
@@ -481,12 +494,21 @@ static ULONG WriteLUTPixelArray(REG(a0, APTR src), REG(d0, UWORD sx), REG(d1, UW
     return pixels(-78, src, sx, sy, smod, ORTG_PIX_INDEX, ctab, rp, (WORD)dx, (WORD)dy, w, h, 0, 0);
 }
 
-/* Alpha: 8-bit screens have no blending yet, so a pixel is drawn where it is
- * at least half opaque (and global alpha too). */
+/* Alpha: on 16 and 32-bit OpenRTG screens the pixels are blended by their
+ * alpha times the global alpha (its top byte), through OpenGPU's COMPOSITE
+ * when it is there (openrtg.library 0.11 on). 8-bit screens have no
+ * blending: a pixel is drawn where it is at least half opaque. */
 static ULONG WritePixelArrayAlpha(REG(a0, APTR src), REG(d0, UWORD sx), REG(d1, UWORD sy), REG(d2, UWORD smod), REG(a1, struct RastPort *rp),
                                   REG(d3, UWORD dx), REG(d4, UWORD dy), REG(d5, UWORD w), REG(d6, UWORD h), REG(d7, ULONG alpha))
 {
     ULONG done = 0;
+    if (!rp || !src || !w || !h) return 0;
+    if (OpenRTGBase && (OpenRTGBase->lib_Version > 0 || OpenRTGBase->lib_Revision >= 11)) {
+        struct OpenRTGPixels px;
+        px.data = src; px.x = sx; px.y = sy; px.modulo = smod; px.format = RECTFMT_ARGB; px.ctable = NULL;
+        px.width = w; px.height = h; px.dest_width = px.dest_height = 0;
+        return (ULONG)ortg_alpha(rp, (WORD)dx, (WORD)dy, &px, alpha >> 24);
+    }
     for (UWORD j = 0; j < h; j++) {
         const ULONG *row = (const ULONG *)((const UBYTE *)src + (ULONG)(sy + j) * smod) + sx;
         UWORD i = 0;

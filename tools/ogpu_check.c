@@ -26,6 +26,7 @@
 
 #define GOLDEN_G1  0xde825f7bUL
 #define GOLDEN_V11 0x400d1333UL
+#define GOLDEN_V12 0xfe04465bUL
 
 struct Library *OpenGPUBase;
 struct Device *TimerBase;
@@ -92,7 +93,7 @@ int main(int argc, char **argv)
 {
     struct ogpu_scene_env env;
     ogpu_u8 *arena;
-    unsigned long g1, v11, c1, c11;
+    unsigned long g1, v11, v12, c1, c11, c12;
     ULONG q;
     int bad = 0, i, quick = argc > 1;
     STRPTR name;
@@ -115,18 +116,20 @@ int main(int argc, char **argv)
     env.run = run_library;
     g1 = ogpu_golden_g1(&env);
     v11 = ogpu_golden_v11(&env);
-    printf("through the library: golden scene %08lx (%s), v1.1 scene %08lx (%s)%s\n",
+    v12 = ogpu_golden_v12(&env);
+    printf("through the library: golden scene %08lx (%s), v1.1 scene %08lx (%s), v1.2 scene %08lx (%s)%s\n",
            g1, g1 == GOLDEN_G1 ? "right" : "WRONG", v11, v11 == GOLDEN_V11 ? "right" : "WRONG",
-           env.failures ? ", with errors" : "");
-    bad += g1 != GOLDEN_G1 || v11 != GOLDEN_V11 || env.failures;
+           v12, v12 == GOLDEN_V12 ? "right" : "WRONG", env.failures ? ", with errors" : "");
+    bad += g1 != GOLDEN_G1 || v11 != GOLDEN_V11 || v12 != GOLDEN_V12 || env.failures;
     memset(arena, 0, OGPU_SCENE_ARENA);
     env.failures = 0;
     env.run = run_cpu;
     c1 = ogpu_golden_g1(&env);
     c11 = ogpu_golden_v11(&env);
-    printf("on this 68k:         golden scene %08lx (%s), v1.1 scene %08lx (%s)\n",
-           c1, c1 == GOLDEN_G1 ? "right" : "WRONG", c11, c11 == GOLDEN_V11 ? "right" : "WRONG");
-    bad += c1 != GOLDEN_G1 || c11 != GOLDEN_V11 || env.failures;
+    c12 = ogpu_golden_v12(&env);
+    printf("on this 68k:         golden scene %08lx (%s), v1.1 scene %08lx (%s), v1.2 scene %08lx (%s)\n",
+           c1, c1 == GOLDEN_G1 ? "right" : "WRONG", c11, c11 == GOLDEN_V11 ? "right" : "WRONG", c12, c12 == GOLDEN_V12 ? "right" : "WRONG");
+    bad += c1 != GOLDEN_G1 || c11 != GOLDEN_V11 || c12 != GOLDEN_V12 || env.failures;
 
     if (!quick && !OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_ECLOCK, &treq.tr_node, 0)) {
         double lib, cpu;

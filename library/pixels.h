@@ -12,6 +12,7 @@ LONG ortg_write_pixels(struct RastPort *rp, LONG x, LONG y, const struct OpenRTG
 LONG ortg_read_pixels(struct RastPort *rp, LONG x, LONG y, struct OpenRTGPixels *px);
 LONG ortg_fill_pixels(struct RastPort *rp, LONG x, LONG y, LONG w, LONG h, ULONG argb);
 LONG ortg_invert_pixels(struct RastPort *rp, LONG x, LONG y, LONG w, LONG h);
+LONG ortg_write_pixels_alpha(struct RastPort *rp, LONG x, LONG y, const struct OpenRTGPixels *px, ULONG alpha);
 BOOL ortg_bitmap_info(struct BitMap *bm, struct OpenRTGBitMapInfo *info);
 
 #endif

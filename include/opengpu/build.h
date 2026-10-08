@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * Building an OGPU stream v1 (stream.h) in memory. Link library code: the
+ * Building an OGPU stream v1.2 (stream.h) in memory. Link library code: the
  * calls write words into the caller's buffer and never call opengpu.library,
  * so building a batch costs no library calls; OGPU_Submit sends it.
  * A batch that runs out of room sets `overflow` and stops growing. */
@@ -43,5 +43,15 @@ void ogpu_fence(struct OGPUBatch *b, unsigned long id);
 /* A block of ACVirgl commands at address for the host's virglrenderer; ask
  * OGPU_Query(OGPU_OP_VIRGL, 0) first. */
 void ogpu_virgl(struct OGPUBatch *b, unsigned long address, unsigned long bytes);
+/* v1.2: SDL 2's renderer (stream.h). Ask OGPU_Query first. The 3D builders
+ * (TRIANGLES and the rest) are in build3d.h. */
+void ogpu_fill_blend(struct OGPUBatch *b, int x, int y, int w, int h, unsigned long argb, int mode);
+void ogpu_lines_blend(struct OGPUBatch *b, unsigned long points, unsigned long count, unsigned long argb, unsigned long flags);
+void ogpu_points_blend(struct OGPUBatch *b, unsigned long points, unsigned long count, unsigned long argb, int mode);
+/* m: m00, m01, m02, m10, m11, m12, 16.16 (source to target) */
+void ogpu_composite_affine(struct OGPUBatch *b, int src_slot, int sx, int sy, int sw, int sh,
+                           const long m[6], unsigned long argb, unsigned long flags);
+void ogpu_yuv(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr, unsigned long u_address, unsigned long u_bpr,
+              unsigned long v_address, unsigned long v_bpr, int w, int h, int x, int y, unsigned long format);
 
 #endif
