@@ -1,13 +1,15 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Private copy of opengfx.library's provider ABI v1.
+ * Private copy of OpenGfx's provider ABI v1.
  *
- * Source of truth: DalsinAI/amigachrome-guest
- *   libraries/opengfx/include/libraries/opengfx.h
- *   libraries/opengfx/include/inline/opengfx.h
+ * Source of truth: include/opengpu/gfx.h. OpenGfx lives in opengpu.library
+ * from 0.6 (its calls are LVOs from 66); before that it was opengfx.library
+ * (amigachrome-guest libraries/opengfx), which is now a stub forwarding to
+ * opengpu.library. OpenRTG registers with opengpu.library when it carries
+ * OpenGfx, else with opengfx.library.
  *
- * Kept private so OpenRTG still builds standalone when the OpenGfx SDK is
- * not installed. ABI v1 is frozen; change this only with the OpenGfx ABI.
+ * Kept private so OpenRTG still builds standalone. ABI v1 is frozen; change
+ * this only with the OpenGfx ABI.
  */
 #ifndef ORTG_OPENGFX_BRIDGE_H
 #define ORTG_OPENGFX_BRIDGE_H
@@ -103,5 +105,11 @@ struct ortg_ogfx_provider_v1 {
 #define ORTG_OGFX_InstallPatches(base)     LP0(0x24, LONG, OGFX_InstallPatches, , base)
 #define ORTG_OGFX_RegisterProvider(base,provider)     LP1(0x36, LONG, OGFX_RegisterProvider, struct ortg_ogfx_provider_v1 *, provider, a0, , base)
 #define ORTG_OGFX_UnregisterProvider(base,owner)     LP1(0x3c, LONG, OGFX_UnregisterProvider, APTR, owner, a0, , base)
+
+/* The same three calls in opengpu.library 0.6 and later (LVOs 72, 90, 96). */
+#define ORTG_OPENGPU_OGFX_REVISION 6
+#define ORTG_OGPU_OGFX_InstallPatches(base)     LP0(0x48, LONG, OGFX_InstallPatches, , base)
+#define ORTG_OGPU_OGFX_RegisterProvider(base,provider)     LP1(0x5a, LONG, OGFX_RegisterProvider, struct ortg_ogfx_provider_v1 *, provider, a0, , base)
+#define ORTG_OGPU_OGFX_UnregisterProvider(base,owner)     LP1(0x60, LONG, OGFX_UnregisterProvider, APTR, owner, a0, , base)
 
 #endif

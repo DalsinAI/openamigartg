@@ -1,4 +1,4 @@
-==id $Id: opengpu_lib.sfd 0.5 (8.10.2026) $
+==id $Id: opengpu_lib.sfd 0.6 (8.10.2026) $
 * "opengpu.library"
 ==base _OpenGPUBase
 ==basetype struct Library *
@@ -8,6 +8,7 @@
 ==include <exec/types.h>
 ==include <opengpu/opengpu.h>
 ==include <opengpu/module.h>
+==include <opengpu/gfx.h>
 ULONG OGPU_Query(ULONG op, ULONG format)(d0,d1)
 STRPTR OGPU_BackEndName(ULONG index)(d0)
 LONG OGPU_Submit(APTR stream, ULONG words, ULONG *fence)(a0,d0,a1)
@@ -15,4 +16,19 @@ LONG OGPU_Wait(ULONG fence)(d0)
 * 0.5: modules (opengpu/module.h)
 APTR OGPU_ModuleOpen(CONST_STRPTR name, ULONG version, APTR *table)(a0,d0,a1)
 VOID OGPU_ModuleClose(APTR handle)(a0)
+* 0.6: OpenGfx (opengpu/gfx.h): opengfx.library's calls, then graphics.library's eight
+ULONG OGFX_Version()()
+LONG OGFX_InstallPatches()()
+LONG OGFX_SetEnabled(ULONG enabled)(d0)
+ULONG OGFX_Status()()
+LONG OGFX_RegisterProvider(struct OGFXProviderV1 *provider)(a0)
+LONG OGFX_UnregisterProvider(APTR owner)(a0)
+LONG OGFX_Text(struct RastPort *rp, STRPTR text, ULONG length)(a1,a0,d0)
+WORD OGFX_TextLength(struct RastPort *rp, STRPTR text, ULONG length)(a1,a0,d0)
+VOID OGFX_TextExtent(struct RastPort *rp, STRPTR text, ULONG length, struct TextExtent *extent)(a1,a0,d0,a2)
+ULONG OGFX_TextFit(struct RastPort *rp, STRPTR text, ULONG length, struct TextExtent *extent, struct TextExtent *constraining, LONG direction, ULONG bitWidth, ULONG bitHeight)(a1,a0,d0,a2,a3,d1,d2,d3)
+VOID OGFX_RectFill(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1)(a1,d0,d1,d2,d3)
+LONG OGFX_BltBitMap(struct BitMap *src, LONG sx, LONG sy, struct BitMap *dst, LONG dx, LONG dy, LONG width, LONG height, ULONG minterm, ULONG mask, PLANEPTR temp)(a0,d0,d1,a1,d2,d3,d4,d5,d6,d7,a2)
+VOID OGFX_BltTemplate(PLANEPTR source, LONG sx, LONG modulo, struct RastPort *rp, LONG dx, LONG dy, LONG width, LONG height)(a0,d0,d1,a1,d2,d3,d4,d5)
+VOID OGFX_ScrollRaster(struct RastPort *rp, LONG dx, LONG dy, LONG x0, LONG y0, LONG x1, LONG y1)(a1,d0,d1,d2,d3,d4,d5)
 ==end
