@@ -11,7 +11,7 @@ OpenGPU is one library and the modules it loads:
 
 | Part | File | What it is |
 | --- | --- | --- |
-| opengpu.library 0.6 | `LIBS:opengpu.library` | the command stream (`include/opengpu/`), its back ends (the CPU, the AC090's host GPU), OpenGfx's drawing, and the module loader |
+| opengpu.library 0.6 | `LIBS:opengpu.library` | the command stream (`include/opengpu/`), its back ends (the CPU, the GPU through AC090), OpenGfx's drawing, and the module loader |
 | SDL2.module 3 | `LIBS:OpenGPU/SDL2.module` | SDL 2.32.10 with the Amiga back ends |
 | GL.module | `LIBS:OpenGPU/GL.module` | Mesa 26.2.4's GL and GLES, and GLA |
 | minigl.library 29 | `LIBS:minigl.library` | MiniGL (OpenGL 1.1) on OpenGPU's 3D |
@@ -77,7 +77,8 @@ m68k-amigaos-gcc -O2 gl.c -o GLProgram $(pkg-config --cflags --libs gl)
 
 - **`sdl2-config`**: `--cflags` is `-I<kit>/include/SDL2 -noixemul -m68040
   -m68881`, and with GCC 16 also `-fno-tree-loop-distribute-patterns`.
-  `--libs` is `-noixemul -m68040 -m68881 -L<kit>/lib -lSDL2 -lGL -lm`.
+  `--libs` is `-noixemul -m68040 -m68881 -L<kit>/lib -lSDL2 -lm`, and
+  `--libs --gl` adds `-lGL` after `-lSDL2`, for programs that call `SDL_GL_`.
   `SDL2_CPU` replaces the CPU flags and `SDL2_RUNTIME` the `-noixemul`.
 - **libnix.** The libraries are built for libnix (`-noixemul`). GCC 6.5's
   default is ixemul, so the flag matters there. `-mcrt=nix20` is the same
@@ -89,7 +90,8 @@ m68k-amigaos-gcc -O2 gl.c -o GLProgram $(pkg-config --cflags --libs gl)
   built for an FPU (`-m68881`, `-m68040` or `-m68060`).
 - **GL is linked only when used.** `libSDL2.a`'s `SDL_GL_` functions are a
   member of their own: a program that calls one of them needs `-lGL` (which
-  `--libs` gives), and one that calls none links no GL.
+  `sdl2-config --libs --gl` and `pkg-config --libs sdl2 gl` give), and one
+  that calls none links no GL.
 - **Both compilers.** One set of libraries serves GCC 6.5 (the os32 stove)
   and GCC 16 (os32-gcc16): the same libnix, objects and calling convention.
   The libraries were built with GCC 16 and checked with `fpcr_check.py`.
@@ -158,7 +160,7 @@ GL.module is Mesa's GL state tracker on one of two drivers:
 
 | Driver | Where | Gives |
 | --- | --- | --- |
-| virgl | AmigaChrome: the PC's graphics chip, through opengpu.library and the ACRTG board | GL 4.3, GLES 3.1 |
+| virgl | AmigaChrome: the GPU, through opengpu.library and the ACRTG board | GL 4.3, GLES 3.1 |
 | softpipe | every other Amiga, or when asked | GL 3.3, GLES 3.1 |
 
 The headers are Mesa's and Khronos's: `GL/gl.h`, `GL/glext.h`,
@@ -170,7 +172,7 @@ without SDL.
 | Call | What it does |
 | --- | --- |
 | `gla_os3_virgl_transport(&t)` | fills `t` when opengpu.library carries virgl; 0 when it doesn't |
-| `gla_display_create_virgl(&t)` | a display on the PC's graphics chip, or NULL |
+| `gla_display_create_virgl(&t)` | a display on the GPU, or NULL |
 | `gla_display_create()` | a softpipe display |
 | `gla_display_driver(d)` | `"virgl"` or `"softpipe"` |
 | `gla_display_version(d, profile)` | the version a profile has there: major × 10 + minor |

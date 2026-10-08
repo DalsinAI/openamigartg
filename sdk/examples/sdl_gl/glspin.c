@@ -3,12 +3,12 @@
  *
  * GLSpin: OpenGL through SDL 2 (SDL_WINDOW_OPENGL, SDL_GL_CreateContext,
  * SDL_GL_SwapWindow) on OpenGPU's GL module. A lit, spinning cube. GL is
- * Mesa on the PC's graphics chip (virgl) on AmigaChrome, else softpipe on
+ * Mesa on the GPU (virgl) on AmigaChrome, else softpipe on
  * the 68k; SetEnv SDL_OPENGPU_GL cpu picks softpipe. The title shows the
  * frame rate and the renderer. Esc or the close gadget quits.
  *   GLSpin [WIDTH n] [HEIGHT n] [SECONDS n]
  * Build:
- *   m68k-amigaos-gcc -O2 glspin.c -o GLSpin $(sdl2-config --cflags --libs)
+ *   m68k-amigaos-gcc -O2 glspin.c -o GLSpin $(sdl2-config --cflags --libs --gl)
  */
 #include "SDL.h"
 #include "SDL_opengl.h"
