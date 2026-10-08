@@ -54,4 +54,9 @@
 #define OGFX_ScrollRaster(rp, dx, dy, x0, y0, x1, y1) \
     LP7NR(0x90, OGFX_ScrollRaster, struct RastPort *, rp, a1, LONG, dx, d0, LONG, dy, d1, LONG, x0, d2, LONG, y0, d3, \
           LONG, x1, d4, LONG, y1, d5, , OPENGPU_BASE_NAME)
+/* 0.7: OpenGfx's look hook (opengpu/gfx.h) */
+#define OGFX_RegisterLook(look) \
+    LP1(0x96, LONG, OGFX_RegisterLook, struct OGFXLookV1 *, look, a0, , OPENGPU_BASE_NAME)
+#define OGFX_UnregisterLook(owner) \
+    LP1(0x9c, LONG, OGFX_UnregisterLook, APTR, owner, a0, , OPENGPU_BASE_NAME)
 #endif

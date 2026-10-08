@@ -39,6 +39,13 @@ struct ogfx_state {
     struct OGFXProviderV1 provider;
     APTR old[OGFX_P_COUNT];            /* graphics.library's vectors before the patches */
     UWORD tramp[OGFX_P_COUNT][OGFX_TRAMP_WORDS]; /* each patch's entry, written by InstallPatches */
+    /* 0.7: the look (gfx.h). Kept after the entries, so old[] stays just
+     * before them as in 0.6 (OpenGadTools' GfxPatches test reads it there
+     * to follow a vector's chain). */
+    volatile UBYTE have_look;
+    UBYTE pad_look;
+    volatile UWORD look_busy;          /* calls inside the look now */
+    struct OGFXLookV1 look;            /* kept when taken out, for calls still inside it */
 };
 
 /* Where the state sits in opengpu.library's base (opengpu_lib.c). */
@@ -57,6 +64,8 @@ LONG OGFX_SetEnabled(OGFX_REG(d0, ULONG enabled), OGFX_REG(a6, struct Library *b
 ULONG OGFX_Status(OGFX_REG(a6, struct Library *base));
 LONG OGFX_RegisterProvider(OGFX_REG(a0, struct OGFXProviderV1 *provider), OGFX_REG(a6, struct Library *base));
 LONG OGFX_UnregisterProvider(OGFX_REG(a0, APTR owner), OGFX_REG(a6, struct Library *base));
+LONG OGFX_RegisterLook(OGFX_REG(a0, struct OGFXLookV1 *look), OGFX_REG(a6, struct Library *base));
+LONG OGFX_UnregisterLook(OGFX_REG(a0, APTR owner), OGFX_REG(a6, struct Library *base));
 LONG OGFX_Text(OGFX_REG(a1, struct RastPort *rp), OGFX_REG(a0, STRPTR text), OGFX_REG(d0, ULONG length),
                OGFX_REG(a6, struct Library *base));
 WORD OGFX_TextLength(OGFX_REG(a1, struct RastPort *rp), OGFX_REG(a0, STRPTR text), OGFX_REG(d0, ULONG length),
