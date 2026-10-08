@@ -31,3 +31,6 @@ echo "$OUT/opengpu.library ($(wc -c < "$OUT/opengpu.library") bytes)"
 echo "$OUT/OpenRTG ($(wc -c < "$OUT/OpenRTG") bytes)"
 "$CC" -m68020 -O2 -Wall -Werror -Wno-pointer-sign -noixemul -I"$ROOT/include" -o "$OUT/OpenRTG-Monitor" "$ROOT/tools/openrtg_monitor.c"
 echo "$OUT/OpenRTG-Monitor ($(wc -c < "$OUT/OpenRTG-Monitor") bytes)"
+# No float-to-int store through the FPCR register (tools/fpcr_check.py: GCC 16
+# at -m68040 can make one; the check runs on every build, whichever stove).
+python3 "$ROOT/tools/fpcr_check.py" "${CC%gcc}objdump" "$OUT/openrtg.library" "$OUT/cybergraphics.library" "$OUT/opengpu.library" "$OUT/OpenRTG" "$OUT/OpenRTG-Monitor"

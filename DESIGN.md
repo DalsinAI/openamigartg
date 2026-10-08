@@ -586,7 +586,7 @@ back is a diff of `FORK.md`'s list against opengfx.library at the time.
 - Each calling program gets its own copy of a module (LoadSeg per program, UnLoadSeg on close). So SDL's global state and Mesa's globals stay private, as with static linking, and no opener is refused. The cost is memory per program.
 - Link libraries:
   - `libSDL2.a` is SDL's dynapi stub. On the first SDL call, `OGPU_ModuleOpen("SDL2")` returns `SDL_DYNAPI_entry`, and every `SDL_` call jumps through that table (varargs work).
-  - `libGL.a` is the same for GL: a table generated from Mesa's glapi XML, filled by `OGPU_ModuleOpen("GL")`.
+  - `libGL.a` is the same for GL. It has one entry per call, generated from the GL entry points Mesa's glapi made for the build (`stubs/gl/gen_gl.py`), with the 15 GLA calls. GL.module's table hands out the same calls by name. The first call opens it with `OGPU_ModuleOpen("GL")` and binds the whole table in one pass, so a program runs on an older or newer module (a missing call returns 0).
 - So there is no gl.library and no SDL2 library: one library open, and the big code loads lazily.
 - Module ABI (`include/opengpu/module.h`): the segment's first code is an entry taking {SysBase, DOSBase, OpenGPUBase, version} and returning the module's table. Modules call opengpu.library's LVOs like any program.
   - The table starts with the module's version; the rest is the module's own (SDL2: `dynapi_entry`, `close`; GL: `close` and its calls by name).

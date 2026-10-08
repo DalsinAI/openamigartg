@@ -24,3 +24,4 @@ F="-m68040 -m68881 -mnobitfield -O2 -fomit-frame-pointer -noixemul -Wall -Wextra
 echo "$OUT/Test.module ($(wc -c < "$OUT/Test.module") bytes)"
 "$STOVE/prefix/bin/m68k-amigaos-gcc" -m68040 -m68881 -O2 -Wall -Werror -noixemul -I"$ROOT/include" -o "$OUT/ModuleCheck" "$HERE/module_check.c" -lm
 echo "$OUT/ModuleCheck ($(wc -c < "$OUT/ModuleCheck") bytes)"
+python3 "$ROOT/tools/fpcr_check.py" "$STOVE16/bin/m68k-amigaos-objdump" "$OUT/Test.module" "$OUT/ModuleCheck"
