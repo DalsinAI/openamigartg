@@ -22,10 +22,17 @@ echo "$OUT/cybergraphics.library ($(wc -c < "$OUT/cybergraphics.library") bytes)
 # The 3D rasteriser (Warp3D's and SDL's TRIANGLES), when its files are there.
 D3= D3SRC=
 if [ -f "$HERE/opengpu/ogpu_3d.c" ]; then D3=-DOGPU_WITH_3D; D3SRC="$HERE/opengpu/ogpu_3d.c"; fi
+# OpenGfx (library/ogfx): the patches' glue and its leaves. The leaves are AC090
+# magic functions: stack arguments, and no loop turned into a call (ogfx_leaves.c).
+"$CC" -m68020 -mnobitfield -O2 -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
+    -I"$ROOT/include" -c -o "$OUT/ogfx_lib.o" "$HERE/ogfx/ogfx_lib.c"
+"$CC" -m68020 -mnobitfield -O2 -fomit-frame-pointer -fno-lto -fno-builtin -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror \
+    -c -o "$OUT/ogfx_leaves.o" "$HERE/ogfx/ogfx_leaves.c"
 # -mnobitfield: GCC's bitfield instructions are slow on the AC090's JIT (opengpu_core.c's header).
 "$CC" -m68020 -mnobitfield -O2 -fomit-frame-pointer -fno-toplevel-reorder -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
     -nostartfiles -nostdlib -I"$ROOT/include" \
-    $D3 -o "$OUT/opengpu.library" "$HERE/opengpu/opengpu_lib.c" "$HERE/opengpu/ogpu_core.c" $D3SRC "$HERE/string.c" -lgcc
+    $D3 -o "$OUT/opengpu.library" "$HERE/opengpu/opengpu_lib.c" "$HERE/opengpu/ogpu_core.c" $D3SRC "$HERE/string.c" \
+    "$OUT/ogfx_lib.o" "$OUT/ogfx_leaves.o" -lgcc
 echo "$OUT/opengpu.library ($(wc -c < "$OUT/opengpu.library") bytes)"
 "$CC" -m68020 -O2 -Wall -Werror -Wno-pointer-sign -noixemul -I"$ROOT/include" -o "$OUT/OpenRTG" "$ROOT/tools/openrtg_cmd.c"
 echo "$OUT/OpenRTG ($(wc -c < "$OUT/OpenRTG") bytes)"
