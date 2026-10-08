@@ -128,3 +128,41 @@ void ogpu_virgl(struct OGPUBatch *b, unsigned long address, unsigned long bytes)
     a[1] = bytes;
     cmd(b, OGPU_OP_VIRGL, 2, a);
 }
+
+/* ---- v1.2 ---- */
+
+void ogpu_fill_blend(struct OGPUBatch *b, int x, int y, int w, int h, unsigned long argb, int mode) {
+    unsigned long a[4];
+    a[0] = OGPU_XY(x, y); a[1] = OGPU_XY(w, h); a[2] = argb; a[3] = (unsigned long)mode;
+    cmd(b, OGPU_OP_FILL_BLEND, 4, a);
+}
+
+void ogpu_lines_blend(struct OGPUBatch *b, unsigned long points, unsigned long count, unsigned long argb, unsigned long flags) {
+    unsigned long a[4];
+    a[0] = points; a[1] = count; a[2] = argb; a[3] = flags;
+    cmd(b, OGPU_OP_LINES_BLEND, 4, a);
+}
+
+void ogpu_points_blend(struct OGPUBatch *b, unsigned long points, unsigned long count, unsigned long argb, int mode) {
+    unsigned long a[4];
+    a[0] = points; a[1] = count; a[2] = argb; a[3] = (unsigned long)mode;
+    cmd(b, OGPU_OP_POINTS_BLEND, 4, a);
+}
+
+void ogpu_composite_affine(struct OGPUBatch *b, int src_slot, int sx, int sy, int sw, int sh,
+                           const long m[6], unsigned long argb, unsigned long flags) {
+    unsigned long a[11];
+    int i;
+    a[0] = (unsigned long)src_slot; a[1] = OGPU_XY(sx, sy); a[2] = OGPU_XY(sw, sh);
+    for (i = 0; i < 6; i++) a[3 + i] = (unsigned long)m[i] & 0xFFFFFFFFUL;
+    a[9] = argb; a[10] = flags;
+    cmd(b, OGPU_OP_COMPOSITE_AFFINE, 11, a);
+}
+
+void ogpu_yuv(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr, unsigned long u_address, unsigned long u_bpr,
+              unsigned long v_address, unsigned long v_bpr, int w, int h, int x, int y, unsigned long format) {
+    unsigned long a[9];
+    a[0] = y_address; a[1] = y_bpr; a[2] = u_address; a[3] = u_bpr; a[4] = v_address; a[5] = v_bpr;
+    a[6] = OGPU_XY(w, h); a[7] = OGPU_XY(x, y); a[8] = format;
+    cmd(b, OGPU_OP_YUV, 9, a);
+}

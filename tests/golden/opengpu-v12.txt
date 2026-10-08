@@ -1,0 +1,3 @@
+fe04465b
+# OpenGPU stream v1.2 scene (tests/golden_scenes.c ogpu_golden_v12): FNV-1a of the RGB565, ARGB32 and BGRA32 pictures: blend modes, lines,
+# points, an affine sprite, a masked MOD composite and a YUV picture. Every back end must give this.

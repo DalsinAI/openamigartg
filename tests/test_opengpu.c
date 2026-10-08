@@ -364,6 +364,265 @@ static void test_mask(int f) {
 }
 
 /* COMPOSITE with a mask, ADD and IN, into ARGB32 and A8. */
+
+/* ---- v1.2: blend modes, FILL_BLEND, LINES_BLEND, POINTS_BLEND, COMPOSITE_AFFINE, YUV, formats ---- */
+
+static unsigned long r255(unsigned long x, unsigned long y) { unsigned long t = x * y + 128; return (t + (t >> 8)) >> 8; }
+static unsigned long sat(unsigned long v) { return v > 255 ? 255 : v; }
+
+/* SDL's blend modes, written plainly, channel by channel (ARGB32 words). */
+static unsigned long ref_blend(unsigned long d, unsigned long s, unsigned long sa, int mode) {
+    unsigned long da = d >> 24 & 255, dr = d >> 16 & 255, dg = d >> 8 & 255, db = d & 255;
+    unsigned long sr = s >> 16 & 255, sg = s >> 8 & 255, sb = s & 255, a, r, g, b;
+    switch (mode) {
+    case OGPU_BLEND_NONE: return sa << 24 | sr << 16 | sg << 8 | sb;
+    case OGPU_BLEND_ADD:
+        if (!sa) return d;
+        a = da; r = sat(dr + r255(sr, sa)); g = sat(dg + r255(sg, sa)); b = sat(db + r255(sb, sa)); break;
+    case OGPU_BLEND_MOD: a = da; r = r255(sr, dr); g = r255(sg, dg); b = r255(sb, db); break;
+    case OGPU_BLEND_MUL:
+        a = da; r = sat(r255(sr, dr) + r255(dr, 255 - sa)); g = sat(r255(sg, dg) + r255(dg, 255 - sa)); b = sat(r255(sb, db) + r255(db, 255 - sa));
+        break;
+    default:
+        if (sa == 255) return 0xFF000000UL | (s & 0xFFFFFF);
+        if (!sa) return d;
+        a = sat(sa + r255(da, 255 - sa)); r = sat(r255(sr, sa) + r255(dr, 255 - sa));
+        g = sat(r255(sg, sa) + r255(dg, 255 - sa)); b = sat(r255(sb, sa) + r255(db, 255 - sa));
+    }
+    return a << 24 | r << 16 | g << 8 | b;
+}
+
+static void test_fill_blend(void) {
+    static const unsigned long dsts[3] = { 0xFF204060UL, 0x80FFFFFFUL, 0x00000000UL };
+    static const unsigned long cols[4] = { 0x80FF8000UL, 0xFF102030UL, 0x00FFFFFFUL, 0x40A0B0C0UL };
+    long bpr = W * 4;
+    int m, i, k;
+    for (m = 0; m <= OGPU_BLEND_MUL; m++)
+        for (i = 0; i < 3; i++)
+            for (k = 0; k < 4; k++) {
+                unsigned long want = ref_blend(dsts[i], cols[k], cols[k] >> 24, m), got;
+                setpx(T0, bpr, OGPU_FMT_ARGB32, 3, 3, dsts[i]);
+                begin();
+                ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+                ogpu_target(&B, 0);
+                ogpu_fill_blend(&B, 3, 3, 1, 1, cols[k], m);
+                run();
+                got = px(T0, bpr, OGPU_FMT_ARGB32, 3, 3);
+                CHECK(C.last_error == OGPU_OK && got == want, "FILL_BLEND mode %d: %08lx on %08lx gave %08lx, want %08lx", m, cols[k], dsts[i], got, want);
+            }
+    /* Into RGB565: the same channels, truncated; alpha kept out. */
+    begin();
+    ogpu_surface(&B, 0, T0, W * 2, W, H, OGPU_FMT_RGB565);
+    ogpu_target(&B, 0);
+    ogpu_fill(&B, 0, 0, 4, 1, 0x0000);
+    ogpu_fill_blend(&B, 0, 0, 4, 1, 0xFFFF8040UL, OGPU_BLEND_BLEND);
+    run();
+    CHECK(px(T0, W * 2, OGPU_FMT_RGB565, 2, 0) == 0xFC08UL, "FILL_BLEND into RGB565 (%04lx)", px(T0, W * 2, OGPU_FMT_RGB565, 2, 0));
+    begin();
+    ogpu_surface(&B, 0, T0, W, W, H, OGPU_FMT_CLUT8);
+    ogpu_target(&B, 0);
+    ogpu_fill_blend(&B, 0, 0, 4, 1, 0xFFFF8040UL, OGPU_BLEND_BLEND);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "FILL_BLEND has no CLUT8");
+}
+
+static void test_lines_points(void) {
+    long bpr = W * 4;
+    int x, y, n;
+    ogpu_u8 *pts = arena + D0;
+    /* A strip round a square, last points left out: each corner once, so a
+     * half-transparent ADD gives every pixel the same value. */
+    static const int sq[5][2] = { { 2, 2 }, { 12, 2 }, { 12, 12 }, { 2, 12 }, { 2, 2 } };
+    for (n = 0; n < 5; n++) { pts[n * 4] = 0; pts[n * 4 + 1] = (ogpu_u8)sq[n][0]; pts[n * 4 + 2] = 0; pts[n * 4 + 3] = (ogpu_u8)sq[n][1]; }
+    memset(arena + T0, 0, (size_t)(bpr * H));
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_lines_blend(&B, D0, 5, 0x80402010UL, OGPU_BLEND_ADD | OGPU_LINES_STRIP);
+    run();
+    n = 0;
+    for (y = 0; y < 16; y++)
+        for (x = 0; x < 16; x++) {
+            unsigned long v = px(T0, bpr, OGPU_FMT_ARGB32, x, y);
+            if (v) { n++; CHECK(v == 0x00201008UL, "strip pixel %d,%d is %08lx", x, y, v); }
+        }
+    CHECK(C.last_error == OGPU_OK && n == 40, "a strip round a 10x10 square sets 40 pixels once (%d)", n);
+    /* Pairs with their last points: two crossing lines. */
+    memset(arena + T0, 0, (size_t)(bpr * H));
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_lines_blend(&B, D0, 4, 0xFFFFFFFFUL, OGPU_BLEND_NONE | OGPU_LINES_LAST);
+    run();
+    CHECK(px(T0, bpr, OGPU_FMT_ARGB32, 12, 12) == 0xFFFFFFFFUL && px(T0, bpr, OGPU_FMT_ARGB32, 2, 12) == 0xFFFFFFFFUL
+          && px(T0, bpr, OGPU_FMT_ARGB32, 7, 7) == 0 , "pairs, each with its last point");
+    /* Points, clipped. */
+    pts[0] = 0xFF; pts[1] = 0xFF; pts[2] = 0; pts[3] = 1;          /* (-1, 1): outside */
+    memset(arena + T0, 0, (size_t)(bpr * H));
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_points_blend(&B, D0, 3, 0xFF00FF00UL, OGPU_BLEND_BLEND);
+    run();
+    CHECK(C.last_error == OGPU_OK && px(T0, bpr, OGPU_FMT_ARGB32, 12, 2) == 0xFF00FF00UL
+          && px(T0, bpr, OGPU_FMT_ARGB32, 12, 12) == 0xFF00FF00UL, "points");
+}
+
+static void test_affine(void) {
+    long bpr = W * 4, m[6];
+    int x, y, ok;
+    /* A 4x3 source of distinct opaque pixels. */
+    for (y = 0; y < 3; y++) for (x = 0; x < 4; x++) setpx(S0, 16, OGPU_FMT_ARGB32, x, y, 0xFF000000UL | (unsigned long)(y * 4 + x + 1) * 0x0A0B0CUL);
+    /* Identity, moved to (5, 6): the same as a 1:1 copy. */
+    memset(arena + T0, 0, (size_t)(bpr * H));
+    m[0] = 65536; m[1] = 0; m[2] = 5L << 16; m[3] = 0; m[4] = 65536; m[5] = 6L << 16;
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 1, S0, 16, 4, 3, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_composite_affine(&B, 1, 0, 0, 4, 3, m, 0xFFFFFFFFUL, OGPU_BLEND_BLEND);
+    run();
+    ok = C.last_error == OGPU_OK;
+    for (y = 0; y < 3; y++) for (x = 0; x < 4; x++) ok &= px(T0, bpr, OGPU_FMT_ARGB32, 5 + x, 6 + y) == px(S0, 16, OGPU_FMT_ARGB32, x, y);
+    ok &= px(T0, bpr, OGPU_FMT_ARGB32, 4, 6) == 0 && px(T0, bpr, OGPU_FMT_ARGB32, 9, 6) == 0 && px(T0, bpr, OGPU_FMT_ARGB32, 5, 9) == 0;
+    CHECK(ok, "affine identity is a copy");
+    /* A quarter turn: source (u, v) lands at (20 - v, 10 + u): x = -v + 20, y = u + 10. */
+    memset(arena + T0, 0, (size_t)(bpr * H));
+    m[0] = 0; m[1] = -65536; m[2] = 20L << 16; m[3] = 65536; m[4] = 0; m[5] = 10L << 16;
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 1, S0, 16, 4, 3, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_composite_affine(&B, 1, 0, 0, 4, 3, m, 0xFFFFFFFFUL, OGPU_BLEND_NONE);
+    run();
+    ok = C.last_error == OGPU_OK;
+    for (y = 0; y < 3; y++) for (x = 0; x < 4; x++) ok &= px(T0, bpr, OGPU_FMT_ARGB32, 19 - y, 10 + x) == px(S0, 16, OGPU_FMT_ARGB32, x, y);
+    CHECK(ok, "affine quarter turn");
+    /* A horizontal flip at twice the size, through a colour: red halved, alpha 128. */
+    memset(arena + T0, 0, (size_t)(bpr * H));
+    m[0] = -2L * 65536; m[1] = 0; m[2] = 8L << 16; m[3] = 0; m[4] = 2L * 65536; m[5] = 0;
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 1, S0, 16, 4, 3, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_composite_affine(&B, 1, 0, 0, 4, 3, m, 0x807FFFFFUL, OGPU_BLEND_NONE);
+    run();
+    {
+        unsigned long s = px(S0, 16, OGPU_FMT_ARGB32, 0, 1), want = 0x80000000UL | r255(s >> 16 & 255, 0x7F) << 16 | (s & 0xFFFF);
+        CHECK(C.last_error == OGPU_OK && px(T0, bpr, OGPU_FMT_ARGB32, 7, 2) == want && px(T0, bpr, OGPU_FMT_ARGB32, 6, 3) == want,
+              "affine flip x2 with colour (%08lx, want %08lx)", px(T0, bpr, OGPU_FMT_ARGB32, 7, 2), want);
+    }
+    /* Too small to invert, and a flat matrix: refused, and nothing. */
+    m[0] = 1; m[1] = 0; m[2] = 0; m[3] = 0; m[4] = 1; m[5] = 0;
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 1, S0, 16, 4, 3, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_composite_affine(&B, 1, 0, 0, 4, 3, m, 0xFFFFFFFFUL, 0);
+    m[0] = 65536; m[1] = 65536; m[3] = 65536; m[4] = 65536;
+    ogpu_composite_affine(&B, 1, 0, 0, 4, 3, m, 0xFFFFFFFFUL, 0);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "a vanishing scale is refused");
+}
+
+static void test_yuv(void) {
+    long bpr = W * 4;
+    int x, y, i, ok;
+    ogpu_u8 *yp = arena + D0, *up = yp + 0x1000, *vp = yp + 0x2000, *uv = yp + 0x3000, *pk = yp + 0x4000;
+    unsigned long ref[8][4];
+    /* An 8x4 picture: Y ramps, U and V per 2x2 block. Packed and semi-planar copies of it. */
+    for (y = 0; y < 4; y++) for (x = 0; x < 8; x++) yp[y * 8 + x] = (ogpu_u8)(16 + x * 25 + y * 3);
+    for (y = 0; y < 2; y++) for (x = 0; x < 4; x++) { up[y * 4 + x] = (ogpu_u8)(64 + x * 40); vp[y * 4 + x] = (ogpu_u8)(200 - y * 90 - x * 10); }
+    for (y = 0; y < 2; y++) for (x = 0; x < 4; x++) { uv[y * 8 + x * 2] = up[y * 4 + x]; uv[y * 8 + x * 2 + 1] = vp[y * 4 + x]; }
+    for (y = 0; y < 4; y++) for (x = 0; x < 4; x++) {
+        ogpu_u8 *q = pk + y * 16 + x * 4;
+        q[0] = yp[y * 8 + x * 2]; q[1] = up[(y / 2) * 4 + x]; q[2] = yp[y * 8 + x * 2 + 1]; q[3] = vp[(y / 2) * 4 + x];
+    }
+    memset(arena + T0, 0, (size_t)(bpr * H));
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_yuv(&B, D0, 8, D0 + 0x1000, 4, D0 + 0x2000, 4, 8, 4, 0, 0, OGPU_YUV_FORMAT(OGPU_YUV_I420, OGPU_YUV_BT601));
+    ogpu_yuv(&B, D0, 8, D0 + 0x3000, 8, 0, 0, 8, 4, 10, 0, OGPU_YUV_FORMAT(OGPU_YUV_NV12, OGPU_YUV_BT601));
+    ogpu_yuv(&B, D0 + 0x4000, 16, 0, 0, 0, 0, 8, 4, 20, 0, OGPU_YUV_FORMAT(OGPU_YUV_YUY2, OGPU_YUV_BT601));
+    run();
+    ok = C.last_error == OGPU_OK;
+    for (y = 0; y < 4; y++) for (x = 0; x < 8; x++) {
+        /* BT.601 in floating point, as the reference. */
+        double Y = yp[y * 8 + x] - 16, U = up[(y / 2) * 4 + x / 2] - 128, V = vp[(y / 2) * 4 + x / 2] - 128;
+        double r = 1.164 * Y + 1.596 * V, g = 1.164 * Y - 0.392 * U - 0.813 * V, b = 1.164 * Y + 2.017 * U;
+        unsigned long got = px(T0, bpr, OGPU_FMT_ARGB32, x, y);
+        int gr = (int)(got >> 16 & 255), gg = (int)(got >> 8 & 255), gb = (int)(got & 255);
+        r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
+        ok &= (got >> 24) == 255 && gr - r < 2 && r - gr < 2 && gg - g < 2 && g - gg < 2 && gb - b < 2 && b - gb < 2;
+        if (y < 4 && x < 4) ref[x][y] = got;
+        ok &= px(T0, bpr, OGPU_FMT_ARGB32, 10 + x, y) == got && px(T0, bpr, OGPU_FMT_ARGB32, 20 + x, y) == got;
+    }
+    (void)ref;
+    CHECK(ok, "YUV I420, NV12 and YUY2 give BT.601's colours, the same each way");
+    /* Video range: 16 is black, 235 white. */
+    for (i = 0; i < 32; i++) yp[i] = i < 16 ? 16 : 235;
+    memset(up, 128, 8); memset(vp, 128, 8);
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_yuv(&B, D0, 8, D0 + 0x1000, 4, D0 + 0x2000, 4, 8, 4, 0, 0, OGPU_YUV_FORMAT(OGPU_YUV_I420, OGPU_YUV_BT601));
+    run();
+    CHECK(px(T0, bpr, OGPU_FMT_ARGB32, 0, 0) == 0xFF000000UL && px(T0, bpr, OGPU_FMT_ARGB32, 0, 2) == 0xFFFFFFFFUL, "black and white");
+}
+
+/* The v1.2 formats: each drawn the same as RGB565 or ARGB32, in its own bytes. */
+static void test_formats_v12(void) {
+    static const int fmts[4] = { OGPU_FMT_RGB565PC, OGPU_FMT_RGB555, OGPU_FMT_RGB555PC, OGPU_FMT_BGRA32 };
+    int k, x;
+    for (k = 0; k < 4; k++) {
+        int f = fmts[k], bpp = f == OGPU_FMT_BGRA32 ? 4 : 2;
+        long bpr = W * bpp;
+        unsigned long got[4], want[4];
+        memset(arena + T0, 0, (size_t)(bpr * H));
+        setpx(S0, 16, OGPU_FMT_ARGB32, 0, 0, 0xFFF08040UL);
+        setpx(S0, 16, OGPU_FMT_ARGB32, 1, 0, 0x8020C0E0UL);
+        begin();
+        ogpu_surface(&B, 0, T0, bpr, W, H, f);
+        ogpu_surface(&B, 1, S0, 16, 2, 1, OGPU_FMT_ARGB32);
+        ogpu_target(&B, 0);
+        ogpu_fill_blend(&B, 0, 0, 8, 1, 0xFF336699UL, OGPU_BLEND_NONE);
+        ogpu_composite(&B, 1, 0, 0, 2, 1, 2, 0, 2, 1, 255, OGPU_COMP_SRCALPHA);
+        ogpu_pixels(&B, S0, 16, OGPU_FMT_ARGB32, 0, 4, 0, 2, 1);
+        run();
+        for (x = 0; x < 4; x++) {
+            const ogpu_u8 *p = arena + T0 + (x * 2 + 1) * bpp;   /* pixels 1, 3, 5, 7 */
+            unsigned long r, g, b;
+            if (f == OGPU_FMT_BGRA32) { got[x] = (unsigned long)p[2] << 16 | (unsigned long)p[1] << 8 | p[0]; }
+            else {
+                unsigned v = f == OGPU_FMT_RGB555 ? (unsigned)(p[0] << 8 | p[1]) : (unsigned)(p[1] << 8 | p[0]);
+                if (f == OGPU_FMT_RGB565PC) { r = v >> 11 & 31; g = v >> 5 & 63; b = v & 31; got[x] = r << 16 | g << 8 | b; }
+                else { r = v >> 10 & 31; g = v >> 5 & 31; b = v & 31; got[x] = r << 16 | g << 8 | b; }
+            }
+        }
+        /* The same through ARGB32, cut to the format's bits. */
+        memset(arena + T0, 0, (size_t)(W * 4 * H));
+        begin();
+        ogpu_surface(&B, 0, T0, W * 4, W, H, OGPU_FMT_ARGB32);
+        ogpu_surface(&B, 1, S0, 16, 2, 1, OGPU_FMT_ARGB32);
+        ogpu_target(&B, 0);
+        ogpu_fill_blend(&B, 0, 0, 8, 1, 0xFF336699UL, OGPU_BLEND_NONE);
+        ogpu_composite(&B, 1, 0, 0, 2, 1, 2, 0, 2, 1, 255, OGPU_COMP_SRCALPHA);
+        ogpu_pixels(&B, S0, 16, OGPU_FMT_ARGB32, 0, 4, 0, 2, 1);
+        run();
+        for (x = 0; x < 4; x++) {
+            unsigned long v = px(T0, W * 4, OGPU_FMT_ARGB32, x * 2 + 1, 0), r = v >> 16 & 255, g = v >> 8 & 255, b = v & 255;
+            if (f == OGPU_FMT_BGRA32) want[x] = v & 0xFFFFFF;
+            else if (f == OGPU_FMT_RGB565PC) want[x] = (r >> 3) << 16 | (g >> 2) << 8 | (b >> 3);
+            else want[x] = (r >> 3) << 16 | (g >> 3) << 8 | (b >> 3);
+        }
+        /* The composite blends with what was there, read back from fewer bits:
+         * pixel 3 may differ by the rounding of the format; the rest exactly. */
+        CHECK(got[0] == want[0] && got[2] == want[2] && got[3] == want[3], "format %d: %06lx %06lx %06lx, want %06lx %06lx %06lx",
+              f, got[0], got[2], got[3], want[0], want[2], want[3]);
+    }
+}
+
 static void test_composite_v11(void) {
     long bpr = W * 4, abpr = W;
     unsigned long d;
@@ -596,7 +855,7 @@ static void test_ext(void) {
 
 int main(int argc, char **argv) {
     static const int fmts[3] = { OGPU_FMT_CLUT8, OGPU_FMT_RGB565, OGPU_FMT_ARGB32 };
-    unsigned long golden, golden11;
+    unsigned long golden, golden11, golden12;
     int k;
     for (k = 0; k < 3; k++) {
         test_fill(fmts[k]);
@@ -614,6 +873,11 @@ int main(int argc, char **argv) {
     test_a8();
     test_mask(OGPU_FMT_RGB565); test_mask(OGPU_FMT_ARGB32); test_mask(OGPU_FMT_A8);
     test_composite_v11();
+    test_fill_blend();
+    test_lines_points();
+    test_affine();
+    test_yuv();
+    test_formats_v12();
     test_errors();
     test_ext();
     test_random_streams();
@@ -623,13 +887,16 @@ int main(int argc, char **argv) {
         env.arena = arena; env.addr = 0; env.run = scene_run;
         golden = ogpu_golden_g1(&env);
         golden11 = ogpu_golden_v11(&env);
+        golden12 = ogpu_golden_v12(&env);
         CHECK(env.failures == 0, "the golden scenes ran (%d failed)", env.failures);
     }
     if (argc > 1) golden_check(argv[1], golden, "golden scene");
     if (argc > 2) golden_check(argv[2], golden11, "v1.1 scene");
+    if (argc > 3) golden_check(argv[3], golden12, "v1.2 scene");
     CHECK(ogpu_core_supports(OGPU_OP_COMPOSITE, OGPU_FMT_CLUT8) == OGPU_NONE
           && ogpu_core_supports(OGPU_OP_PIXELS, OGPU_FMT_CLUT8) == OGPU_PARTIAL
           && ogpu_core_supports(OGPU_OP_FILL, OGPU_FMT_ARGB32) == OGPU_FULL, "supports");
-    printf("opengpu core: golden scene %08lx, v1.1 scene %08lx; %s\n", golden, golden11, failures ? "FAILED" : "all tests passed");
+    printf("opengpu core: golden scene %08lx, v1.1 scene %08lx, v1.2 scene %08lx; %s\n", golden, golden11, golden12,
+           failures ? "FAILED" : "all tests passed");
     return failures != 0;
 }

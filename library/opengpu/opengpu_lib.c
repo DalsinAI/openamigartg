@@ -1,13 +1,15 @@
 /* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * opengpu.library 0.3 (G2 with stream v1.1, DESIGN.md section 5): the library, its
+ * opengpu.library 0.4 (G2 with stream v1.2, DESIGN.md section 5): the library, its
  * built-in CPU back end, which runs ogpu_core.c on the Amiga's own 68k, and
  * the drivers in LIBS:OpenGPU/ (include/opengpu/driver.h). The first time a
  * DOS process asks anything, the library opens the drivers there and keeps
  * the first that finds its hardware (ACRTG.gpu: the Cradle's command ring).
- * From then on every batch goes to that driver, and the CPU takes over for
- * good if the driver says its hardware has gone. Without a driver, batches
+ * From then on every batch goes to that driver, except one with a command
+ * the driver doesn't carry out (a newer stream than its hardware), which the
+ * CPU runs once the driver's batches are done; the CPU takes over for good
+ * if the driver says its hardware has gone. Without a driver, batches
  * are carried out on the CPU as they are submitted, so a fence is done by
  * the time OGPU_Submit returns. OGPU_Wait gives a batch's first error.
  * Built bare by library/build.sh.
@@ -22,13 +24,17 @@
 #include <proto/exec.h>
 #include <proto/dos.h>
 
+#include <exec/memory.h>
 #include "ogpu_core.h"
+#ifdef OGPU_WITH_3D
+#include "ogpu_3d.h"
+#endif
 #include "../../include/opengpu/opengpu.h"
 #include "../../include/opengpu/driver.h"
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 3
+#define LIB_REVISION 4
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -44,6 +50,8 @@ struct OpenGPUBase {
     int drv_tried;                              /* LIBS:OpenGPU/ looked at */
     struct Library *drv_lib;                    /* the driver's library, kept open */
     struct OGPUDriver *drv;                     /* its table, or NULL: the CPU does everything */
+    UBYTE drv_ok[256];                          /* opcodes the driver carries out (for some format) */
+    unsigned long drv_last;                     /* the driver's last fence, before a batch runs on the CPU */
 };
 
 struct ExecBase *SysBase;
@@ -54,9 +62,9 @@ struct DosLibrary *DOSBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.3 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
+static const char lib_id[] = "opengpu.library 0.4 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.3 (8.10.2026) OpenGPU, Dalsin Limited";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.4 (8.10.2026) OpenGPU, Dalsin Limited";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";
@@ -130,16 +138,43 @@ static ogpu_u8 *cpu_map(void *user, ogpu_u32 address, ogpu_u32 length)
     return (ogpu_u8 *)address;
 }
 
+#ifdef OGPU_WITH_3D
+/* 1 when the batch has a 3D command (stream3d.h's range). */
+static int has_3d(const UBYTE *s, ULONG words)
+{
+    ULONG at = 0;
+    while (at < words) {
+        UWORD op = (UWORD)(s[at * 4] << 8 | s[at * 4 + 1]), len = (UWORD)(s[at * 4 + 2] << 8 | s[at * 4 + 3]);
+        if (op >= 0x0030 && op <= 0x003F) return 1;
+        if (!len) return 0;
+        at += len;
+    }
+    return 0;
+}
+#endif
+
 /* A batch on the 68k: done when this returns. */
 static LONG cpu_run(APTR stream, ULONG words)
 {
     struct ogpu_core core;      /* on the caller's stack, so callers never wait on each other */
+#ifdef OGPU_WITH_3D
+    struct ogpu3d *d3 = NULL;   /* 3D state: about 1.7 KB, too much for a small stack, so from memory */
+#endif
     ogpu_core_init(&core);
     core.map = cpu_map;
     core.fence = 0;
     core.ext = 0;               /* the CPU back end carries no GPU APIs: OGPU_OP_VIRGL is BADOP */
     core.user = 0;
+#ifdef OGPU_WITH_3D
+    if (has_3d((const UBYTE *)stream, words) && (d3 = AllocVec(sizeof *d3, MEMF_ANY)) != NULL) {
+        ogpu3d_init(d3, &core);
+        core.d3 = d3;
+    }
+#endif
     ogpu_core_run(&core, (const ogpu_u8 *)stream, (long)words);
+#ifdef OGPU_WITH_3D
+    if (d3) FreeVec(d3);
+#endif
     return core.last_error;
 }
 
@@ -186,6 +221,15 @@ static int driver_try(struct OpenGPUBase *base, const char *name)
     }
     base->drv_lib = lib;
     base->drv = d;
+    {
+        int op, f;
+        for (op = 0; op < 256; op++) {
+            base->drv_ok[op] = 0;
+            for (f = 1; f < OGPU_FMT_COUNT && !base->drv_ok[op]; f++)
+                if (d->supports(op, f, 0) != OGPU_NONE) base->drv_ok[op] = 1;
+        }
+        base->drv_ok[OGPU_OP_NOP] = 1;
+    }
     return 1;
 }
 
@@ -246,6 +290,19 @@ static void drivers_close(struct OpenGPUBase *base)
     DOSBase = NULL;
 }
 
+/* 1 when the driver carries out every command in the batch. */
+static int driver_takes(struct OpenGPUBase *base, const UBYTE *s, ULONG words)
+{
+    ULONG at = 0;
+    while (at < words) {
+        UWORD op = (UWORD)(s[at * 4] << 8 | s[at * 4 + 1]), len = (UWORD)(s[at * 4 + 2] << 8 | s[at * 4 + 3]);
+        if (op > 255 || !base->drv_ok[op]) return 0;
+        if (!len) return 1;                     /* a bad length: the driver says so, as the CPU would */
+        at += len;
+    }
+    return 1;
+}
+
 /* ---- OpenGPU's calls ------------------------------------------------------------- */
 
 static ULONG OGPU_Query(REG(d0, ULONG op), REG(d1, ULONG format), REG(a6, struct OpenGPUBase *base))
@@ -254,11 +311,11 @@ static ULONG OGPU_Query(REG(d0, ULONG op), REG(d1, ULONG format), REG(a6, struct
     drivers_load(base);
     if (base->drv) {
         ObtainSemaphore(&base->drv_lock);
-        /* Every batch goes to the driver, so its answer is the one that holds. */
+        /* The driver's answer holds for what it carries out; the rest runs here. */
         if (base->drv) answer = base->drv->supports((int)op, (int)format, 0);
         ReleaseSemaphore(&base->drv_lock);
     }
-    if (answer >= 0) return (ULONG)answer | (1UL << 8);
+    if (answer > OGPU_NONE) return (ULONG)answer | (1UL << 8);
     return (ULONG)ogpu_core_supports((int)op, (int)format) | (OGPU_BACKEND_CPU << 8);
 }
 
@@ -279,9 +336,14 @@ static LONG OGPU_Submit(REG(a0, APTR stream), REG(d0, ULONG words), REG(a1, ULON
     drivers_load(base);
     if (base->drv) {
         ObtainSemaphore(&base->drv_lock);
-        if (base->drv) {
+        if (base->drv && !driver_takes(base, (const UBYTE *)stream, words)) {
+            /* A command the driver doesn't know (a newer stream than its
+             * hardware): this batch on the CPU, once the driver's are done. */
+            if (base->drv_last) base->drv->wait(base->drv_last);
+        } else if (base->drv) {
             on_driver = 1;
             r = base->drv->submit(stream, words, &df);
+            base->drv_last = df;
             if (r == OGPU_ERR_DEVICE) {
                 /* The hardware has gone: this batch and every later one on the CPU. */
                 base->drv = NULL;

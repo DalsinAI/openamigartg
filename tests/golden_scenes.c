@@ -123,3 +123,55 @@ unsigned long ogpu_golden_v11(struct ogpu_scene_env *e) {
     return h;
 }
 
+
+/* v1.2's scene (SDL 2's renderer): fills, lines and points by every blend
+ * mode, a rotated, flipped and scaled sprite through a colour, a masked
+ * composite by a blend mode, and a YUV picture, into RGB565, ARGB32 and
+ * BGRA32. */
+unsigned long ogpu_golden_v12(struct ogpu_scene_env *e) {
+    static const int fmts[3] = { OGPU_FMT_RGB565, OGPU_FMT_ARGB32, OGPU_FMT_BGRA32 };
+    unsigned long h = 2166136261UL;
+    int k, i, x, y;
+    arena = e->arena;
+    rnd_state = 1202;
+    for (i = 0; i < 64 * 48; i++) setpx(S0, 64 * 4, OGPU_FMT_ARGB32, i % 64, i / 64, ((unsigned long)(i * 5) & 255) << 24 | (unsigned long)(i * 2654435761UL & 0xFFFFFFUL));
+    for (i = 0; i < 64; i++) {                      /* a star of points for the lines and points */
+        long px_ = 80 + ((i * 37) % 70) - 35, py_ = 50 + ((i * 53) % 46) - 23;
+        arena[D0 + i * 4] = 0; arena[D0 + i * 4 + 1] = (ogpu_u8)px_; arena[D0 + i * 4 + 2] = 0; arena[D0 + i * 4 + 3] = (ogpu_u8)py_;
+    }
+    for (y = 0; y < 32; y++) for (x = 0; x < 32; x++) arena[D0 + 0x400 + y * 32 + x] = (ogpu_u8)(16 + x * 6 + y);   /* Y */
+    for (y = 0; y < 16; y++) for (x = 0; x < 16; x++) {
+        arena[D0 + 0x800 + y * 16 + x] = (ogpu_u8)(40 + x * 11);                                          /* U */
+        arena[D0 + 0x900 + y * 16 + x] = (ogpu_u8)(220 - y * 9);                                          /* V */
+    }
+    for (y = 0; y < 48; y++) for (x = 0; x < 64; x++) arena[D0 + 0x1000 + y * 64 + x] = (ogpu_u8)((x * 4) ^ (y * 5));   /* A8 */
+    for (k = 0; k < 3; k++) {
+        int f = fmts[k], m;
+        long bpr = 160 * (f == OGPU_FMT_RGB565 ? 2 : 4);
+        long rot[6], flip[6];
+        memset(arena + T0, 0, (size_t)(bpr * 100));
+        begin();
+        ogpu_surface(&B, 0, A(T0), (unsigned long)bpr, 160, 100, f);
+        ogpu_surface(&B, 1, A(S0), 64 * 4, 64, 48, OGPU_FMT_ARGB32);
+        ogpu_surface(&B, 2, A(D0 + 0x1000), 64, 64, 48, OGPU_FMT_A8);
+        ogpu_target(&B, 0);
+        ogpu_fill_blend(&B, 0, 0, 160, 100, 0xFF203040UL, OGPU_BLEND_NONE);
+        for (m = 0; m <= OGPU_BLEND_MUL; m++) ogpu_fill_blend(&B, 4 + m * 30, 4, 26, 20, 0x90E07030UL + (unsigned long)m * 0x101010UL, m);
+        ogpu_lines_blend(&B, A(D0), 32, 0xC0FFFF00UL, OGPU_BLEND_BLEND | OGPU_LINES_STRIP);
+        ogpu_lines_blend(&B, A(D0 + 128), 32, 0x6000FFFFUL, OGPU_BLEND_ADD | OGPU_LINES_LAST);
+        ogpu_points_blend(&B, A(D0), 64, 0xFFFF00FFUL, OGPU_BLEND_MUL);
+        /* 30 degrees (cos 0.866, sin 0.5) about (40, 60), at 0.75 */
+        rot[0] = 42566; rot[1] = -24576; rot[3] = 24576; rot[4] = 42566;
+        rot[2] = (40L << 16) - (42566L * 32 - 24576L * 24); rot[5] = (60L << 16) - (24576L * 32 + 42566L * 24);
+        ogpu_composite_affine(&B, 1, 0, 0, 64, 48, rot, 0xC0FFE0C0UL, OGPU_BLEND_BLEND | OGPU_AFF_SRCALPHA | OGPU_AFF_BILINEAR);
+        flip[0] = -98304; flip[1] = 0; flip[2] = 156L << 16; flip[3] = 0; flip[4] = -65536; flip[5] = 99L << 16;
+        ogpu_composite_affine(&B, 1, 8, 8, 40, 30, flip, 0xFFFFFFFFUL, OGPU_BLEND_ADD | OGPU_AFF_SRCALPHA);
+        ogpu_composite_masked(&B, 1, 0, 0, 64, 48, 90, 40, 64, 48, 255, OGPU_COMP_SRCALPHA | OGPU_COMP_BLENDMODE | OGPU_COMP_MODE(OGPU_BLEND_MOD), 2, 0, 0);
+        ogpu_clip(&B, 0, 60, 120, 40);
+        ogpu_yuv(&B, A(D0 + 0x400), 32, A(D0 + 0x800), 16, A(D0 + 0x900), 16, 32, 32, 100, 50, OGPU_YUV_FORMAT(OGPU_YUV_I420, OGPU_YUV_BT709));
+        ogpu_fence(&B, (unsigned long)k);
+        { long r = e->run(e->user, sbuf, B.words); SCHECK(r == OGPU_OK, "v1.2 scene fmt %d ran (%ld)", f, r); }
+        h = ogpu_fnv(arena + T0, bpr * 100, h);
+    }
+    return h;
+}

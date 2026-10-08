@@ -492,7 +492,7 @@ is the artifact "OpenGPU 0.1 Design"; what it settles:
 
 | OpenGPU phase | Delivers | Done when |
 | --- | --- | --- |
-| G1 | Stream v1, `opengpu.library` with the CPU back end, 2D and COMPOSITE, OGPU_Query; then openrtg.library's busy calls through it | **Done 8 Oct.** 4,873/4,873 core checks and golden `de825f7b`; the OS 3.2 stove build passed; Workbench and MultiView ran on OpenRTG screens on an AC090 68040 with `OpenGPUCheck` reporting the G1 golden correct through `opengpu.library`. Evidence: `measurements/20261008-opengpu-v1.0-g1-completion.txt` |
+| G1 | Stream v1, `opengpu.library` with the CPU back end, 2D and COMPOSITE, OGPU_Query; then openrtg.library's busy calls through it | **Done 8 Oct.** 4,873/4,873 core checks and golden `de825f7b`; the OS 3.2 stove build passed; Workbench and MultiView ran on OpenRTG screens on an AC090 68040 with `OpenGPUCheck` reporting the G1 golden correct through `opengpu.library`. Evidence: `measurements/20261008-opengpu-v1.0-g1-completion.txt`. Completed the same day with lines, pixel arrays, alpha, patterns at any phase, source-free minterms and format-changing copies routed, each only where it draws OpenRTG's CPU pixels exactly (OpenRTGExact: 24 of 24 the same, through the ring and on the 68k); 97% of Workbench's start-up pixels and 99% of MultiView's go through OpenGPU (`C:OpenRTG STATS`). Evidence: `measurements/20261008-opengpu-v1.0-completion-and-v1.2.txt` |
 | G2 | ACRTG protocol v3 (64 MiB, ring, fences) in the runtime; `ACRTG.gpu` drawing on the host's GPU through Vulkan (Pi 5 and Pi 4 Nano first, then Radeon/Ryzen and NVIDIA), the C core as fallback | Started 6 Oct: `host/vulkan/` draws the stream with compute shaders; on lavapipe it gives golden `de825f7b` and matches the core on 20,000 random streams. Done when the golden scene comes from the C core and from the GPU, on a Pi 5 Nano and on daletop |
 | G3 | `PiStorm.gpu` and the Emu68 hook | The golden scene on a PiStorm; G2 and G3 released together |
 | G4 | 3D in the stream; Warp3D V5 table, `W3D_OpenGPU`, `W3D_OpenRTG`; Wazp3D migration | Warp3D demos, GLQuake and a V4 game on all three back ends |
@@ -557,6 +557,154 @@ AmiSSL 5 is OpenSSL 3.6.2, and OpenSSL 3 takes its algorithms from
 - **Keys stay on the machine.** They pass from the Amiga to its own host (the
   same PC, or the PiStorm's Pi), never over a network. The host side uses a
   constant-time library (the PC's OpenSSL or libsodium).
+
+### One library (8 October 2026)
+
+Team, 8 October 2026: one library, opengpu.library, whose includes stand in
+for what SDL 2 and others call, "so we dont need a gl library". OpenGfx
+merges into it (a fork for now, while opengfx.library is being tested; they
+come together later), Mesa lives inside it, SDL 2's API is provided by it,
+and Warp3D.library becomes a stub over it. Then: "resident core, shared big
+parts". The layout below was agreed that day; three helpers add files to it
+without editing each other's.
+
+**OpenGfx's fork, planned.** `library/ogfx/` takes amigachrome-guest
+`libraries/opengfx` at 90aa66f (opengfx.library 1.1: the eight
+graphics.library drawing and text patches, the leaves, the premultiplied
+composite reference). `FORK.md` there records the commit and every change.
+The fork's work then moves onto OpenGPU: the leaves' rectangles become
+FILL, COPY and TEMPLATE batches, its composites COMPOSITE and MASK, so the
+same drawing reaches the ring on the Cradle and the CPU core elsewhere. Its
+LVOs follow OpenGPU's from offset 66 in their own order, so a program
+written for opengfx.library needs only its base changed. Merging the fork
+back is a diff of `FORK.md`'s list against opengfx.library at the time.
+
+#### 1. One library, heavy parts loaded on demand
+
+- Programs open only opengpu.library and use one include tree.
+- Mesa (about 20 MB) and SDL 2 are modules: `LIBS:OpenGPU/GL.module` and `LIBS:OpenGPU/SDL2.module`. Each loads on the first call a program makes into it, through two new LVOs: `OGPU_ModuleOpen(name, version, &table)` and `OGPU_ModuleClose(handle)`.
+- Each calling program gets its own copy of a module (LoadSeg per program, UnLoadSeg on close). So SDL's global state and Mesa's globals stay private, as with static linking, and no opener is refused. The cost is memory per program.
+- Link libraries:
+  - `libSDL2.a` is SDL's dynapi stub. On the first SDL call, `OGPU_ModuleOpen("SDL2")` returns `SDL_DYNAPI_entry`, and every `SDL_` call jumps through that table (varargs work).
+  - `libGL.a` is the same for GL: a table generated from Mesa's glapi XML, filled by `OGPU_ModuleOpen("GL")`.
+- So there is no gl.library and no SDL2 library: one library open, and the big code loads lazily.
+- Module ABI (`include/opengpu/module.h`): the segment's first code is an entry taking {SysBase, DOSBase, OpenGPUBase, version} and returning the module's table. Modules call opengpu.library's LVOs like any program.
+
+#### 2. LVOs (bias 30)
+
+| Offset | Call |
+| --- | --- |
+| 30 | OGPU_Query |
+| 36 | OGPU_BackEndName |
+| 42 | OGPU_Submit |
+| 48 | OGPU_Wait |
+| 54 | OGPU_ModuleOpen |
+| 60 | OGPU_ModuleClose |
+| 66 onwards | the OpenGfx fork's calls, in their own order: OGFX_Version, InstallPatches, SetEnabled, Status, RegisterProvider, UnregisterProvider; then 2D calls as they come |
+
+Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x0035 and the rest) and pass them to `OGPU_Submit`.
+
+#### 3. Directories (openamigartg)
+
+##### include/: the one include tree for programs
+
+- `opengpu/`:
+  - library owner: `opengpu.h`, `stream.h` (v1.2), `build.h` (batch builders), `driver.h`, `module.h`, `virgl.h` (the ACVirgl request format);
+  - Warp3D helper: `stream3d.h`, plus `build3d.h` with `ogpu_build3d.c` for its builders;
+  - `gfx.h`: the OpenGfx fork's public calls.
+- `proto/`, `inline/`: `opengpu.h`.
+- `SDL2/`: SDL's public headers, fetched pinned at build into `build/include/SDL2` (Zlib, never committed). Only the Team's `SDL_config_amigaos.h` is committed, in `library/modules/sdl2/include/`.
+- `GL/`, `GLES2/`, `GLES3/`, `KHR/`: Khronos and Mesa headers, fetched with Mesa (pinned) at build. The Team's `GL/gla.h` (the GLA calls) is committed.
+- `Warp3D/`: `Warp3D.h`, Team-written and compatible, with no SDK text (Warp3D helper).
+
+##### library/
+
+- `opengpu/`, the core (library owner): `opengpu_lib.c` (the LVO table), `ogpu_core.c/.h`, `ogpu_build.c`, `ogpu_drivers.c` and `ogpu_module.c`.
+  - Exception: `ogpu_3d.c/.h`, the CPU rasteriser, belongs to the Warp3D helper. The owner wires 0x0030–0x0035 into `ogpu_core_run` with one call, `ogpu_3d_run(core, op, cmd, words)`.
+  - The same files also compile into the runtime's host core, so `ogpu_3d.c` stays integer-only and free of the C library.
+- `ogfx/`, the 2D OpenGfx fork (library owner, later): a copy of amigachrome-guest `libraries/opengfx` at 90aa66f, with `FORK.md` recording the fork commit and a running change list. opengfx.library itself is untouched.
+- `warp3d/` (Warp3D helper): Warp3D.library, the 92-LVO stub, with its own `build.sh`.
+- `modules/gl/` (library owner): GL.module, holding Mesa's port moved from openamigamesa:
+  - `mesa/UPSTREAM.json` pin, `mesa/patches/`, the POSIX shim;
+  - the `gla/` core and the OS 3 presenter;
+  - the virgl winsys over `OGPU_OP_VIRGL`.
+  - It builds softpipe and virgl. virgl is used when `OGPU_Query(OGPU_OP_VIRGL)` answers "full", softpipe otherwise.
+  - openamigamesa keeps OpenDemos only, built against `libGL.a`.
+- `modules/sdl2/` (SDL 2 helper): SDL2.module, with the backends (video on openrtg, render on opengpu, audio on AHI, input, threads) and the SDL build (source fetched pinned).
+- `stubs/sdl2/` (SDL 2 helper: libSDL2.a, the dynapi stub plus the ModuleOpen glue) and `stubs/gl/` (library owner: libGL.a, generated).
+- `build.sh` builds everything. Each part has its own build script, and a helper adds one line to `library/build.sh` and nothing else.
+
+##### host/
+
+- `vulkan/`: as now.
+- `virgl/acvirgl.c` (library owner): the host side of `OGPU_OP_VIRGL`. amigachrome vendors it like `ogpu_vk.c`.
+
+##### tests/
+
+- `golden/`: one file per scene.
+- `golden_scenes.c`: the 2D scenes, shared by the host test and OpenGPUCheck.
+- `test_3d.c`: Warp3D helper; the 3D goldens with the ±2 tolerance.
+- `sdl2/`: SDL 2 helper.
+- `gl/`: library owner; the GLA scenes on softpipe and virgl.
+
+#### 4. Who edits what (no shared files)
+
+- **Library owner:** `include/opengpu/{stream.h, build.h, driver.h, module.h, virgl.h, opengpu.h}`; `library/opengpu/` except `ogpu_3d.*`; `library/ogfx`, `library/modules/gl`, `stubs/gl`; `host/virgl`.
+- **Warp3D helper:** `include/opengpu/stream3d.h`, `include/opengpu/build3d.h`, `library/opengpu/ogpu_3d.c/.h`, `library/opengpu/ogpu_build3d.c`, `library/warp3d/`, `include/Warp3D/`, `tests/test_3d.c` and its golden.
+- **SDL 2 helper:** `library/modules/sdl2/`, `stubs/sdl2/`, `tests/sdl2/`.
+- **Opcodes** live in `stream.h`, which the owner keeps. The Warp3D helper defines the layouts of 0x0030–0x0035 in `stream3d.h`. Reserved: 0x0018–0x001A, 0x0021 and 0x0030–0x0035.
+  - **YUV moves from 0x0031 to 0x0022**, beside COMPOSITE_AFFINE, because 0x0031 sits inside the 3D range.
+
+
+#### 5. Residency (8 October: "resident core, shared big parts")
+
+##### The core: opengpu.library, resident from boot
+
+opengpu.library holds 2D, the OpenGfx fork, the 3D rasteriser and the driver loader. It is built so that it can sit in the AmigaChrome boot ROM's resident list later, beside acrtg.card. What that needs:
+
+- **RomTag first, RTF_AUTOINIT.** This is already so: `start()` then the RomTag, built with `-fno-toplevel-reorder`. For the ROM it becomes RTF_COLDSTART at a priority after expansion.library and before graphics.library's patches are installed. It should not be AFTERDOS, because OpenGfx patches graphics.library early.
+- **No writable globals.** Code in ROM can't write to itself.
+  - SysBase, DOSBase and the driver-name scratch move into the library base. SysBase comes from address 4.
+  - `drivers_load`'s static name table goes onto the stack or into the base.
+  - Everything else is already const.
+  - The same build then runs from RAM (LIBS:) or from ROM, flattened with `build/os3-autoboot/hunk_flatten.py` as acrtg.card is.
+- **Nothing from disk at init.** Init only sets up semaphores. Drivers load on first use from a DOS process, as 0.3 already does.
+- **Resident drivers first.** Before scanning `LIBS:OpenGPU/`, the library looks for drivers already resident (FindResident / the library list). ACRTG.gpu can then live in the ACRTG boot ROM next to acrtg.card, and a booted Cradle needs no driver file.
+- **Stack.** The CPU back end runs on the caller's stack. The core struct is about 400 bytes on the stack; the 3D state (1.7 KB) comes from AllocVec, so patched graphics.library calls from small-stack tasks are safe.
+- **OpenGfx's patches** become thin entry points in the core (SetFunction at init, or at the first OpenLibrary until it is in ROM). They call the same code that programs reach through the LVOs.
+
+##### Mesa and SDL 2: code loaded once, data per program
+
+Chosen method: **-fbaserel32 (A4-relative data), with the per-program data made by OGPU_ModuleOpen. This is libnix's libinitr pattern, done by the module loader.**
+
+- **Build.** The module (GL.module, SDL2.module) is built with `-fbaserel32 -mresident32` against libnix's `libb32` (both are in the os32-gcc16 stove). Code reaches every global and static, C++ statics included, through A4. The linker writes the table of data-to-data relocations.
+- **Load once.** OGPU_ModuleOpen("SDL2") LoadSegs the module the first time. The code segment stays loaded and is shared, until the last program closes it and memory is wanted.
+- **Data per program.** Each program's OGPU_ModuleOpen does this:
+  - allocates a copy of the module's data and BSS;
+  - copies the initial data in and applies the data-to-data relocations;
+  - runs the module's constructors with A4 pointing at the copy;
+  - returns a handle holding that A4.
+  OGPU_ModuleClose runs the destructors and frees that copy.
+- **Entry.** The program reaches the module only through its link stub: libSDL2.a (SDL's dynapi stub) or libGL.a (generated from Mesa's glapi XML).
+  - Each stub function saves the program's A4, sets the instance's A4, copies its arguments (the generator knows each signature), calls, and restores A4.
+  - Varargs calls are formatted in the stub first. SDL's dynapi already does this for SDL_SetError and SDL_Log.
+  - Nothing in the module depends on A6.
+- **Threads.** A thread the module starts (SDL's audio thread, Mesa's util_queue) gets the creating instance's A4. The pthread shim captures it at pthread_create and sets it at the new task's entry.
+- **Callbacks into the program** (SDL's audio callback and event filters, GL debug callbacks) arrive with the module's A4 in place. That is harmless for ordinary programs. A program built -fbaserel itself must mark its callbacks __saveds, as Amiga callbacks always need.
+
+**Why this method:**
+- It keeps Mesa's and SDL's source as it is: no context structs threaded through Mesa's thousands of globals.
+- It works for C++.
+- The toolchain already has it (libb32, libinitr.o).
+- It fits the one-library loader planned above.
+
+A per-opener library base alone wouldn't do: SDL's and GL's calls go through function tables, not LVOs, so nothing would set A4 on entry.
+
+**Order:**
+1. First, per-program copies (LoadSeg per program, as in section 1). This gets SDL 2 and Mesa running.
+2. Then the same modules rebuilt -fbaserel32, with the loader's per-program data. Programs don't change: the link stubs and OGPU_ModuleOpen hide it.
+
+**What a user sees:** one copy of Mesa's and SDL's code in memory, a small data copy per running program, and no loading per program after the first.
 
 ## 6. Warp3D, built in
 

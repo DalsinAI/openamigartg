@@ -25,7 +25,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 10
+#define LIB_REVISION 11
 
 /* The ACRTG board (amigachrome's common/protocol/acrtg.h): Zorro III,
  * Dalsin (0xDA15; 2011 before 1 October 2026), product 9; video RAM at
@@ -54,7 +54,7 @@ struct ExecBase *SysBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.10 (6.10.2026) OpenRTG, Dalsin Limited\r\n";
+static const char lib_id[] = "openrtg.library 0.11 (8.10.2026) OpenRTG, Dalsin Limited\r\n";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));
@@ -74,12 +74,15 @@ static LONG ORTG_ReadPixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d
 static LONG ORTG_FillPixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(d2, LONG w), REG(d3, LONG h), REG(d4, ULONG argb), REG(a6, struct OpenRTGBase *base));
 static LONG ORTG_InvertPixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(d2, LONG w), REG(d3, LONG h), REG(a6, struct OpenRTGBase *base));
 static BOOL ORTG_BitMapInfo(REG(a0, struct BitMap *bm), REG(a1, struct OpenRTGBitMapInfo *info), REG(a6, struct OpenRTGBase *base));
+static ULONG ORTG_DrawStats(REG(a0, ULONG *counts), REG(d0, ULONG kinds), REG(d1, ULONG flags), REG(a6, struct OpenRTGBase *base));
+static LONG ORTG_WritePixelsAlpha(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(a0, const struct OpenRTGPixels *px), REG(d2, ULONG alpha), REG(a6, struct OpenRTGBase *base));
 
 static const APTR lib_vectors[] = {
     (APTR)lib_open, (APTR)lib_close, (APTR)lib_expunge, (APTR)lib_null,
     (APTR)ORTG_MonitorCount, (APTR)ORTG_NextMode, (APTR)ORTG_GetMode,
     (APTR)ORTG_BestMode, (APTR)ORTG_SetModeList, (APTR)ORTG_BoardAddress, (APTR)ORTG_DisplayDatabase, (APTR)ORTG_Screens,
-    (APTR)ORTG_WritePixels, (APTR)ORTG_ReadPixels, (APTR)ORTG_FillPixels, (APTR)ORTG_InvertPixels, (APTR)ORTG_BitMapInfo, (APTR)-1,
+    (APTR)ORTG_WritePixels, (APTR)ORTG_ReadPixels, (APTR)ORTG_FillPixels, (APTR)ORTG_InvertPixels, (APTR)ORTG_BitMapInfo,
+    (APTR)ORTG_DrawStats, (APTR)ORTG_WritePixelsAlpha, (APTR)-1,
 };
 static const struct { ULONG size; const APTR *vectors; APTR data; APTR init; } lib_inittable = {
     sizeof(struct OpenRTGBase), lib_vectors, NULL, (APTR)lib_init,
@@ -255,4 +258,14 @@ static LONG ORTG_InvertPixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG
 static BOOL ORTG_BitMapInfo(REG(a0, struct BitMap *bm), REG(a1, struct OpenRTGBitMapInfo *info), REG(a6, struct OpenRTGBase *base))
 {
     return ortg_bitmap_info(bm, info);
+}
+
+static ULONG ORTG_DrawStats(REG(a0, ULONG *counts), REG(d0, ULONG kinds), REG(d1, ULONG flags), REG(a6, struct OpenRTGBase *base))
+{
+    return ortg_draw_stats(counts, kinds, flags);
+}
+
+static LONG ORTG_WritePixelsAlpha(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(a0, const struct OpenRTGPixels *px), REG(d2, ULONG alpha), REG(a6, struct OpenRTGBase *base))
+{
+    return ortg_write_pixels_alpha(rp, x, y, px, alpha);
 }
