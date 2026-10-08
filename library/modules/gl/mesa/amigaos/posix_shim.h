@@ -14,6 +14,14 @@
  *    one) and is linked with the GLA core. It also defines what only the
  *    link misses: mkstemps, pthread_sigmask, log2f, exp2f and the
  *    __sync compare-and-swap calls GCC makes on AmigaOS.
+ *  - pthread_create is gla_pthread_create. Built -fbaserel32 (GL.module
+ *    shared, include/opengpu/module.h), a new thread must start with the
+ *    A4 of the program's copy, and the stove's libpthread starts its
+ *    threads in code that reads its globals through A4 before anything can
+ *    set it. Mesa starts no thread here (one CPU: no glthread, no threaded
+ *    context, no shader cache), so a shared build refuses (EAGAIN), which
+ *    Mesa's queues take as "no thread"; a build for each program creates
+ *    them as before.
  *
  * It includes no system header: meson's has_function checks see it too, and
  * a declaration from time.h made them fail (clock_gettime, then librt). */
@@ -38,5 +46,7 @@ int gla_pthread_condattr_setclock(void *attr, int clock);
 #endif
 #define ftruncate gla_ftruncate
 #define pthread_condattr_setclock gla_pthread_condattr_setclock
+/* pthread.h, renamed by this, declares it. */
+#define pthread_create gla_pthread_create
 #endif
 #endif

@@ -1,0 +1,19 @@
+# SDL2.module's absolute references into its data, reviewed (tools/baserel_check.py).
+# Each reaches the data as loaded, which no program's copy is; these are only
+# ever read there, so every program sees the same first values. One regular
+# expression a line, for the check's report line. Reviewed 8 October 2026.
+#
+# SDL_video.c's bootstrap[] and SDL_audio.c's bootstrap[]: tables in the code
+# of the back ends' VideoBootStrap/AudioBootStrap (a name, a description and
+# functions); SDL only reads them.
+^table of _\w+_bootstrap \(.*\), from the code at .*\(SDL_(video|audio)\.o\)\)$
+# SDL_render.c's render_drivers[]: the SDL_RenderDriver of the opengpu and
+# software renderers; SDL and the renderers only read them (renderer->info is
+# a copy).
+^table of _(OPENGPU|SW)_RenderDriver \(.*\), from the code at .*\(SDL_render\.o\)\)$
+# SDL_wave.c: its IMA ADPCM step table, a function's static const array,
+# which GCC puts in the data and indexes from its absolute address.
+^address of \.data\+0x0 of .*\(SDL_wave\.o\), from the code at .*\(SDL_wave\.o\)\)$
+# SDL_assert.c: SDL_PromptAssertion's buttons[], a local array whose first
+# values GCC keeps in the data and copies onto the stack.
+^address of \.data\+0x0 of .*\(SDL_assert\.o\), from the code at .*\(SDL_assert\.o\)\)$

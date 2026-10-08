@@ -9,11 +9,13 @@
  * first call into GL lands in gl_stub_load, which loads GL.module through
  * opengpu.library's OGPU_ModuleOpen (LoadSeg itself on an opengpu.library
  * older than 0.5) and binds every entry to the module's function of the same
- * name. From then on a call is three instructions and a jump.
+ * name.
  *
- * Each program gets its own copy of the module (the layout's step 1), so
- * Mesa's globals are its own. GL runs on the program's stack: give main
- * a big one (OpenDemos asks libnix for 1 MB). */
+ * GL.module's code is loaded once for every program, and each program gets
+ * its own copy of Mesa's globals (the layout's residency step 2): every
+ * entry sets A4 to this program's copy for the call (gl_stub_call). GL runs
+ * on the program's stack: give main a big one (OpenDemos asks libnix for
+ * 1 MB). This file is built with -ffixed-a4 (OGPU_A4). */
 #include <exec/types.h>
 #include <dos/dos.h>
 #include <proto/exec.h>
@@ -31,13 +33,16 @@ static struct Library *gl_stub_OpenGPUBase;
 
 /* gl_stub_calls.s */
 extern APTR gl_stub_table[];
+extern const APTR gl_stub_entries[];
 extern const char *const gl_stub_names[];
 extern const ULONG gl_stub_count;
 extern void gl_stub_missing(void);
 
 static APTR handle;
 static BPTR seg;
-static struct GLModuleTable *module;
+struct GLModuleTable *gl_stub_module;       /* loaded: gl_stub_call tests it */
+APTR gl_stub_a4;                            /* the module's A4 for this program */
+static void *(*module_get_proc_address)(const char *name);
 
 static void fail(const char *why)
 {
@@ -50,15 +55,16 @@ static void fail(const char *why)
     exit(20);
 }
 
-/* Called by gl_stub_first, from the program's first GL call. */
+/* Called by gl_stub_call, from the program's first GL call. */
 void gl_stub_load(void)
 {
+    struct GLModuleTable *m = NULL;
     ULONG i = 0, j = 0;
-    if (module) return;
+    if (gl_stub_module) return;
     gl_stub_OpenGPUBase = OpenLibrary((CONST_STRPTR) "opengpu.library", 0);
     if (gl_stub_OpenGPUBase && (gl_stub_OpenGPUBase->lib_Version > 0 ||
                                 gl_stub_OpenGPUBase->lib_Revision >= OGPU_MODULE_LIB_REVISION)) {
-        handle = OGPU_ModuleOpen((CONST_STRPTR)GL_MODULE_NAME, GL_MODULE_VERSION, (APTR *)&module);
+        handle = OGPU_ModuleOpen((CONST_STRPTR)GL_MODULE_NAME, GL_MODULE_VERSION, (APTR *)&m);
         if (!handle && IoErr() == ERROR_OBJECT_NOT_FOUND)
             fail("this program needs " GL_MODULE_FILE " (OpenGPU), which isn't installed.");
     } else if ((seg = LoadSeg((CONST_STRPTR)GL_MODULE_FILE)) != 0) {
@@ -67,27 +73,62 @@ void gl_stub_load(void)
         args.DOSBase = (struct Library *)DOSBase;
         args.OpenGPUBase = gl_stub_OpenGPUBase;
         args.version = GL_MODULE_VERSION;
-        module = (struct GLModuleTable *)OGPU_MODULE_ENTRY(seg)(&args);
+        m = (struct GLModuleTable *)OGPU_MODULE_ENTRY(seg)(&args);
     } else
         fail("this program needs " GL_MODULE_FILE " (OpenGPU), which isn't installed.");
-    if (!module)
+    if (!m)
         fail(GL_MODULE_FILE " is older than this program, or couldn't start (memory?).");
+    /* The module's calls back into this program run with this program's A4. */
+    m->head.caller_a4 = ogpu_a4_get();
+    gl_stub_a4 = m->head.a4;
     /* Both lists are sorted: one pass binds them. */
     while (i < gl_stub_count) {
-        int c = j < module->count ? strcmp(gl_stub_names[i], module->exports[j].name) : -1;
-        if (c == 0)
-            gl_stub_table[i++] = module->exports[j++].func;
-        else if (c < 0)
+        int c = j < m->count ? strcmp(gl_stub_names[i], m->exports[j].name) : -1;
+        if (c == 0) {
+            if (!strcmp(gl_stub_names[i], "gla_get_proc_address"))
+                module_get_proc_address = (void *(*)(const char *))m->exports[j].func;
+            gl_stub_table[i++] = m->exports[j++].func;
+        } else if (c < 0)
             gl_stub_table[i++] = (APTR)gl_stub_missing;
         else
             j++;
     }
+    gl_stub_module = m;
+}
+
+/* gla_get_proc_address: the module's answer, as this stub's entry for the
+ * name (which sets A4), or NULL when the stub has no entry for it. */
+void *gla_get_proc_address(const char *name)
+{
+    ULONG lo = 0, hi = gl_stub_count;
+    void *f;
+    if (!gl_stub_module) gl_stub_load();
+    if (!module_get_proc_address || !name) return NULL;
+    {
+        OGPU_A4(gl_stub_a4);
+        f = module_get_proc_address(name);
+    }
+    if (!f) return NULL;
+    while (lo < hi) {
+        ULONG mid = (lo + hi) / 2;
+        int c = strcmp(name, gl_stub_names[mid]);
+        if (c == 0) return gl_stub_table[mid] == (APTR)gl_stub_missing ? NULL : gl_stub_entries[mid];
+        if (c < 0) hi = mid;
+        else lo = mid + 1;
+    }
+    return NULL;
+}
+
+static void module_close(void)
+{
+    OGPU_A4(gl_stub_a4);
+    gl_stub_module->close();
 }
 
 static void __attribute__((destructor)) gl_stub_close(void)
 {
-    if (module) module->close();
-    module = NULL;
+    if (gl_stub_module) module_close();
+    gl_stub_module = NULL;
     if (handle) OGPU_ModuleClose(handle);
     handle = NULL;
     if (seg) UnLoadSeg(seg);

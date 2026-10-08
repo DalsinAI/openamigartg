@@ -61,7 +61,10 @@ if [ -n "${CROSS:-}" ]; then
     NAME=$(basename "$CROSS" .ini); XARG="--cross-file $TOP/$CROSS"
     PYARG=--cross-file
     # The AmigaOS assembler has no GOT, so static libraries are built without PIC.
-    case $NAME in *amigaos*) XARG="$XARG -Db_staticpic=false" ;; esac
+    # No C++ exceptions (nothing in this build catches one): built -fbaserel32,
+    # their tables would point from the code into the data, which the hunk
+    # format can't do PC-relative across hunks.
+    case $NAME in *amigaos*) XARG="$XARG -Db_staticpic=false -Dcpp_eh=none" ;; esac
 else
     NAME=host; XARG= PYARG=--native-file
 fi
@@ -91,7 +94,8 @@ case $NAME in *amigaos*)
 esac
 
 # The GLA core takes Mesa's own flags (from the state tracker's compile line).
-# That includes the target's -m flags and, on AmigaOS, -noixemul and the shim header.
+# That includes the target's -m flags and, on AmigaOS, -noixemul, -fbaserel32
+# and the shim header.
 FLAGS=$("$PY" - "$B" <<'PY'
 import json, shlex, sys
 b = sys.argv[1]
@@ -102,7 +106,7 @@ for e in json.load(open(b + "/compile_commands.json")):
             x = a[i]
             if x == "-include":
                 keep += [x, a[i + 1]]; i += 1
-            elif x[:2] in ("-D", "-I") or x.startswith(("-std=", "-m")) or x == "-noixemul":
+            elif x[:2] in ("-D", "-I") or x.startswith(("-std=", "-m")) or x in ("-noixemul", "-fbaserel32"):
                 keep.append(x)
             i += 1
         print(" ".join(shlex.quote(x) for x in keep))
@@ -126,7 +130,7 @@ CC=${CC:-cc}
 cd "$B"
 eval "$CC $FLAGS -I$SRC/src/gallium/drivers -I$SRC/src/mesa/glapi -O2 -c $TOP/gla/gla_core.c -o gla_core.o"
 eval "$CC $FLAGS -I$SRC/src/gallium/drivers -I$SRC/src/virtio -I$REPO/include -O2 -c $TOP/gla/gla_virgl.c -o gla_virgl.o"
-SHIM= SYSLIBS="-lstdc++ -lm -lpthread -ldl"
+SHIM= SYSLIBS="-lstdc++ -lm -lpthread -ldl" PROGOBJS=
 # The host's half of virgl (ACVirgl over virglrenderer), for the tests on this machine.
 HOSTV=
 case $NAME in host) cc -O2 -c "$REPO/host/virgl/acvirgl.c" -o acvirgl.o && HOSTV="acvirgl.o -DGLA_TEST_VIRGL" ;; esac
@@ -135,20 +139,25 @@ case $NAME in *amigaos*)
     # virgl's transport: OGPU_OP_VIRGL batches through opengpu.library
     eval "$CC $FLAGS -I$REPO/include -O2 -c $TOP/gla/os3/gla_virgl_os3.c -o gla_virgl_os3.o"
     eval "$CC $FLAGS -O2 -c $REPO/library/opengpu/ogpu_build.c -o ogpu_build.o"
-    SHIM="posix_shim.o gla_virgl_os3.o ogpu_build.o" SYSLIBS="-lstdc++ -lm -lpthread" ;;   # libnix has no libdl
+    SHIM="posix_shim.o gla_virgl_os3.o ogpu_build.o" SYSLIBS="-lstdc++ -lm -lpthread"   # libnix has no libdl
+    # A -fbaserel32 program needs libnix's constructor runner done again (amigaos/initcpp.c).
+    eval "$CC $FLAGS -O2 -c $TOP/mesa/amigaos/initcpp.c -o initcpp.o"
+    PROGOBJS=initcpp.o ;;
 esac
 # Mesa's c11 threads name the pthread_mutexattr calls weakly; a static link must ask for them.
 WEAK="-Wl,-u,pthread_mutexattr_init -Wl,-u,pthread_mutexattr_settype -Wl,-u,pthread_mutexattr_destroy"
 $CC $LFLAGS -std=c99 -O2 -Wall -Wextra -Werror -I"$SRC/include" -I"$REPO" ${CROSS:+-static $WEAK} -o test_gla \
-    "$TOP/tests/test_gla.c" gla_core.o gla_virgl.o $HOSTV $SHIM $FIXOBJS -Wl,--start-group $LIBS $OPT -Wl,--end-group \
+    "$TOP/tests/test_gla.c" gla_core.o gla_virgl.o $HOSTV $SHIM $PROGOBJS $FIXOBJS -Wl,--start-group $LIBS $OPT -Wl,--end-group \
     $SYSLIBS ${CROSS:+-latomic}
 # What programs built on this (OpenDemos) need to link against it, as shell assignments.
 q() { printf "%s='%s'\n" "$1" "$(printf %s "$2" | sed "s/'/'\\\\''/g")"; }
 { q CC "$CC"; q FLAGS "$FLAGS"; q LFLAGS "$LFLAGS"; q SRC "$SRC"; q LIBS "$LIBS"; q OPT "$OPT"
-  q SHIM "$SHIM"; q SYSLIBS "$SYSLIBS"; q WEAK "$WEAK"; q GLAOBJS "gla_core.o gla_virgl.o"; q FIXOBJS "$FIXOBJS"; } > gla-link.env
+  q SHIM "$SHIM"; q SYSLIBS "$SYSLIBS"; q WEAK "$WEAK"; q GLAOBJS "gla_core.o gla_virgl.o"; q FIXOBJS "$FIXOBJS"
+  q PROGOBJS "$PROGOBJS"; } > gla-link.env
 case $NAME in *amigaos*)
     # The unstripped test is ~20 MB of symbols; the copy for the Amiga is stripped.
-    "${CC%gcc}strip" -o test_gla.stripped test_gla
+    # (strip refuses a -fbaserel32 program whose data is this big; tools/hunk_strip.py doesn't.)
+    "${CC%gcc}strip" -o test_gla.stripped test_gla 2>/dev/null || python3 "$REPO/tools/hunk_strip.py" test_gla test_gla.stripped
     echo "built $B/test_gla ($B/test_gla.stripped for the Amiga)" ;;
 *)  echo "built $B/test_gla" ;;
 esac

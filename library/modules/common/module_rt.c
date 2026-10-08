@@ -11,7 +11,14 @@
  *     run on broken;
  *   - getenv() through dos.library's GetVar, as libnix's doesn't work in a
  *     module. Values are kept until the module closes, as callers keep the
- *     pointers getenv gives. */
+ *     pointers getenv gives;
+ *   - libnix's constructor runner (__initcpp, __exitcpp) done again, as
+ *     libnix's own finds the end of its list through A4 (a -fbaserel32
+ *     compiler slip with __far), which is wrong once the data is a copy;
+ *   - for a shared module (module_rt.h): its A4 in the table, calls into the
+ *     program with the program's A4, and threads that start with the
+ *     module's.
+ * Built -fbaserel32, every global here is the opening program's own copy. */
 #include <exec/types.h>
 #include <exec/execbase.h>
 #include <exec/memory.h>
@@ -22,6 +29,7 @@
 #include <setjmp.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stabs.h>
 
 #include "module_rt.h"
 
@@ -30,21 +38,28 @@ struct ExecBase *SysBase;
 /* DOSBase: libnix defines it (proto/dos.h declares it). */
 struct Library *ogpu_module_OpenGPUBase;
 
-/* libnix's set lists (module_start.s holds their heads). */
-extern long __INIT_LIST__[], __EXIT_LIST__[];
+/* libnix's set lists (module_start.S holds their heads). The linker puts
+ * them with the code: const, so they are reached directly, not through A4. */
+extern const long __INIT_LIST__[], __EXIT_LIST__[];
+typedef void (*ogpu_func)(void);
+extern const ogpu_func __CTOR_LIST__[], __DTOR_LIST__[];
+/* module_start.S: the first code, and the call with another A4. */
+extern const char ogpu_module_start[];
+long ogpu_module_callout_a4(APTR a4, const void *fn, long a, long b, long c, long d);
 
 static jmp_buf failed;
 static int starting;
 static unsigned long level;                 /* how far the lists have run */
+static struct OGPUModuleTable *head;        /* the module's table: caller_a4 */
 
 /* libnix's callfuncs, as its startup code runs it: the list's functions in
  * order of priority, rising for the init list (dir ~0) and falling, from
  * where init stopped, for the exit list (dir 0). */
-static void callfuncs(long *list, unsigned long dir)
+static void callfuncs(const long *list, unsigned long dir)
 {
     for (;;) {
         unsigned long next = 0, cur = level ^ dir, pri;
-        long *p = list + 1;
+        const long *p = list + 1;
         void (*fn)(void);
         while ((fn = (void (*)(void))*p++) != NULL) {
             pri = (unsigned long)*p++;
@@ -70,6 +85,75 @@ void exit(int rc)
 void _exit(int rc)
 {
     exit(rc);
+}
+
+/* libnix's __initcpp and __exitcpp, with the list's ends reached directly:
+ * constructors last to first, destructors first to last. */
+void __initcpp(void)
+{
+    const ogpu_func *p0 = __CTOR_LIST__ + 1, *p;
+    for (p = p0; *p; p++) {
+    }
+    while (p > p0) (*--p)();
+}
+
+void __exitcpp(void)
+{
+    const ogpu_func *p = __DTOR_LIST__ + 1;
+    while (*p) (*p++)();
+}
+
+ADD2INIT(__initcpp, -5);
+ADD2EXIT(__exitcpp, -5);
+
+/* ---- A4 -------------------------------------------------------------------------- */
+
+APTR ogpu_module_a4(void)
+{
+    APTR a4;
+    __asm__ __volatile__("move.l %%a4,%0" : "=d"(a4));
+    return a4;
+}
+
+/* The hunks LoadSeg made: the first code is the first hunk's, 4 bytes after
+ * its link; each hunk's size (with its 8-byte head) is the long before it. */
+int ogpu_module_owns(const void *fn)
+{
+    const UBYTE *p = fn;
+    BPTR seg = (BPTR)(((ULONG)ogpu_module_start - 4) >> 2);
+    while (seg) {
+        const ULONG *h = BADDR(seg);
+        if (p >= (const UBYTE *)h && p < (const UBYTE *)h - 4 + h[-1]) return 1;
+        seg = (BPTR)h[0];
+    }
+    return 0;
+}
+
+long ogpu_module_callout(const void *fn, long a, long b, long c, long d)
+{
+#if OGPU_MODULE_SHARED
+    return ogpu_module_callout_a4(head ? head->caller_a4 : ogpu_module_a4(), fn, a, b, c, d);
+#else
+    return ((long (*)(long, long, long, long))fn)(a, b, c, d);
+#endif
+}
+
+void ogpu_module_thread_a4(struct Task *child)
+{
+    child->tc_TrapData = ogpu_module_a4();
+}
+
+/* In a new process: A4 is anything until it is set, so nothing here reads a
+ * global (exec's base comes from address 4). */
+void ogpu_module_thread_run(void (*fn)(void))
+{
+#if OGPU_MODULE_SHARED
+    struct ExecBase *sys;
+    __asm__ __volatile__("move.l 4.w,%0" : "=a"(sys));
+    ogpu_module_callout_a4(sys->ThisTask->tc_TrapData, (const void *)fn, 0, 0, 0, 0);
+#else
+    fn();
+#endif
 }
 
 /* ---- getenv ---------------------------------------------------------------------- */
@@ -123,9 +207,14 @@ char *getenv(const char *name)
 
 /* ---- open and close -------------------------------------------------------------- */
 
-int ogpu_module_begin(const struct OGPUModuleArgs *args, ULONG version)
+int ogpu_module_begin(const struct OGPUModuleArgs *args, ULONG version, struct OGPUModuleTable *table)
 {
-    if (!args || args->version > version) return 0;
+    if (!args || args->version > version || args->version < OGPU_MODULE_A4_VERSION) return 0;
+    head = table;
+    if (head) {
+        head->a4 = ogpu_module_a4();
+        head->caller_a4 = head->a4;         /* until the stub says */
+    }
     SysBase = args->SysBase;
     DOSBase = (struct DosLibrary *)args->DOSBase;
     ogpu_module_OpenGPUBase = args->OpenGPUBase;
