@@ -1,0 +1,113 @@
+SDL 2 on AmigaOS 3.2: the CPU against OpenGPU -- 8 October 2026
+
+Machine
+-------
+A scratch copy of the AmigaChrome Showcase instance (OS 3.2.3, AC090 68040
+JIT, ACRTG), Workbench on OpenRTG at 800x600x32, OpenUp 0.6.16, AHI 6 with
+acaudio.audio. Runtime and ACRTG boot ROM (acrtg.card 2.3) as in the Mesa
+lab. opengpu.library 0.4 (stream v1.2, branch opengpu/stream-v12-20261008)
+with LIBS:OpenGPU/ACRTG.gpu 1.0.
+
+Under OpenRTG nothing yet places the ACRTG board's command ring (acrtg.card
+2.3 does it under Picasso96), so a lab-only tool wrote RING_BASE and
+RING_SIZE as the card would (64 KiB at the top 256 KiB of video RAM) before
+anything opened opengpu.library. Without it ACRTG.gpu steps aside and
+OpenGPU draws on the 68k.
+
+Programs: SDL 2.32.10's testsprite2 and testrendercopyex, unchanged, on
+SDL2.module (the .m programs), 640x480 windows on the Workbench, 20 s each
+(tests/sdl2/bench). Frames per second as the tests print them, every 5 s.
+
+  CPU      SDL_OPENGPU=0: SDL's software renderer; the window shown with
+           WritePixelArray. No OpenGPU anywhere.
+  OpenGPU  the opengpu renderer; the window shown by OpenGPU into video RAM.
+
+testsprite2 (100 sprites with alpha, plus SDL's corner primitives)
+--------------------------------------------------------------------
+  CPU                                     3.84 fps
+  OpenGPU, 68k core (no ring)            75    fps   (74.7-76.1)
+  OpenGPU, ACRTG ring                    95    fps   (94.4-96.4)    25x the CPU
+  OpenGPU, ACRTG ring, SDL linked in     95    fps   (93.8-95.0)
+  commands: 223840 drawn by OpenGPU, 0 by the CPU
+
+testrendercopyex (a render target per frame; background stretched; the
+sprite scaled, rotated and flipped with RenderCopyEx)
+------------------------------------------------------------------------
+  CPU                                     7.77 fps
+  OpenGPU, 68k core (no ring)            39.4  fps
+  OpenGPU, ACRTG ring                    48.0  fps                   6x the CPU
+  OpenGPU, ACRTG ring, SDL linked in     47.0  fps
+  commands: 2850 drawn by OpenGPU, 0 by the CPU
+
+Earlier the same day, for the record
+------------------------------------
+  opengpu.library 0.2 (stream v1.1, its first 68k core), no ring:
+    testsprite2 1.1 fps, testrendercopyex 0.66 fps (rotation on the CPU)
+  opengpu.library 0.3 with the ring, stream v1.1 (rotation on the CPU):
+    testsprite2 80-110 fps, testrendercopyex 13.9 fps
+  SDL's software renderer with the window shown by OpenGPU:
+    testsprite2 5.3 fps, testrendercopyex 10.2 fps
+The CPU figures are low partly because the AC090 runs register-count shifts
+slowly today (about 70 ns a bit); SDL's software blitters use many.
+
+Correctness (tests/sdl2/rendercompare.m)
+----------------------------------------
+The same scenes drawn by the software and the opengpu renderers into a
+256x192 target texture, read back and compared (tolerance 24 a channel):
+
+  clear and opaque fills                      0 pixels differ, largest 0
+  blended fills (BLEND, ADD, MOD, MUL)        0 pixels differ, largest 2
+  lines and points, blended                   0 pixels differ, largest 3
+  copies: alpha, scaled, ADD               1329 pixels differ (2.70%), largest 37
+  copies with colour modulation               0 pixels differ, largest 4
+  rotated and flipped copies (RenderCopyEx)   0 pixels differ, largest 21
+  geometry (RenderGeometry)                   0 pixels differ, largest 0
+  YUV texture (I420)                        480 pixels differ (0.98%), largest 255
+
+The two scaled scenes differ by where a nearest-neighbour scale samples
+(one pixel along edges and the I420 picture's stripes); the pictures are
+otherwise the same. Geometry ran on SDL's software triangles (TRIANGLES
+needs build3d.h, which isn't on main yet).
+
+The back ends (tests/sdl2/sdlcheck.m): all pass
+-----------------------------------------------
+  timer      SDL_Delay(10) x10 took 101 ms (dos.library's Delay would take 200)
+  thread     a thread ran and returned 7
+  audio      driver ahi, 22050 Hz, 20 callbacks, 20480 frames in 1 s
+  clipboard  wrote and read back "SDL 2 on AmigaOS 3.2: café"
+  joystick   1 joystick(s): Amiga joystick port 2
+  env        Workbench=47.5, SDLCHECK=yes
+  paths      base PROGDIR:, prefs ENVARC:Dalsin/sdlcheck/
+
+The satellites (tests/sdl2/satcheck.m)
+--------------------------------------
+  image  pass  PNG and JPEG saved and loaded back, corners checked
+  mixer  pass  decoders Ogg, MP3, FLAC, MOD, MIDI; a WAV and a ProTracker
+               module made in memory both play
+  ttf    pass  a TrueType font at 24 points, anti-aliased
+  net    pass  TCP to aminet.net:80: HTTP/1.1 200 OK
+  net    FAIL  UDP to 127.0.0.1 on the same socket: sent, nothing came back
+               (OpenSocket's loopback; not found yet)
+
+Again on opengpu.library 0.5 and openrtg.library 0.11 (#31 on #27)
+-------------------------------------------------------------------
+openrtg.library 0.11 places the ring itself, so the lab tool wasn't used.
+The stub loaded SDL2.module with OGPU_ModuleOpen.
+  testsprite2        93.5-95.1 fps   (224673 commands by OpenGPU, 0 by the CPU)
+  testrendercopyex   49.3 fps        (2958 by OpenGPU, 0 by the CPU)
+  sdlcheck.m         all pass
+
+The grey JPEG was GCC 16, not the AC090
+---------------------------------------
+tiny_jpeg built at -O2 wrote the same flat grey picture on the current
+runtime, the new JIT (amigachrome #293), the new JIT with JIT_NOOPS020=1 and
+the interpreter alone (JIT_INTERP=1). In tjei_encode_and_write_MCU,
+GCC 16's -m68040 float-to-int saves FPCR in d0, the register that already
+held the zig-zag index, then stores through it:
+    move.b (a3)+,d0            the index
+    fmovem.l fpcr,d0           FPCR saved over it
+    ...
+    fmove.l fp0,(a5,d0.l*4)    every coefficient to du[0]
+-m68020 -m68881 and -m68060 use fintrz and don't clash. fpcr_check.py finds
+it in a built file; SDL2.module has none, the satellites had five (Timidity),
+now built at -O0 with IMG_jpg.c.

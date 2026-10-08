@@ -1,0 +1,2344 @@
+--- a/src/render/opengpu/SDL_render_opengpu.c	2026-10-08 05:44:16.475179462 +0100
++++ b/src/render/opengpu/SDL_render_opengpu.c	2026-10-08 05:44:16.481582458 +0100
+@@ -1,6 +1,11 @@
+ /*
++  SDL 2's opengpu renderer for AmigaOS 3.2 (Open).
++
+   Simple DirectMedia Layer
+   Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++  Altered by Dalsin Limited, 2026: this is SDL's software renderer
++  (src/render/software/SDL_render_sw.c) with its drawing sent to OpenGPU
++  where OpenGPU can do it. It is not the original software.
+ 
+   This software is provided 'as-is', without any express or implied
+   warranty.  In no event will the authors be held liable for any damages
+@@ -17,181 +22,674 @@
+   2. Altered source versions must be plainly marked as such, and must not be
+      misrepresented as being the original software.
+   3. This notice may not be removed or altered from any source distribution.
++
++  How it draws
++  ------------
++  Textures and the target are surfaces in memory, described to OpenGPU as
++  slots. SDL's commands become one OpenGPU batch per RunCommandQueue:
++
++    clear, opaque fills           FILL
++    fills in any blend mode       FILL_BLEND (v1.2)
++    points, lines                 POINTS_BLEND, LINES_BLEND (v1.2)
++    copies                        COMPOSITE in SDL's blend mode, with alpha
++                                  (COPY when it is a plain 1:1 copy)
++    copies with colour            COMPOSITE_AFFINE (v1.2): one command
++    modulation, rotation, flips,  each, nearest or bilinear
++    renderer scale
++    SDL_RenderGeometry            TRIANGLES (v1.2, 3D range)
++    YUV and NV12 textures         YUV (v1.2) into the texture's own
++                                  ARGB32 surface, then as any texture
++
++  OGPU_Query is asked for each operation on the target's format, so a
++  library without v1.2, or a back end without an operation, sends that
++  command to SDL's own software code. That code draws into the same surface
++  after the batch so far has been sent and finished. Custom blend modes
++  (SDL_ComposeCustomBlendMode) always take that path.
++
++  SDL chooses this renderer first when opengpu.library opens and the
++  window's surface is in a format OpenGPU draws; otherwise it chooses the
++  software renderer. SDL_RENDER_DRIVER=software picks the software one,
++  SDL_OPENGPU=0 keeps SDL off OpenGPU altogether, and SDL_OPENGPU_STATS=1
++  logs how many commands each path drew.
+ */
+ #include "../../SDL_internal.h"
+ 
+-#if SDL_VIDEO_RENDER_SW
++#if SDL_VIDEO_RENDER_OPENGPU
+ 
+ #include "../SDL_sysrender.h"
+-#include "SDL_render_sw_c.h"
++#include "../../video/SDL_yuv_c.h"
+ #include "SDL_hints.h"
+ 
+-#include "SDL_draw.h"
+-#include "SDL_blendfillrect.h"
+-#include "SDL_blendline.h"
+-#include "SDL_blendpoint.h"
+-#include "SDL_drawline.h"
+-#include "SDL_drawpoint.h"
+-#include "SDL_rotate.h"
+-#include "SDL_triangle.h"
+-
+-/* SDL surface based renderer implementation */
++#include "../software/SDL_draw.h"
++#include "../software/SDL_blendfillrect.h"
++#include "../software/SDL_blendline.h"
++#include "../software/SDL_blendpoint.h"
++#include "../software/SDL_drawline.h"
++#include "../software/SDL_drawpoint.h"
++#include "../software/SDL_rotate.h"
++#include "../software/SDL_triangle.h"
++
++#include <proto/exec.h>
++#include "../../video/amigaos3/SDL_os3gpu.h"
++
++#if defined(__has_include)
++#if __has_include(<opengpu/build3d.h>)
++#include <opengpu/build3d.h>
++#endif
++#endif
++
++/* Stream v1.2's operations, when the headers have them. */
++#if defined(OGPU_OP_COMPOSITE_AFFINE) && defined(OGPU_OP_FILL_BLEND)
++#define OGPUR_V12 1
++#else
++#define OGPUR_V12 0
++#endif
++#if defined(OGPU_OP_TRIANGLES)
++#define OGPUR_TRIS 1
++#else
++#define OGPUR_TRIS 0
++#endif
++
++#define OGPUR_STREAM_WORDS  16384 /* one batch; it is sent when full */
++#define OGPUR_SCRATCH_WORDS 65536 /* per batch: colours, points, vertices */
++#define OGPUR_SLOT_TARGET   0
++#define OGPUR_SLOT_FIRST    1     /* textures and colours from here */
+ 
+ typedef struct
+ {
+     const SDL_Rect *viewport;
+     const SDL_Rect *cliprect;
+     SDL_bool surface_cliprect_dirty;
+-} SW_DrawStateCache;
++} OGPUR_DrawStateCache;
+ 
++/* One of two buffers: a batch is built in one while the other may still be
++   with OpenGPU. Scratch memory holds what the batch's commands point at
++   (1x1 colours, point lists, vertices) until the batch is done. */
+ typedef struct
+ {
+-    SDL_Surface *surface;
+-    SDL_Surface *window;
+-} SW_RenderData;
++    Uint32 *stream;
++    Uint32 *scratch;
++    long nscratch;
++    Uint32 fence;        /* 0 when OpenGPU is done with it */
++} OGPUR_Buffer;
+ 
+-static SDL_Surface *SW_ActivateRenderer(SDL_Renderer *renderer)
++/* A YUV or NV texture: its planes, and the ARGB32 surface (the texture's
++   driverdata) OpenGPU converts them into when they have changed. */
++typedef struct
+ {
+-    SW_RenderData *data = (SW_RenderData *)renderer->driverdata;
++    Uint32 format;       /* SDL's */
++    unsigned long ogpu_format;
++    int w, h;            /* rounded up to even */
++    Uint8 *planes;
++    Uint8 *y, *u, *v;    /* u is the interleaved UV plane for NV12 and NV21 */
++    int ypitch, uvpitch;
++    SDL_bool dirty;
++} OGPUR_YUV;
+ 
+-    if (!data->surface) {
+-        data->surface = data->window;
++typedef struct
++{
++    SDL_Surface *surface; /* the target */
++    SDL_Surface *window;
++
++    OGPUR_Buffer buf[2];
++    int cur;
++    struct OGPUBatch batch;
++    SDL_bool started;     /* the batch has described its target */
++
++    int target_fmt;       /* the target's OpenGPU format, 0 = CPU only */
++    SDL_bool can_fill, can_line, can_copy, can_composite;
++    SDL_bool can_fill_blend, can_lines_blend, can_points_blend, can_affine, can_tris;
++    SDL_bool can_yuv;     /* into ARGB32 texture surfaces */
++
++    SDL_Surface *slot_surface[OGPU_MAX_SLOTS];
++    int next_slot;
++
++    SDL_Rect clip;        /* in target pixels */
++    SDL_bool clip_dirty;
++
++    Uint32 ops_gpu, ops_cpu; /* SDL_OPENGPU_STATS=1 logs them at the end */
++} OGPUR_RenderData;
++
++/* ---- OpenGPU ----------------------------------------------------------------- */
++
++static int OGPUR_Format(Uint32 sdl_format)
++{
++    switch (sdl_format) {
++    case SDL_PIXELFORMAT_ARGB8888:
++    case SDL_PIXELFORMAT_RGB888: /* XRGB: the byte order is ARGB32's */
++        return OGPU_FMT_ARGB32;
++    case SDL_PIXELFORMAT_RGB565:
++        return OGPU_FMT_RGB565;
++#ifdef OGPU_FMT_BGRA32
++    case SDL_PIXELFORMAT_BGRA8888:
++        return OGPU_FMT_BGRA32;
++    case SDL_PIXELFORMAT_RGB555:
++        return OGPU_FMT_RGB555;
++#endif
++    default:
++        return 0;
+     }
+-    if (!data->surface) {
+-        SDL_Surface *surface = SDL_GetWindowSurface(renderer->window);
+-        if (surface) {
+-            data->surface = data->window = surface;
+-        }
++}
++
++/* SDL's blend mode as OpenGPU's, or -1 for a custom one. */
++static int OGPUR_Blend(SDL_BlendMode blend)
++{
++#if OGPUR_V12
++    switch (blend) {
++    case SDL_BLENDMODE_NONE: return OGPU_BLEND_NONE;
++    case SDL_BLENDMODE_BLEND: return OGPU_BLEND_BLEND;
++    case SDL_BLENDMODE_ADD: return OGPU_BLEND_ADD;
++    case SDL_BLENDMODE_MOD: return OGPU_BLEND_MOD;
++    case SDL_BLENDMODE_MUL: return OGPU_BLEND_MUL;
++    default: return -1;
+     }
+-    return data->surface;
++#else
++    (void)blend;
++    return -1;
++#endif
+ }
+ 
+-static void SW_WindowEvent(SDL_Renderer *renderer, const SDL_WindowEvent *event)
++static SDL_bool OGPUR_Can(ULONG op, int fmt)
+ {
+-    SW_RenderData *data = (SW_RenderData *)renderer->driverdata;
++    return OGPU_ANSWER(OGPU_Query(op, (ULONG)fmt)) != OGPU_NONE ? SDL_TRUE : SDL_FALSE;
++}
+ 
+-    if (event->event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+-        data->surface = NULL;
+-        data->window = NULL;
++static void OGPUR_WaitBuffer(OGPUR_Buffer *b)
++{
++    if (b->fence) {
++        OGPU_Wait(b->fence);
++        b->fence = 0;
+     }
+ }
+ 
+-static int SW_GetOutputSize(SDL_Renderer *renderer, int *w, int *h)
++/* Send the batch built so far. */
++static void OGPUR_Flush(OGPUR_RenderData *data)
+ {
+-    SW_RenderData *data = (SW_RenderData *)renderer->driverdata;
++    OGPUR_Buffer *b = &data->buf[data->cur];
++    ULONG fence = 0;
+ 
+-    if (data->surface) {
+-        if (w) {
+-            *w = data->surface->w;
++    if (!data->started) {
++        return;
++    }
++    if (data->batch.words > 0) {
++        OGPU_Submit(b->stream, (ULONG)data->batch.words, &fence);
++        b->fence = fence;
++        data->cur ^= 1;
++    }
++    data->started = SDL_FALSE;
++}
++
++/* Send the batch and wait until OpenGPU has drawn everything, before the
++   CPU reads or writes a surface. */
++static void OGPUR_Sync(OGPUR_RenderData *data)
++{
++    OGPUR_Flush(data);
++    OGPUR_WaitBuffer(&data->buf[0]);
++    OGPUR_WaitBuffer(&data->buf[1]);
++}
++
++static void OGPUR_Begin(OGPUR_RenderData *data)
++{
++    OGPUR_Buffer *b;
++    int i;
++
++    if (data->started) {
++        return;
++    }
++    b = &data->buf[data->cur];
++    OGPUR_WaitBuffer(b);
++    ogpu_batch_init(&data->batch, b->stream, OGPUR_STREAM_WORDS);
++    b->nscratch = 0;
++    for (i = 0; i < OGPU_MAX_SLOTS; i++) {
++        data->slot_surface[i] = NULL;
++    }
++    data->next_slot = OGPUR_SLOT_FIRST;
++    ogpu_surface(&data->batch, OGPUR_SLOT_TARGET, (unsigned long)data->surface->pixels,
++                 (unsigned long)data->surface->pitch, data->surface->w, data->surface->h, data->target_fmt);
++    ogpu_target(&data->batch, OGPUR_SLOT_TARGET);
++    data->clip_dirty = SDL_TRUE;
++    data->started = SDL_TRUE;
++}
++
++/* Room for `words` more stream words and `scratch` scratch words in this
++   batch, sending it first if it is short of either. Returns the scratch
++   (or a non-NULL pointer when none was asked), NULL when `scratch` can
++   never fit: the caller then draws on the CPU. */
++static Uint32 *OGPUR_Reserve(OGPUR_RenderData *data, long words, long scratch)
++{
++    OGPUR_Buffer *b;
++    Uint32 *p;
++
++    if (scratch > OGPUR_SCRATCH_WORDS) {
++        return NULL;
++    }
++    OGPUR_Begin(data);
++    b = &data->buf[data->cur];
++    if (data->batch.words + words + 16 > OGPUR_STREAM_WORDS || b->nscratch + scratch > OGPUR_SCRATCH_WORDS) {
++        OGPUR_Flush(data);
++        OGPUR_Begin(data);
++        b = &data->buf[data->cur];
++    }
++    if (data->clip_dirty) {
++        if (data->clip.w > 0 && data->clip.h > 0) {
++            ogpu_clip(&data->batch, data->clip.x, data->clip.y, data->clip.w, data->clip.h);
++        } else {
++            ogpu_clip(&data->batch, 0, 0, 0, 0); /* until a command sets it */
+         }
+-        if (h) {
+-            *h = data->surface->h;
++        data->clip_dirty = SDL_FALSE;
++    }
++    p = b->scratch + b->nscratch;
++    b->nscratch += scratch;
++    return p;
++}
++
++/* The slot a surface has in this batch, describing it if new. */
++static int OGPUR_SurfaceSlot(OGPUR_RenderData *data, SDL_Surface *s, int fmt)
++{
++    int i, slot;
++    for (i = OGPUR_SLOT_FIRST; i < OGPU_MAX_SLOTS; i++) {
++        if (data->slot_surface[i] == s) {
++            return i;
+         }
+-        return 0;
+     }
++    slot = data->next_slot;
++    data->next_slot = (slot + 1 < OGPU_MAX_SLOTS) ? slot + 1 : OGPUR_SLOT_FIRST;
++    data->slot_surface[slot] = s;
++    ogpu_surface(&data->batch, slot, (unsigned long)s->pixels, (unsigned long)s->pitch, s->w, s->h, fmt);
++    return slot;
++}
+ 
+-    if (renderer->window) {
+-        SDL_GetWindowSizeInPixels(renderer->window, w, h);
+-        return 0;
++/* A 1x1 ARGB32 surface of one colour (v1.1 blended fills). */
++static int OGPUR_ColourSlot(OGPUR_RenderData *data, Uint32 *px, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
++{
++    int slot;
++    *px = ((Uint32)a << 24) | ((Uint32)r << 16) | ((Uint32)g << 8) | b;
++    slot = data->next_slot;
++    data->next_slot = (slot + 1 < OGPU_MAX_SLOTS) ? slot + 1 : OGPUR_SLOT_FIRST;
++    data->slot_surface[slot] = NULL;
++    ogpu_surface(&data->batch, slot, (unsigned long)px, 4, 1, 1, OGPU_FMT_ARGB32);
++    return slot;
++}
++
++/* The target changed (SetRenderTarget, a resized window): describe it in
++   the next batch and ask what OpenGPU can do on its format. */
++static void OGPUR_SetTargetSurface(OGPUR_RenderData *data, SDL_Surface *surface)
++{
++    int f;
++
++    OGPUR_Sync(data);
++    data->surface = surface;
++    f = data->target_fmt = surface ? OGPUR_Format(surface->format->format) : 0;
++    data->can_fill = f && OGPUR_Can(OGPU_OP_FILL, f);
++    data->can_line = f && OGPUR_Can(OGPU_OP_LINE, f);
++    data->can_copy = f && OGPUR_Can(OGPU_OP_COPY, f);
++    data->can_composite = f && OGPUR_Can(OGPU_OP_COMPOSITE, f);
++#if OGPUR_V12
++    data->can_fill_blend = f && OGPUR_Can(OGPU_OP_FILL_BLEND, f);
++    data->can_lines_blend = f && OGPUR_Can(OGPU_OP_LINES_BLEND, f);
++    data->can_points_blend = f && OGPUR_Can(OGPU_OP_POINTS_BLEND, f);
++    data->can_affine = f && OGPUR_Can(OGPU_OP_COMPOSITE_AFFINE, f);
++#endif
++#if OGPUR_TRIS
++    data->can_tris = f && OGPUR_Can(OGPU_OP_TRIANGLES, f);
++#endif
++    data->clip.w = data->clip.h = -1; /* set again by the first command */
++}
++
++#define OGPUR_FIX(v) ((long)((v) * 65536.0f))
++#define OGPUR_ARGB(r, g, b, a) (((unsigned long)(a) << 24) | ((unsigned long)(r) << 16) | ((unsigned long)(g) << 8) | (unsigned long)(b))
++
++/* ---- textures ----------------------------------------------------------------- */
++
++#if OGPUR_V12 && SDL_HAVE_YUV
++static unsigned long OGPUR_YUVLayout(Uint32 format)
++{
++    switch (format) {
++    case SDL_PIXELFORMAT_IYUV: return OGPU_YUV_I420;
++    case SDL_PIXELFORMAT_YV12: return OGPU_YUV_YV12;
++    case SDL_PIXELFORMAT_NV12: return OGPU_YUV_NV12;
++    case SDL_PIXELFORMAT_NV21: return OGPU_YUV_NV21;
++    case SDL_PIXELFORMAT_YUY2: return OGPU_YUV_YUY2;
++    case SDL_PIXELFORMAT_UYVY: return OGPU_YUV_UYVY;
++    case SDL_PIXELFORMAT_YVYU: return OGPU_YUV_YVYU;
++    default: return 0;
++    }
++}
++
++static SDL_bool OGPUR_IsPacked(Uint32 format)
++{
++    return (format == SDL_PIXELFORMAT_YUY2 || format == SDL_PIXELFORMAT_UYVY || format == SDL_PIXELFORMAT_YVYU) ? SDL_TRUE : SDL_FALSE;
++}
++
++static OGPUR_YUV *OGPUR_YUVCreate(Uint32 format, int w, int h)
++{
++    OGPUR_YUV *y = (OGPUR_YUV *)SDL_calloc(1, sizeof(*y));
++    unsigned long space;
++    size_t size;
++
++    if (!y) {
++        return NULL;
++    }
++    y->format = format;
++    y->w = (w + 1) & ~1;
++    y->h = (h + 1) & ~1;
++    if (OGPUR_IsPacked(format)) {
++        y->ypitch = y->w * 2;
++        size = (size_t)y->ypitch * y->h;
++    } else {
++        y->ypitch = y->w;
++        y->uvpitch = (format == SDL_PIXELFORMAT_NV12 || format == SDL_PIXELFORMAT_NV21) ? y->w : y->w / 2;
++        size = (size_t)y->w * y->h * 3 / 2;
++    }
++    y->planes = (Uint8 *)SDL_calloc(1, size);
++    if (!y->planes) {
++        SDL_free(y);
++        return NULL;
++    }
++    y->y = y->planes;
++    if (!OGPUR_IsPacked(format)) {
++        y->u = y->planes + (size_t)y->w * y->h;
++        y->v = (y->uvpitch == y->w) ? NULL : y->u + (size_t)(y->w / 2) * (y->h / 2);
++    }
++    switch (SDL_GetYUVConversionModeForResolution(w, h)) {
++    case SDL_YUV_CONVERSION_JPEG: space = OGPU_YUV_JPEG; break;
++    case SDL_YUV_CONVERSION_BT709: space = OGPU_YUV_BT709; break;
++    default: space = OGPU_YUV_BT601; break;
++    }
++    y->ogpu_format = OGPU_YUV_FORMAT(OGPUR_YUVLayout(format), space);
++    y->dirty = SDL_TRUE;
++    return y;
++}
++
++static void OGPUR_CopyPlane(Uint8 *dst, int dpitch, const Uint8 *src, int spitch, int bytes, int rows)
++{
++    while (rows-- > 0) {
++        SDL_memcpy(dst, src, bytes);
++        dst += dpitch;
++        src += spitch;
++    }
++}
++
++/* SDL's single-buffer layout: the Y plane at `pitch`, then the chroma planes
++   at half that pitch (I420, YV12) or the interleaved plane at the even
++   pitch (NV12, NV21), as SDL_UpdateTexture hands them. */
++static void OGPUR_YUVUpdate(OGPUR_YUV *y, const SDL_Rect *rect, const void *pixels, int pitch)
++{
++    const Uint8 *src = (const Uint8 *)pixels;
++    const int cw = (rect->w + 1) / 2, ch = (rect->h + 1) / 2, cx = rect->x / 2, cy = rect->y / 2;
++
++    if (OGPUR_IsPacked(y->format)) {
++        OGPUR_CopyPlane(y->y + rect->y * y->ypitch + rect->x * 2, y->ypitch, src, pitch, cw * 4, rect->h);
++    } else if (y->v) {
++        const int spitch = (pitch + 1) / 2;
++        const Uint8 *s1 = src + (size_t)pitch * rect->h;
++        const Uint8 *s2 = s1 + (size_t)spitch * ch;
++        OGPUR_CopyPlane(y->y + rect->y * y->ypitch + rect->x, y->ypitch, src, pitch, rect->w, rect->h);
++        OGPUR_CopyPlane(y->u + cy * y->uvpitch + cx, y->uvpitch, s1, spitch, cw, ch);
++        OGPUR_CopyPlane(y->v + cy * y->uvpitch + cx, y->uvpitch, s2, spitch, cw, ch);
++    } else {
++        const int spitch = 2 * ((pitch + 1) / 2);
++        OGPUR_CopyPlane(y->y + rect->y * y->ypitch + rect->x, y->ypitch, src, pitch, rect->w, rect->h);
++        OGPUR_CopyPlane(y->u + cy * y->uvpitch + cx * 2, y->uvpitch, src + (size_t)pitch * rect->h, spitch, cw * 2, ch);
++    }
++    y->dirty = SDL_TRUE;
++}
++
++/* Convert a changed YUV texture into its ARGB32 surface, in this batch. */
++static void OGPUR_PrepareYUV(OGPUR_RenderData *data, SDL_Surface *s)
++{
++    OGPUR_YUV *y = (OGPUR_YUV *)s->userdata;
++    int slot;
++
++    if (!y || !y->dirty) {
++        return;
++    }
++    OGPUR_Reserve(data, 40, 0);
++    slot = OGPUR_SurfaceSlot(data, s, OGPU_FMT_ARGB32);
++    ogpu_target(&data->batch, slot);
++    ogpu_clip(&data->batch, 0, 0, 0, 0);
++    if (y->v) {
++        /* YV12's planes are given in the file's order, as stream.h asks */
++        ogpu_yuv(&data->batch, (unsigned long)y->y, y->ypitch, (unsigned long)y->u, y->uvpitch,
++                 (unsigned long)y->v, y->uvpitch, y->w, y->h, 0, 0, y->ogpu_format);
++    } else {
++        ogpu_yuv(&data->batch, (unsigned long)y->y, y->ypitch, (unsigned long)y->u, y->uvpitch,
++                 0, 0, y->w, y->h, 0, 0, y->ogpu_format);
+     }
++    ogpu_target(&data->batch, OGPUR_SLOT_TARGET);
++    data->clip_dirty = SDL_TRUE;
++    y->dirty = SDL_FALSE;
++}
++#endif /* OGPUR_V12 && SDL_HAVE_YUV */
+ 
+-    return SDL_SetError("Software renderer doesn't have an output surface");
++static void OGPUR_PrepareTexture(OGPUR_RenderData *data, SDL_Texture *texture)
++{
++#if OGPUR_V12 && SDL_HAVE_YUV
++    SDL_Surface *s = (SDL_Surface *)texture->driverdata;
++    if (s && s->userdata) {
++        OGPUR_PrepareYUV(data, s);
++    }
++#endif
+ }
+ 
+-static int SW_CreateTexture(SDL_Renderer *renderer, SDL_Texture *texture)
++static int OGPUR_CreateTexture(SDL_Renderer *renderer, SDL_Texture *texture)
+ {
+     int bpp;
+     Uint32 Rmask, Gmask, Bmask, Amask;
+ 
++#if OGPUR_V12 && SDL_HAVE_YUV
++    if (OGPUR_YUVLayout(texture->format)) {
++        /* Drawn from an XRGB surface OpenGPU fills from the planes. */
++        SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, texture->w, texture->h, 32, SDL_PIXELFORMAT_RGB888);
++        if (!s) {
++            return -1;
++        }
++        s->userdata = OGPUR_YUVCreate(texture->format, texture->w, texture->h);
++        if (!s->userdata) {
++            SDL_FreeSurface(s);
++            return SDL_OutOfMemory();
++        }
++        texture->driverdata = s;
++        SDL_SetSurfaceColorMod(s, texture->color.r, texture->color.g, texture->color.b);
++        SDL_SetSurfaceAlphaMod(s, texture->color.a);
++        SDL_SetSurfaceBlendMode(s, texture->blendMode);
++        return 0;
++    }
++#endif
+     if (!SDL_PixelFormatEnumToMasks(texture->format, &bpp, &Rmask, &Gmask, &Bmask, &Amask)) {
+         return SDL_SetError("Unknown texture format");
+     }
+-
+-    texture->driverdata =
+-        SDL_CreateRGBSurface(0, texture->w, texture->h, bpp, Rmask, Gmask,
+-                             Bmask, Amask);
+-    SDL_SetSurfaceColorMod(texture->driverdata, texture->color.r, texture->color.g, texture->color.b);
+-    SDL_SetSurfaceAlphaMod(texture->driverdata, texture->color.a);
+-    SDL_SetSurfaceBlendMode(texture->driverdata, texture->blendMode);
+-
+-    /* Only RLE encode textures without an alpha channel since the RLE coder
+-     * discards the color values of pixels with an alpha value of zero.
+-     */
+-    if (texture->access == SDL_TEXTUREACCESS_STATIC && !Amask) {
+-        SDL_SetSurfaceRLE(texture->driverdata, 1);
+-    }
+-
++    texture->driverdata = SDL_CreateRGBSurface(0, texture->w, texture->h, bpp, Rmask, Gmask, Bmask, Amask);
+     if (!texture->driverdata) {
+         return -1;
+     }
++    SDL_SetSurfaceColorMod(texture->driverdata, texture->color.r, texture->color.g, texture->color.b);
++    SDL_SetSurfaceAlphaMod(texture->driverdata, texture->color.a);
++    SDL_SetSurfaceBlendMode(texture->driverdata, texture->blendMode);
++    /* No RLE: OpenGPU reads the pixels as they are. */
+     return 0;
+ }
+ 
+-static int SW_UpdateTexture(SDL_Renderer *renderer, SDL_Texture *texture,
+-                            const SDL_Rect *rect, const void *pixels, int pitch)
++static int OGPUR_UpdateTexture(SDL_Renderer *renderer, SDL_Texture *texture,
++                               const SDL_Rect *rect, const void *pixels, int pitch)
+ {
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
+     SDL_Surface *surface = (SDL_Surface *)texture->driverdata;
+     Uint8 *src, *dst;
+     int row;
+     size_t length;
+ 
+-    if (SDL_MUSTLOCK(surface)) {
+-        SDL_LockSurface(surface);
++    OGPUR_Sync(data); /* a batch may still read the old pixels */
++#if OGPUR_V12 && SDL_HAVE_YUV
++    if (surface->userdata) {
++        OGPUR_YUVUpdate((OGPUR_YUV *)surface->userdata, rect, pixels, pitch);
++        return 0;
+     }
++#endif
+     src = (Uint8 *)pixels;
+-    dst = (Uint8 *)surface->pixels +
+-          rect->y * surface->pitch +
+-          rect->x * surface->format->BytesPerPixel;
++    dst = (Uint8 *)surface->pixels + rect->y * surface->pitch + rect->x * surface->format->BytesPerPixel;
+     length = (size_t)rect->w * surface->format->BytesPerPixel;
+     for (row = 0; row < rect->h; ++row) {
+         SDL_memcpy(dst, src, length);
+         src += pitch;
+         dst += surface->pitch;
+     }
+-    if (SDL_MUSTLOCK(surface)) {
+-        SDL_UnlockSurface(surface);
++    return 0;
++}
++
++#if OGPUR_V12 && SDL_HAVE_YUV
++static int OGPUR_UpdateTextureYUV(SDL_Renderer *renderer, SDL_Texture *texture, const SDL_Rect *rect,
++                                  const Uint8 *Yplane, int Ypitch, const Uint8 *Uplane, int Upitch,
++                                  const Uint8 *Vplane, int Vpitch)
++{
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
++    OGPUR_YUV *y = (OGPUR_YUV *)((SDL_Surface *)texture->driverdata)->userdata;
++    const int cw = (rect->w + 1) / 2, ch = (rect->h + 1) / 2, cx = rect->x / 2, cy = rect->y / 2;
++
++    OGPUR_Sync(data);
++    OGPUR_CopyPlane(y->y + rect->y * y->ypitch + rect->x, y->ypitch, Yplane, Ypitch, rect->w, rect->h);
++    /* y->u and y->v hold the planes in the texture format's order (YV12: V first) */
++    if (y->format == SDL_PIXELFORMAT_YV12) {
++        OGPUR_CopyPlane(y->u + cy * y->uvpitch + cx, y->uvpitch, Vplane, Vpitch, cw, ch);
++        OGPUR_CopyPlane(y->v + cy * y->uvpitch + cx, y->uvpitch, Uplane, Upitch, cw, ch);
++    } else {
++        OGPUR_CopyPlane(y->u + cy * y->uvpitch + cx, y->uvpitch, Uplane, Upitch, cw, ch);
++        OGPUR_CopyPlane(y->v + cy * y->uvpitch + cx, y->uvpitch, Vplane, Vpitch, cw, ch);
+     }
++    y->dirty = SDL_TRUE;
++    return 0;
++}
++
++static int OGPUR_UpdateTextureNV(SDL_Renderer *renderer, SDL_Texture *texture, const SDL_Rect *rect,
++                                 const Uint8 *Yplane, int Ypitch, const Uint8 *UVplane, int UVpitch)
++{
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
++    OGPUR_YUV *y = (OGPUR_YUV *)((SDL_Surface *)texture->driverdata)->userdata;
++    const int cw = (rect->w + 1) / 2, ch = (rect->h + 1) / 2, cx = rect->x / 2, cy = rect->y / 2;
++
++    OGPUR_Sync(data);
++    OGPUR_CopyPlane(y->y + rect->y * y->ypitch + rect->x, y->ypitch, Yplane, Ypitch, rect->w, rect->h);
++    OGPUR_CopyPlane(y->u + cy * y->uvpitch + cx * 2, y->uvpitch, UVplane, UVpitch, cw * 2, ch);
++    y->dirty = SDL_TRUE;
+     return 0;
+ }
++#endif
+ 
+-static int SW_LockTexture(SDL_Renderer *renderer, SDL_Texture *texture,
+-                          const SDL_Rect *rect, void **pixels, int *pitch)
++static int OGPUR_LockTexture(SDL_Renderer *renderer, SDL_Texture *texture,
++                             const SDL_Rect *rect, void **pixels, int *pitch)
+ {
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
+     SDL_Surface *surface = (SDL_Surface *)texture->driverdata;
+ 
+-    *pixels =
+-        (void *)((Uint8 *)surface->pixels + rect->y * surface->pitch +
+-                 rect->x * surface->format->BytesPerPixel);
++    OGPUR_Sync(data);
++#if OGPUR_V12 && SDL_HAVE_YUV
++    if (surface->userdata) {
++        /* The planes as SDL lays them out: a whole-texture lock writes the
++           chroma after the Y plane, at half its pitch. */
++        OGPUR_YUV *y = (OGPUR_YUV *)surface->userdata;
++        *pixels = y->y + rect->y * y->ypitch + rect->x * (OGPUR_IsPacked(y->format) ? 2 : 1);
++        *pitch = y->ypitch;
++        y->dirty = SDL_TRUE;
++        return 0;
++    }
++#endif
++    *pixels = (void *)((Uint8 *)surface->pixels + rect->y * surface->pitch +
++                       rect->x * surface->format->BytesPerPixel);
+     *pitch = surface->pitch;
+     return 0;
+ }
+ 
+-static void SW_UnlockTexture(SDL_Renderer *renderer, SDL_Texture *texture)
++static void OGPUR_UnlockTexture(SDL_Renderer *renderer, SDL_Texture *texture)
+ {
+ }
+ 
+-static void SW_SetTextureScaleMode(SDL_Renderer *renderer, SDL_Texture *texture, SDL_ScaleMode scaleMode)
++static void OGPUR_SetTextureScaleMode(SDL_Renderer *renderer, SDL_Texture *texture, SDL_ScaleMode scaleMode)
+ {
+ }
+ 
+-static int SW_SetRenderTarget(SDL_Renderer *renderer, SDL_Texture *texture)
++static void OGPUR_DestroyTexture(SDL_Renderer *renderer, SDL_Texture *texture)
+ {
+-    SW_RenderData *data = (SW_RenderData *)renderer->driverdata;
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
++    SDL_Surface *surface = (SDL_Surface *)texture->driverdata;
+ 
+-    if (texture) {
+-        data->surface = (SDL_Surface *)texture->driverdata;
+-    } else {
+-        data->surface = data->window;
++    OGPUR_Sync(data);
++    if (surface) {
++#if OGPUR_V12 && SDL_HAVE_YUV
++        OGPUR_YUV *y = (OGPUR_YUV *)surface->userdata;
++        if (y) {
++            SDL_free(y->planes);
++            SDL_free(y);
++            surface->userdata = NULL;
++        }
++#endif
++        SDL_FreeSurface(surface);
+     }
++}
++
++/* ---- the renderer (SDL's software renderer, with OpenGPU's paths) ------------- */
++
++static SDL_Surface *OGPUR_ActivateRenderer(SDL_Renderer *renderer)
++{
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
++
++    if (!data->surface) {
++        SDL_Surface *surface = data->window;
++        if (!surface) {
++            surface = SDL_GetWindowSurface(renderer->window);
++            data->window = surface;
++        }
++        if (surface) {
++            OGPUR_SetTargetSurface(data, surface);
++        }
++    }
++    return data->surface;
++}
++
++static void OGPUR_WindowEvent(SDL_Renderer *renderer, const SDL_WindowEvent *event)
++{
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
++
++    if (event->event == SDL_WINDOWEVENT_SIZE_CHANGED) {
++        OGPUR_Sync(data);
++        data->surface = NULL;
++        data->window = NULL;
++    }
++}
++
++static int OGPUR_GetOutputSize(SDL_Renderer *renderer, int *w, int *h)
++{
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
++
++    if (data->surface) {
++        if (w) {
++            *w = data->surface->w;
++        }
++        if (h) {
++            *h = data->surface->h;
++        }
++        return 0;
++    }
++    if (renderer->window) {
++        SDL_GetWindowSizeInPixels(renderer->window, w, h);
++        return 0;
++    }
++    return SDL_SetError("The opengpu renderer has no output surface");
++}
++
++static int OGPUR_SetRenderTarget(SDL_Renderer *renderer, SDL_Texture *texture)
++{
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
++
++    OGPUR_SetTargetSurface(data, texture ? (SDL_Surface *)texture->driverdata : data->window);
+     return 0;
+ }
+ 
+-static int SW_QueueSetViewport(SDL_Renderer *renderer, SDL_RenderCommand *cmd)
++static int OGPUR_QueueSetViewport(SDL_Renderer *renderer, SDL_RenderCommand *cmd)
+ {
+-    return 0; /* nothing to do in this backend. */
++    return 0;
+ }
+ 
+-static int SW_QueueDrawPoints(SDL_Renderer *renderer, SDL_RenderCommand *cmd, const SDL_FPoint *points, int count)
++static int OGPUR_QueueDrawPoints(SDL_Renderer *renderer, SDL_RenderCommand *cmd, const SDL_FPoint *points, int count)
+ {
+     SDL_Point *verts = (SDL_Point *)SDL_AllocateRenderVertices(renderer, count * sizeof(SDL_Point), 0, &cmd->data.draw.first);
+     int i;
+@@ -199,18 +697,15 @@
+     if (!verts) {
+         return -1;
+     }
+-
+     cmd->data.draw.count = count;
+-
+     for (i = 0; i < count; i++, verts++, points++) {
+         verts->x = (int)points->x;
+         verts->y = (int)points->y;
+     }
+-
+     return 0;
+ }
+ 
+-static int SW_QueueFillRects(SDL_Renderer *renderer, SDL_RenderCommand *cmd, const SDL_FRect *rects, int count)
++static int OGPUR_QueueFillRects(SDL_Renderer *renderer, SDL_RenderCommand *cmd, const SDL_FRect *rects, int count)
+ {
+     SDL_Rect *verts = (SDL_Rect *)SDL_AllocateRenderVertices(renderer, count * sizeof(SDL_Rect), 0, &cmd->data.draw.first);
+     int i;
+@@ -218,45 +713,39 @@
+     if (!verts) {
+         return -1;
+     }
+-
+     cmd->data.draw.count = count;
+-
+     for (i = 0; i < count; i++, verts++, rects++) {
+         verts->x = (int)rects->x;
+         verts->y = (int)rects->y;
+         verts->w = SDL_max((int)rects->w, 1);
+         verts->h = SDL_max((int)rects->h, 1);
+     }
+-
+     return 0;
+ }
+ 
+-static int SW_QueueCopy(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *texture,
+-                        const SDL_Rect *srcrect, const SDL_FRect *dstrect)
++static int OGPUR_QueueCopy(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *texture,
++                           const SDL_Rect *srcrect, const SDL_FRect *dstrect)
+ {
+     SDL_Rect *verts = (SDL_Rect *)SDL_AllocateRenderVertices(renderer, 2 * sizeof(SDL_Rect), 0, &cmd->data.draw.first);
+ 
+     if (!verts) {
+         return -1;
+     }
+-
+     cmd->data.draw.count = 1;
+-
+     SDL_copyp(verts, srcrect);
+     verts++;
+-
+     verts->x = (int)dstrect->x;
+     verts->y = (int)dstrect->y;
+     verts->w = (int)dstrect->w;
+     verts->h = (int)dstrect->h;
+-
+     return 0;
+ }
+ 
+ typedef struct CopyExData
+ {
+     SDL_Rect srcrect;
+-    SDL_Rect dstrect;
++    SDL_Rect dstrect;   /* whole pixels, for SDL's software path */
++    SDL_FRect fdst;     /* as given, for OpenGPU's matrix */
+     double angle;
+     SDL_FPoint center;
+     SDL_RendererFlip flip;
+@@ -264,38 +753,96 @@
+     float scale_y;
+ } CopyExData;
+ 
+-static int SW_QueueCopyEx(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *texture,
+-                          const SDL_Rect *srcrect, const SDL_FRect *dstrect,
+-                          const double angle, const SDL_FPoint *center, const SDL_RendererFlip flip, float scale_x, float scale_y)
++static int OGPUR_QueueCopyEx(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *texture,
++                             const SDL_Rect *srcrect, const SDL_FRect *dstrect,
++                             const double angle, const SDL_FPoint *center, const SDL_RendererFlip flip, float scale_x, float scale_y)
+ {
+     CopyExData *verts = (CopyExData *)SDL_AllocateRenderVertices(renderer, sizeof(CopyExData), 0, &cmd->data.draw.first);
+ 
+     if (!verts) {
+         return -1;
+     }
+-
+     cmd->data.draw.count = 1;
+-
+     SDL_copyp(&verts->srcrect, srcrect);
+-
+     verts->dstrect.x = (int)dstrect->x;
+     verts->dstrect.y = (int)dstrect->y;
+     verts->dstrect.w = (int)dstrect->w;
+     verts->dstrect.h = (int)dstrect->h;
++    verts->fdst = *dstrect;
+     verts->angle = angle;
+     SDL_copyp(&verts->center, center);
+     verts->flip = flip;
+     verts->scale_x = scale_x;
+     verts->scale_y = scale_y;
++    return 0;
++}
++
++/* SDL_RenderGeometry's vertices, kept as given (scaled) for OpenGPU's
++   TRIANGLES, and turned into SDL's own form if the CPU draws them. */
++typedef struct OGPUR_Vertex
++{
++    float x, y;
++    SDL_Color color;
++    float u, v;
++} OGPUR_Vertex;
+ 
++static int OGPUR_QueueGeometry(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *texture,
++                               const float *xy, int xy_stride, const SDL_Color *color, int color_stride, const float *uv, int uv_stride,
++                               int num_vertices, const void *indices, int num_indices, int size_indices,
++                               float scale_x, float scale_y)
++{
++    int i;
++    int count = indices ? num_indices : num_vertices;
++    OGPUR_Vertex *verts = (OGPUR_Vertex *)SDL_AllocateRenderVertices(renderer, count * sizeof(OGPUR_Vertex), 0, &cmd->data.draw.first);
++
++    if (!verts) {
++        return -1;
++    }
++    cmd->data.draw.count = count;
++    size_indices = indices ? size_indices : 0;
++    for (i = 0; i < count; i++, verts++) {
++        int j;
++        const float *xy_;
++        if (size_indices == 4) {
++            j = ((const Uint32 *)indices)[i];
++        } else if (size_indices == 2) {
++            j = ((const Uint16 *)indices)[i];
++        } else if (size_indices == 1) {
++            j = ((const Uint8 *)indices)[i];
++        } else {
++            j = i;
++        }
++        xy_ = (const float *)((const char *)xy + j * xy_stride);
++        verts->x = xy_[0] * scale_x;
++        verts->y = xy_[1] * scale_y;
++        verts->color = *(const SDL_Color *)((const char *)color + j * color_stride);
++        if (texture) {
++            const float *uv_ = (const float *)((const char *)uv + j * uv_stride);
++            verts->u = uv_[0];
++            verts->v = uv_[1];
++        } else {
++            verts->u = verts->v = 0.0f;
++        }
++    }
+     return 0;
+ }
+ 
++typedef struct GeometryFillData
++{
++    SDL_Point dst;
++    SDL_Color color;
++} GeometryFillData;
++
++typedef struct GeometryCopyData
++{
++    SDL_Point src;
++    SDL_Point dst;
++    SDL_Color color;
++} GeometryCopyData;
+ static int Blit_to_Screen(SDL_Surface *src, SDL_Rect *srcrect, SDL_Surface *surface, SDL_Rect *dstrect,
+                           float scale_x, float scale_y, SDL_ScaleMode scaleMode)
+ {
+     int retval;
+-    /* Renderer scaling, if needed */
+     if (scale_x != 1.0f || scale_y != 1.0f) {
+         SDL_Rect r;
+         r.x = (int)((float)dstrect->x * scale_x);
+@@ -309,9 +856,10 @@
+     return retval;
+ }
+ 
+-static int SW_RenderCopyEx(SDL_Renderer *renderer, SDL_Surface *surface, SDL_Texture *texture,
+-                           const SDL_Rect *srcrect, const SDL_Rect *final_rect,
+-                           const double angle, const SDL_FPoint *center, const SDL_RendererFlip flip, float scale_x, float scale_y)
++/* SDL's software rotation, unchanged: the CPU path for SDL_RenderCopyEx. */
++static int OGPUR_SW_RenderCopyEx(SDL_Renderer *renderer, SDL_Surface *surface, SDL_Texture *texture,
++                                 const SDL_Rect *srcrect, const SDL_Rect *final_rect,
++                                 const double angle, const SDL_FPoint *center, const SDL_RendererFlip flip, float scale_x, float scale_y)
+ {
+     SDL_Surface *src = (SDL_Surface *)texture->driverdata;
+     SDL_Rect tmp_rect;
+@@ -327,66 +875,38 @@
+     if (!surface) {
+         return -1;
+     }
+-
+     tmp_rect.x = 0;
+     tmp_rect.y = 0;
+     tmp_rect.w = final_rect->w;
+     tmp_rect.h = final_rect->h;
+ 
+-    /* It is possible to encounter an RLE encoded surface here and locking it is
+-     * necessary because this code is going to access the pixel buffer directly.
+-     */
+-    if (SDL_MUSTLOCK(src)) {
+-        SDL_LockSurface(src);
+-    }
+-
+-    /* Clone the source surface but use its pixel buffer directly.
+-     * The original source surface must be treated as read-only.
+-     */
+     src_clone = SDL_CreateRGBSurfaceFrom(src->pixels, src->w, src->h, src->format->BitsPerPixel, src->pitch,
+                                          src->format->Rmask, src->format->Gmask,
+                                          src->format->Bmask, src->format->Amask);
+     if (!src_clone) {
+-        if (SDL_MUSTLOCK(src)) {
+-            SDL_UnlockSurface(src);
+-        }
+         return -1;
+     }
+-
+     SDL_GetSurfaceBlendMode(src, &blendmode);
+     SDL_GetSurfaceAlphaMod(src, &alphaMod);
+     SDL_GetSurfaceColorMod(src, &rMod, &gMod, &bMod);
+ 
+-    /* SDLgfx_rotateSurface only accepts 32-bit surfaces with a 8888 layout. Everything else has to be converted. */
+     if (src->format->BitsPerPixel != 32 || SDL_PIXELLAYOUT(src->format->format) != SDL_PACKEDLAYOUT_8888 || !src->format->Amask) {
+         blitRequired = SDL_TRUE;
+     }
+-
+-    /* If scaling and cropping is necessary, it has to be taken care of before the rotation. */
+     if (!(srcrect->w == final_rect->w && srcrect->h == final_rect->h && srcrect->x == 0 && srcrect->y == 0)) {
+         blitRequired = SDL_TRUE;
+     }
+-
+-    /* srcrect is not selecting the whole src surface, so cropping is needed */
+     if (!(srcrect->w == src->w && srcrect->h == src->h && srcrect->x == 0 && srcrect->y == 0)) {
+         blitRequired = SDL_TRUE;
+     }
+-
+-    /* The color and alpha modulation has to be applied before the rotation when using the NONE, MOD or MUL blend modes. */
+     if ((blendmode == SDL_BLENDMODE_NONE || blendmode == SDL_BLENDMODE_MOD || blendmode == SDL_BLENDMODE_MUL) && (alphaMod & rMod & gMod & bMod) != 255) {
+         applyModulation = SDL_TRUE;
+         SDL_SetSurfaceAlphaMod(src_clone, alphaMod);
+         SDL_SetSurfaceColorMod(src_clone, rMod, gMod, bMod);
+     }
+-
+-    /* Opaque surfaces are much easier to handle with the NONE blend mode. */
+     if (blendmode == SDL_BLENDMODE_NONE && !src->format->Amask && alphaMod == 255) {
+         isOpaque = SDL_TRUE;
+     }
+-
+-    /* The NONE blend mode requires a mask for non-opaque surfaces. This mask will be used
+-     * to clear the pixels in the destination surface. The other steps are explained below.
+-     */
+     if (blendmode == SDL_BLENDMODE_NONE && !isOpaque) {
+         mask = SDL_CreateRGBSurface(0, final_rect->w, final_rect->h, 32,
+                                     0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000);
+@@ -396,10 +916,6 @@
+             SDL_SetSurfaceBlendMode(mask, SDL_BLENDMODE_MOD);
+         }
+     }
+-
+-    /* Create a new surface should there be a format mismatch or if scaling, cropping,
+-     * or modulation is required. It's possible to use the source surface directly otherwise.
+-     */
+     if (!retval && (blitRequired || applyModulation)) {
+         SDL_Rect scale_rect = tmp_rect;
+         src_scaled = SDL_CreateRGBSurface(0, final_rect->w, final_rect->h, 32,
+@@ -414,8 +930,6 @@
+             src_scaled = NULL;
+         }
+     }
+-
+-    /* SDLgfx_rotateSurface is going to make decisions depending on the blend mode. */
+     SDL_SetSurfaceBlendMode(src_clone, blendmode);
+ 
+     if (!retval) {
+@@ -431,57 +945,32 @@
+             retval = -1;
+         }
+         if (!retval && mask) {
+-            /* The mask needed for the NONE blend mode gets rotated with the same parameters. */
+-            mask_rotated = SDLgfx_rotateSurface(mask, angle,
+-                                                SDL_FALSE, 0, 0,
+-                                                &rect_dest, cangle, sangle, center);
++            mask_rotated = SDLgfx_rotateSurface(mask, angle, SDL_FALSE, 0, 0, &rect_dest, cangle, sangle, center);
+             if (!mask_rotated) {
+                 retval = -1;
+             }
+         }
+         if (!retval) {
+-
+             tmp_rect.x = final_rect->x + rect_dest.x;
+             tmp_rect.y = final_rect->y + rect_dest.y;
+             tmp_rect.w = rect_dest.w;
+             tmp_rect.h = rect_dest.h;
+ 
+-            /* The NONE blend mode needs some special care with non-opaque surfaces.
+-             * Other blend modes or opaque surfaces can be blitted directly.
+-             */
+             if (blendmode != SDL_BLENDMODE_NONE || isOpaque) {
+                 if (applyModulation == SDL_FALSE) {
+-                    /* If the modulation wasn't already applied, make it happen now. */
+                     SDL_SetSurfaceAlphaMod(src_rotated, alphaMod);
+                     SDL_SetSurfaceColorMod(src_rotated, rMod, gMod, bMod);
+                 }
+-                /* Renderer scaling, if needed */
+                 retval = Blit_to_Screen(src_rotated, NULL, surface, &tmp_rect, scale_x, scale_y, texture->scaleMode);
+             } else {
+-                /* The NONE blend mode requires three steps to get the pixels onto the destination surface.
+-                 * First, the area where the rotated pixels will be blitted to get set to zero.
+-                 * This is accomplished by simply blitting a mask with the NONE blend mode.
+-                 * The colorkey set by the rotate function will discard the correct pixels.
+-                 */
+                 SDL_Rect mask_rect = tmp_rect;
+                 SDL_SetSurfaceBlendMode(mask_rotated, SDL_BLENDMODE_NONE);
+-                /* Renderer scaling, if needed */
+                 retval = Blit_to_Screen(mask_rotated, NULL, surface, &mask_rect, scale_x, scale_y, texture->scaleMode);
+                 if (!retval) {
+-                    /* The next step copies the alpha value. This is done with the BLEND blend mode and
+-                     * by modulating the source colors with 0. Since the destination is all zeros, this
+-                     * will effectively set the destination alpha to the source alpha.
+-                     */
+                     SDL_SetSurfaceColorMod(src_rotated, 0, 0, 0);
+                     mask_rect = tmp_rect;
+-                    /* Renderer scaling, if needed */
+                     retval = Blit_to_Screen(src_rotated, NULL, surface, &mask_rect, scale_x, scale_y, texture->scaleMode);
+                     if (!retval) {
+-                        /* The last step gets the color values in place. The ADD blend mode simply adds them to
+-                         * the destination (where the color values are all zero). However, because the ADD blend
+-                         * mode modulates the colors with the alpha channel, a surface without an alpha mask needs
+-                         * to be created. This makes all source pixels opaque and the colors get copied correctly.
+-                         */
+                         SDL_Surface *src_rotated_rgb;
+                         src_rotated_rgb = SDL_CreateRGBSurfaceFrom(src_rotated->pixels, src_rotated->w, src_rotated->h,
+                                                                    src_rotated->format->BitsPerPixel, src_rotated->pitch,
+@@ -491,7 +980,6 @@
+                             retval = -1;
+                         } else {
+                             SDL_SetSurfaceBlendMode(src_rotated_rgb, SDL_BLENDMODE_ADD);
+-                            /* Renderer scaling, if needed */
+                             retval = Blit_to_Screen(src_rotated_rgb, NULL, surface, &tmp_rect, scale_x, scale_y, texture->scaleMode);
+                             SDL_FreeSurface(src_rotated_rgb);
+                         }
+@@ -504,10 +992,6 @@
+             }
+         }
+     }
+-
+-    if (SDL_MUSTLOCK(src)) {
+-        SDL_UnlockSurface(src);
+-    }
+     if (mask) {
+         SDL_FreeSurface(mask);
+     }
+@@ -516,103 +1000,6 @@
+     }
+     return retval;
+ }
+-
+-typedef struct GeometryFillData
+-{
+-    SDL_Point dst;
+-    SDL_Color color;
+-} GeometryFillData;
+-
+-typedef struct GeometryCopyData
+-{
+-    SDL_Point src;
+-    SDL_Point dst;
+-    SDL_Color color;
+-} GeometryCopyData;
+-
+-static int SW_QueueGeometry(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *texture,
+-                            const float *xy, int xy_stride, const SDL_Color *color, int color_stride, const float *uv, int uv_stride,
+-                            int num_vertices, const void *indices, int num_indices, int size_indices,
+-                            float scale_x, float scale_y)
+-{
+-    int i;
+-    int count = indices ? num_indices : num_vertices;
+-    void *verts;
+-    size_t sz = texture ? sizeof(GeometryCopyData) : sizeof(GeometryFillData);
+-
+-    verts = SDL_AllocateRenderVertices(renderer, count * sz, 0, &cmd->data.draw.first);
+-    if (!verts) {
+-        return -1;
+-    }
+-
+-    cmd->data.draw.count = count;
+-    size_indices = indices ? size_indices : 0;
+-
+-    if (texture) {
+-        GeometryCopyData *ptr = (GeometryCopyData *)verts;
+-        for (i = 0; i < count; i++) {
+-            int j;
+-            float *xy_;
+-            SDL_Color col_;
+-            float *uv_;
+-            if (size_indices == 4) {
+-                j = ((const Uint32 *)indices)[i];
+-            } else if (size_indices == 2) {
+-                j = ((const Uint16 *)indices)[i];
+-            } else if (size_indices == 1) {
+-                j = ((const Uint8 *)indices)[i];
+-            } else {
+-                j = i;
+-            }
+-
+-            xy_ = (float *)((char *)xy + j * xy_stride);
+-            col_ = *(SDL_Color *)((char *)color + j * color_stride);
+-
+-            uv_ = (float *)((char *)uv + j * uv_stride);
+-
+-            ptr->src.x = (int)(uv_[0] * texture->w);
+-            ptr->src.y = (int)(uv_[1] * texture->h);
+-
+-            ptr->dst.x = (int)(xy_[0] * scale_x);
+-            ptr->dst.y = (int)(xy_[1] * scale_y);
+-            trianglepoint_2_fixedpoint(&ptr->dst);
+-
+-            ptr->color = col_;
+-
+-            ptr++;
+-        }
+-    } else {
+-        GeometryFillData *ptr = (GeometryFillData *)verts;
+-
+-        for (i = 0; i < count; i++) {
+-            int j;
+-            float *xy_;
+-            SDL_Color col_;
+-            if (size_indices == 4) {
+-                j = ((const Uint32 *)indices)[i];
+-            } else if (size_indices == 2) {
+-                j = ((const Uint16 *)indices)[i];
+-            } else if (size_indices == 1) {
+-                j = ((const Uint8 *)indices)[i];
+-            } else {
+-                j = i;
+-            }
+-
+-            xy_ = (float *)((char *)xy + j * xy_stride);
+-            col_ = *(SDL_Color *)((char *)color + j * color_stride);
+-
+-            ptr->dst.x = (int)(xy_[0] * scale_x);
+-            ptr->dst.y = (int)(xy_[1] * scale_y);
+-            trianglepoint_2_fixedpoint(&ptr->dst);
+-
+-            ptr->color = col_;
+-
+-            ptr++;
+-        }
+-    }
+-    return 0;
+-}
+-
+ static void PrepTextureForCopy(const SDL_RenderCommand *cmd)
+ {
+     const Uint8 r = cmd->data.draw.r;
+@@ -622,26 +1009,18 @@
+     const SDL_BlendMode blend = cmd->data.draw.blend;
+     SDL_Texture *texture = cmd->data.draw.texture;
+     SDL_Surface *surface = (SDL_Surface *)texture->driverdata;
+-    const SDL_bool colormod = ((r & g & b) != 0xFF);
+-    const SDL_bool alphamod = (a != 0xFF);
+-    const SDL_bool blending = ((blend == SDL_BLENDMODE_ADD) || (blend == SDL_BLENDMODE_MOD) || (blend == SDL_BLENDMODE_MUL));
+-
+-    if (colormod || alphamod || blending) {
+-        SDL_SetSurfaceRLE(surface, 0);
+-    }
+ 
+-    /* !!! FIXME: we can probably avoid some of these calls. */
+     SDL_SetSurfaceColorMod(surface, r, g, b);
+     SDL_SetSurfaceAlphaMod(surface, a);
+     SDL_SetSurfaceBlendMode(surface, blend);
+ }
+ 
+-static void SetDrawState(SDL_Surface *surface, SW_DrawStateCache *drawstate)
++static void SetDrawState(SDL_Surface *surface, OGPUR_DrawStateCache *drawstate)
+ {
+     if (drawstate->surface_cliprect_dirty) {
+         const SDL_Rect *viewport = drawstate->viewport;
+         const SDL_Rect *cliprect = drawstate->cliprect;
+-        SDL_assert_release(viewport != NULL); /* the higher level should have forced a SDL_RENDERCMD_SETVIEWPORT */
++        SDL_assert_release(viewport != NULL);
+ 
+         if (cliprect) {
+             SDL_Rect clip_rect;
+@@ -658,10 +1037,249 @@
+     }
+ }
+ 
+-static int SW_RunCommandQueue(SDL_Renderer *renderer, SDL_RenderCommand *cmd, void *vertices, size_t vertsize)
++/* OpenGPU's clip follows the surface's clip rectangle. SDL_FALSE when that
++   is empty: nothing can be drawn, and OpenGPU's CLIP has no empty form. */
++static SDL_bool OGPUR_FollowClip(OGPUR_RenderData *data, SDL_Surface *surface)
++{
++    const SDL_Rect *c = &surface->clip_rect;
++    if (c->w <= 0 || c->h <= 0) {
++        return SDL_FALSE;
++    }
++    if (c->x != data->clip.x || c->y != data->clip.y || c->w != data->clip.w || c->h != data->clip.h) {
++        data->clip = *c;
++        data->clip_dirty = SDL_TRUE;
++    }
++    return SDL_TRUE;
++}
++
++/* A copy as OpenGPU commands (srcrect from the texture, dst on the target,
++   viewport already added), or SDL_FALSE for SDL's software path. */
++static SDL_bool OGPUR_GpuCopy(OGPUR_RenderData *data, const SDL_RenderCommand *cmd, const SDL_Rect *srcrect,
++                              const SDL_Rect *dstrect, const SDL_FRect *fdst, double angle, const SDL_FPoint *center,
++                              SDL_RendererFlip flip, float scale_x, float scale_y)
++{
++    SDL_Texture *texture = cmd->data.draw.texture;
++    SDL_Surface *src = (SDL_Surface *)texture->driverdata;
++    const Uint8 r = cmd->data.draw.r, g = cmd->data.draw.g, b = cmd->data.draw.b, a = cmd->data.draw.a;
++    const SDL_BlendMode blend = cmd->data.draw.blend;
++    const int sfmt = OGPUR_Format(src->format->format);
++    const int mode = OGPUR_Blend(blend);
++    const SDL_bool has_alpha = (src->format->Amask != 0) ? SDL_TRUE : SDL_FALSE;
++    const SDL_bool tinted = ((r & g & b) != 0xFF) ? SDL_TRUE : SDL_FALSE;
++    const SDL_bool smooth = (texture->scaleMode != SDL_ScaleModeNearest) ? SDL_TRUE : SDL_FALSE;
++    const SDL_bool plain = (angle == 0.0 && flip == SDL_FLIP_NONE && scale_x == 1.0f && scale_y == 1.0f) ? SDL_TRUE : SDL_FALSE;
++    int slot;
++
++    if (!sfmt) {
++        return SDL_FALSE;
++    }
++    if (srcrect->w <= 0 || srcrect->h <= 0) {
++        return SDL_TRUE; /* nothing to draw */
++    }
++    OGPUR_PrepareTexture(data, texture);
++
++    if (plain && !tinted) {
++        unsigned long flags = 0;
++        if (dstrect->w <= 0 || dstrect->h <= 0) {
++            return SDL_TRUE;
++        }
++        if (blend == SDL_BLENDMODE_NONE && a == 0xFF && srcrect->w == dstrect->w && srcrect->h == dstrect->h &&
++            src->format->format == data->surface->format->format && data->can_copy) {
++            OGPUR_Reserve(data, 16, 0);
++            slot = OGPUR_SurfaceSlot(data, src, sfmt);
++            ogpu_copy(&data->batch, slot, srcrect->x, srcrect->y, dstrect->x, dstrect->y, dstrect->w, dstrect->h);
++            return SDL_TRUE;
++        }
++        if (!data->can_composite) {
++            return SDL_FALSE;
++        }
++        if (smooth && (srcrect->w != dstrect->w || srcrect->h != dstrect->h)) {
++            flags |= OGPU_COMP_BILINEAR;
++        }
++        if (has_alpha) {
++            flags |= OGPU_COMP_SRCALPHA;
++        }
++#if OGPUR_V12
++        if (data->can_affine && mode >= 0) {
++            /* v1.2: COMPOSITE in SDL's own blend mode */
++            flags |= OGPU_COMP_BLENDMODE | OGPU_COMP_MODE(mode);
++        } else
++#endif
++        if (blend == SDL_BLENDMODE_ADD) {
++            flags |= OGPU_COMP_ADD;
++        } else if (blend == SDL_BLENDMODE_NONE) {
++            /* v1.1 COMPOSITE writes opaque alpha: right unless an alpha
++               source goes onto an alpha target texture */
++            if (a != 0xFF || (has_alpha && data->surface != data->window && data->surface->format->Amask)) {
++                return SDL_FALSE;
++            }
++            flags &= ~(unsigned long)OGPU_COMP_SRCALPHA;
++        } else if (blend != SDL_BLENDMODE_BLEND) {
++            return SDL_FALSE;
++        }
++        OGPUR_Reserve(data, 24, 0);
++        slot = OGPUR_SurfaceSlot(data, src, sfmt);
++        ogpu_composite(&data->batch, slot, srcrect->x, srcrect->y, srcrect->w, srcrect->h,
++                       dstrect->x, dstrect->y, dstrect->w, dstrect->h, a, flags);
++        return SDL_TRUE;
++    }
++
++#if OGPUR_V12
++    /* Scale, rotation about the centre, flips, colour and the renderer's
++       scale: one COMPOSITE_AFFINE. Its matrix takes a source point (u, v),
++       from srcrect's corner, to the target. */
++    if (data->can_affine && mode >= 0 && fdst->w > 0.0f && fdst->h > 0.0f) {
++        const double rad = angle * (M_PI / 180.0);
++        const float cs = (float)SDL_cos(rad), sn = (float)SDL_sin(rad);
++        const float ax = (fdst->w / (float)srcrect->w) * ((flip & SDL_FLIP_HORIZONTAL) ? -1.0f : 1.0f);
++        const float ay = (fdst->h / (float)srcrect->h) * ((flip & SDL_FLIP_VERTICAL) ? -1.0f : 1.0f);
++        const float ox = (flip & SDL_FLIP_HORIZONTAL) ? fdst->w : 0.0f;
++        const float oy = (flip & SDL_FLIP_VERTICAL) ? fdst->h : 0.0f;
++        const float cx = center->x, cy = center->y;
++        unsigned long flags = (unsigned long)mode;
++        long m[6];
++
++        m[0] = OGPUR_FIX(scale_x * cs * ax);
++        m[1] = OGPUR_FIX(-scale_x * sn * ay);
++        m[2] = OGPUR_FIX(scale_x * (fdst->x + cx + cs * (ox - cx) - sn * (oy - cy)));
++        m[3] = OGPUR_FIX(scale_y * sn * ax);
++        m[4] = OGPUR_FIX(scale_y * cs * ay);
++        m[5] = OGPUR_FIX(scale_y * (fdst->y + cy + sn * (ox - cx) + cs * (oy - cy)));
++        if (has_alpha) {
++            flags |= OGPU_AFF_SRCALPHA;
++        }
++        if (smooth) {
++            flags |= OGPU_AFF_BILINEAR;
++        }
++        OGPUR_Reserve(data, 24, 0);
++        slot = OGPUR_SurfaceSlot(data, src, sfmt);
++        ogpu_composite_affine(&data->batch, slot, srcrect->x, srcrect->y, srcrect->w, srcrect->h,
++                              m, OGPUR_ARGB(r, g, b, a), flags);
++        return SDL_TRUE;
++    }
++#else
++    (void)fdst;
++    (void)center;
++#endif
++    return SDL_FALSE;
++}
++
++/* SDL_RenderGeometry on the CPU: SDL's software triangles. */
++static void OGPUR_CpuGeometry(SDL_Surface *surface, const SDL_RenderCommand *cmd, const OGPUR_Vertex *v, int count,
++                              const SDL_Rect *viewport)
++{
++    SDL_Texture *texture = cmd->data.draw.texture;
++    const SDL_BlendMode blend = cmd->data.draw.blend;
++    SDL_Point vp;
++    int i;
++
++    vp.x = viewport ? viewport->x : 0;
++    vp.y = viewport ? viewport->y : 0;
++    trianglepoint_2_fixedpoint(&vp);
++    if (texture) {
++        SDL_Surface *src = (SDL_Surface *)texture->driverdata;
++        GeometryCopyData *ptr = (GeometryCopyData *)SDL_malloc(count * sizeof(GeometryCopyData));
++        if (!ptr) {
++            return;
++        }
++        for (i = 0; i < count; i++) {
++            ptr[i].src.x = (int)(v[i].u * texture->w);
++            ptr[i].src.y = (int)(v[i].v * texture->h);
++            ptr[i].dst.x = (int)v[i].x;
++            ptr[i].dst.y = (int)v[i].y;
++            trianglepoint_2_fixedpoint(&ptr[i].dst);
++            ptr[i].dst.x += vp.x;
++            ptr[i].dst.y += vp.y;
++            ptr[i].color = v[i].color;
++        }
++        PrepTextureForCopy(cmd);
++        for (i = 0; i + 2 < count; i += 3) {
++            SDL_SW_BlitTriangle(src, &ptr[i].src, &ptr[i + 1].src, &ptr[i + 2].src,
++                                surface, &ptr[i].dst, &ptr[i + 1].dst, &ptr[i + 2].dst,
++                                ptr[i].color, ptr[i + 1].color, ptr[i + 2].color);
++        }
++        SDL_free(ptr);
++    } else {
++        GeometryFillData *ptr = (GeometryFillData *)SDL_malloc(count * sizeof(GeometryFillData));
++        if (!ptr) {
++            return;
++        }
++        for (i = 0; i < count; i++) {
++            ptr[i].dst.x = (int)v[i].x;
++            ptr[i].dst.y = (int)v[i].y;
++            trianglepoint_2_fixedpoint(&ptr[i].dst);
++            ptr[i].dst.x += vp.x;
++            ptr[i].dst.y += vp.y;
++            ptr[i].color = v[i].color;
++        }
++        for (i = 0; i + 2 < count; i += 3) {
++            SDL_SW_FillTriangle(surface, &ptr[i].dst, &ptr[i + 1].dst, &ptr[i + 2].dst, blend,
++                                ptr[i].color, ptr[i + 1].color, ptr[i + 2].color);
++        }
++        SDL_free(ptr);
++    }
++}
++
++#if OGPUR_TRIS
++/* SDL_RenderGeometry as one TRIANGLES command (stream3d.h's 9-word form):
++   x, y and u, v in 16.16, the colour times the texture's modulation. */
++static SDL_bool OGPUR_GpuGeometry(OGPUR_RenderData *data, const SDL_RenderCommand *cmd, const OGPUR_Vertex *v, int count,
++                                  const SDL_Rect *viewport)
++{
++    SDL_Texture *texture = cmd->data.draw.texture;
++    const int mode = OGPUR_Blend(cmd->data.draw.blend);
++    const float vx = viewport ? (float)viewport->x : 0.0f, vy = viewport ? (float)viewport->y : 0.0f;
++    unsigned long flags;
++    int slot = OGPU_TRI_NOTEX, i, sfmt = 0;
++    Uint32 *w;
++
++    if (!data->can_tris || mode < 0 || count < 3) {
++        return count < 3 ? SDL_TRUE : SDL_FALSE;
++    }
++    if (texture) {
++        sfmt = OGPUR_Format(((SDL_Surface *)texture->driverdata)->format->format);
++        if (!sfmt) {
++            return SDL_FALSE;
++        }
++        OGPUR_PrepareTexture(data, texture);
++    }
++    w = OGPUR_Reserve(data, 24, (long)count * 5);
++    if (!w) {
++        return SDL_FALSE;
++    }
++    for (i = 0; i < count; i++) {
++        Uint8 r = v[i].color.r, g = v[i].color.g, b = v[i].color.b, a = v[i].color.a;
++        if (texture) {
++            r = (Uint8)(((unsigned)r * cmd->data.draw.r + 127) / 255);
++            g = (Uint8)(((unsigned)g * cmd->data.draw.g + 127) / 255);
++            b = (Uint8)(((unsigned)b * cmd->data.draw.b + 127) / 255);
++            a = (Uint8)(((unsigned)a * cmd->data.draw.a + 127) / 255);
++        }
++        *w++ = (Uint32)OGPUR_FIX(v[i].x + vx);
++        *w++ = (Uint32)OGPUR_FIX(v[i].y + vy);
++        *w++ = (Uint32)OGPUR_ARGB(r, g, b, a);
++        *w++ = (Uint32)OGPUR_FIX(v[i].u);
++        *w++ = (Uint32)OGPUR_FIX(v[i].v);
++    }
++    w -= (long)count * 5;
++    flags = (unsigned long)mode | OGPU_TRI_CLAMP;
++    if (texture) {
++        slot = OGPUR_SurfaceSlot(data, (SDL_Surface *)texture->driverdata, sfmt);
++        if (texture->scaleMode != SDL_ScaleModeNearest) {
++            flags |= OGPU_TRI_BILINEAR;
++        }
++    }
++    ogpu_triangles(&data->batch, (unsigned long)w, (unsigned long)count, 20, 0, 0, 0, slot, flags);
++    return SDL_TRUE;
++}
++#endif
++
++static int OGPUR_RunCommandQueue(SDL_Renderer *renderer, SDL_RenderCommand *cmd, void *vertices, size_t vertsize)
+ {
+-    SDL_Surface *surface = SW_ActivateRenderer(renderer);
+-    SW_DrawStateCache drawstate;
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
++    SDL_Surface *surface = OGPUR_ActivateRenderer(renderer);
++    OGPUR_DrawStateCache drawstate;
++    const SDL_bool gpu = data->target_fmt ? SDL_TRUE : SDL_FALSE;
+ 
+     if (!surface) {
+         return -1;
+@@ -671,418 +1289,519 @@
+     drawstate.cliprect = NULL;
+     drawstate.surface_cliprect_dirty = SDL_TRUE;
+ 
++/* Before the CPU draws: everything OpenGPU was given is finished. */
++#define CPU_PATH() do { OGPUR_Sync(data); data->ops_cpu++; } while (0)
++#define GPU_DONE() do { data->ops_gpu++; } while (0)
++
+     while (cmd) {
+         switch (cmd->command) {
+-            case SDL_RENDERCMD_SETDRAWCOLOR: {
+-                break;  /* Not used in this backend. */
+-            }
++        case SDL_RENDERCMD_SETDRAWCOLOR:
++            break;
+ 
+-            case SDL_RENDERCMD_SETVIEWPORT: {
+-                drawstate.viewport = &cmd->data.viewport.rect;
+-                drawstate.surface_cliprect_dirty = SDL_TRUE;
+-                break;
++        case SDL_RENDERCMD_SETVIEWPORT:
++            drawstate.viewport = &cmd->data.viewport.rect;
++            drawstate.surface_cliprect_dirty = SDL_TRUE;
++            break;
++
++        case SDL_RENDERCMD_SETCLIPRECT:
++            drawstate.cliprect = cmd->data.cliprect.enabled ? &cmd->data.cliprect.rect : NULL;
++            drawstate.surface_cliprect_dirty = SDL_TRUE;
++            break;
++
++        case SDL_RENDERCMD_CLEAR: {
++            const Uint32 pixel = SDL_MapRGBA(surface->format, cmd->data.color.r, cmd->data.color.g,
++                                             cmd->data.color.b, cmd->data.color.a);
++            /* By definition the clear ignores the clip rect */
++            SDL_SetClipRect(surface, NULL);
++            if (gpu && data->can_fill) {
++                OGPUR_FollowClip(data, surface);
++                OGPUR_Reserve(data, 8, 0);
++                ogpu_fill(&data->batch, 0, 0, surface->w, surface->h, pixel);
++                GPU_DONE();
++            } else {
++                CPU_PATH();
++                SDL_FillRect(surface, NULL, pixel);
+             }
++            drawstate.surface_cliprect_dirty = SDL_TRUE;
++            break;
++        }
+ 
+-            case SDL_RENDERCMD_SETCLIPRECT: {
+-                drawstate.cliprect = cmd->data.cliprect.enabled ? &cmd->data.cliprect.rect : NULL;
+-                drawstate.surface_cliprect_dirty = SDL_TRUE;
+-                break;
++        case SDL_RENDERCMD_DRAW_POINTS: {
++            const Uint8 r = cmd->data.draw.r, g = cmd->data.draw.g, b = cmd->data.draw.b, a = cmd->data.draw.a;
++            const int count = (int)cmd->data.draw.count;
++            SDL_Point *verts = (SDL_Point *)(((Uint8 *)vertices) + cmd->data.draw.first);
++            const SDL_BlendMode blend = cmd->data.draw.blend;
++            const SDL_bool opaque = (blend == SDL_BLENDMODE_NONE || (blend == SDL_BLENDMODE_BLEND && a == 0xFF));
++            const int mode = OGPUR_Blend(blend);
++            int i;
++            (void)mode;
++            SetDrawState(surface, &drawstate);
++            if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
++                for (i = 0; i < count; i++) {
++                    verts[i].x += drawstate.viewport->x;
++                    verts[i].y += drawstate.viewport->y;
++                }
+             }
+-
+-            case SDL_RENDERCMD_CLEAR: {
+-                const Uint8 r = cmd->data.color.r;
+-                const Uint8 g = cmd->data.color.g;
+-                const Uint8 b = cmd->data.color.b;
+-                const Uint8 a = cmd->data.color.a;
+-                /* By definition the clear ignores the clip rect */
+-                SDL_SetClipRect(surface, NULL);
+-                SDL_FillRect(surface, NULL, SDL_MapRGBA(surface->format, r, g, b, a));
+-                drawstate.surface_cliprect_dirty = SDL_TRUE;
++            if (gpu && !OGPUR_FollowClip(data, surface)) {
+                 break;
+             }
+-
+-            case SDL_RENDERCMD_DRAW_POINTS: {
+-                const Uint8 r = cmd->data.draw.r;
+-                const Uint8 g = cmd->data.draw.g;
+-                const Uint8 b = cmd->data.draw.b;
+-                const Uint8 a = cmd->data.draw.a;
+-                const int count = (int) cmd->data.draw.count;
+-                SDL_Point *verts = (SDL_Point *) (((Uint8 *) vertices) + cmd->data.draw.first);
+-                const SDL_BlendMode blend = cmd->data.draw.blend;
+-                SetDrawState(surface, &drawstate);
+-
+-                /* Apply viewport */
+-                if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
+-                    int i;
++#if OGPUR_V12
++            if (gpu && data->can_points_blend && mode >= 0) {
++                Uint32 *p = OGPUR_Reserve(data, 8, count);
++                if (p) {
+                     for (i = 0; i < count; i++) {
+-                        verts[i].x += drawstate.viewport->x;
+-                        verts[i].y += drawstate.viewport->y;
++                        p[i] = (Uint32)OGPU_XY(verts[i].x, verts[i].y);
+                     }
++                    ogpu_points_blend(&data->batch, (unsigned long)p, (unsigned long)count, OGPUR_ARGB(r, g, b, a), mode);
++                    GPU_DONE();
++                    break;
+                 }
+-
+-                if (blend == SDL_BLENDMODE_NONE) {
+-                    SDL_DrawPoints(surface, verts, count, SDL_MapRGBA(surface->format, r, g, b, a));
+-                } else {
+-                    SDL_BlendPoints(surface, verts, count, blend, r, g, b, a);
++            }
++#else
++            (void)mode;
++#endif
++            if (gpu && opaque && data->can_fill) {
++                const Uint32 pixel = SDL_MapRGBA(surface->format, r, g, b, a);
++                for (i = 0; i < count; i++) {
++                    OGPUR_Reserve(data, 4, 0);
++                    ogpu_fill(&data->batch, verts[i].x, verts[i].y, 1, 1, pixel);
+                 }
++                GPU_DONE();
+                 break;
+             }
++            CPU_PATH();
++            if (blend == SDL_BLENDMODE_NONE) {
++                SDL_DrawPoints(surface, verts, count, SDL_MapRGBA(surface->format, r, g, b, a));
++            } else {
++                SDL_BlendPoints(surface, verts, count, blend, r, g, b, a);
++            }
++            break;
++        }
+ 
+-            case SDL_RENDERCMD_DRAW_LINES: {
+-                const Uint8 r = cmd->data.draw.r;
+-                const Uint8 g = cmd->data.draw.g;
+-                const Uint8 b = cmd->data.draw.b;
+-                const Uint8 a = cmd->data.draw.a;
+-                const int count = (int) cmd->data.draw.count;
+-                SDL_Point *verts = (SDL_Point *) (((Uint8 *) vertices) + cmd->data.draw.first);
+-                const SDL_BlendMode blend = cmd->data.draw.blend;
+-                SetDrawState(surface, &drawstate);
+-
+-                /* Apply viewport */
+-                if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
+-                    int i;
+-                    for (i = 0; i < count; i++) {
+-                        verts[i].x += drawstate.viewport->x;
+-                        verts[i].y += drawstate.viewport->y;
+-                    }
+-                }
+-
+-                if (blend == SDL_BLENDMODE_NONE) {
+-                    SDL_DrawLines(surface, verts, count, SDL_MapRGBA(surface->format, r, g, b, a));
+-                } else {
+-                    SDL_BlendLines(surface, verts, count, blend, r, g, b, a);
++        case SDL_RENDERCMD_DRAW_LINES: {
++            const Uint8 r = cmd->data.draw.r, g = cmd->data.draw.g, b = cmd->data.draw.b, a = cmd->data.draw.a;
++            const int count = (int)cmd->data.draw.count;
++            SDL_Point *verts = (SDL_Point *)(((Uint8 *)vertices) + cmd->data.draw.first);
++            const SDL_BlendMode blend = cmd->data.draw.blend;
++            const SDL_bool opaque = (blend == SDL_BLENDMODE_NONE || (blend == SDL_BLENDMODE_BLEND && a == 0xFF));
++            const int mode = OGPUR_Blend(blend);
++            int i;
++            (void)mode;
++            SetDrawState(surface, &drawstate);
++            if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
++                for (i = 0; i < count; i++) {
++                    verts[i].x += drawstate.viewport->x;
++                    verts[i].y += drawstate.viewport->y;
+                 }
++            }
++            if (gpu && !OGPUR_FollowClip(data, surface)) {
+                 break;
+             }
+-
+-            case SDL_RENDERCMD_FILL_RECTS: {
+-                const Uint8 r = cmd->data.draw.r;
+-                const Uint8 g = cmd->data.draw.g;
+-                const Uint8 b = cmd->data.draw.b;
+-                const Uint8 a = cmd->data.draw.a;
+-                const int count = (int) cmd->data.draw.count;
+-                SDL_Rect *verts = (SDL_Rect *) (((Uint8 *) vertices) + cmd->data.draw.first);
+-                const SDL_BlendMode blend = cmd->data.draw.blend;
+-                SetDrawState(surface, &drawstate);
+-
+-                /* Apply viewport */
+-                if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
+-                    int i;
++#if OGPUR_V12
++            /* SDL's rule: each line without its end point, then the last
++               point unless the lines close on the first. */
++            if (gpu && data->can_lines_blend && data->can_points_blend && mode >= 0 && count >= 1) {
++                Uint32 *p = OGPUR_Reserve(data, 16, count + 1);
++                if (p) {
+                     for (i = 0; i < count; i++) {
+-                        verts[i].x += drawstate.viewport->x;
+-                        verts[i].y += drawstate.viewport->y;
++                        p[i] = (Uint32)OGPU_XY(verts[i].x, verts[i].y);
++                    }
++                    if (count >= 2) {
++                        ogpu_lines_blend(&data->batch, (unsigned long)p, (unsigned long)count, OGPUR_ARGB(r, g, b, a),
++                                         (unsigned long)mode | OGPU_LINES_STRIP);
++                    }
++                    if (count == 1 || p[0] != p[count - 1]) {
++                        ogpu_points_blend(&data->batch, (unsigned long)&p[count - 1], 1, OGPUR_ARGB(r, g, b, a), mode);
+                     }
++                    GPU_DONE();
++                    break;
+                 }
+-
+-                if (blend == SDL_BLENDMODE_NONE) {
+-                    SDL_FillRects(surface, verts, count, SDL_MapRGBA(surface->format, r, g, b, a));
+-                } else {
+-                    SDL_BlendFillRects(surface, verts, count, blend, r, g, b, a);
++            }
++#endif
++            if (gpu && opaque && data->can_line) {
++                const Uint32 pixel = SDL_MapRGBA(surface->format, r, g, b, a);
++                if (count == 1) {
++                    OGPUR_Reserve(data, 4, 0);
++                    ogpu_fill(&data->batch, verts[0].x, verts[0].y, 1, 1, pixel);
+                 }
++                for (i = 0; i + 1 < count; i++) {
++                    OGPUR_Reserve(data, 5, 0);
++                    ogpu_line(&data->batch, verts[i].x, verts[i].y, verts[i + 1].x, verts[i + 1].y, pixel, OGPU_JAM1);
++                }
++                GPU_DONE();
+                 break;
+             }
++            CPU_PATH();
++            if (blend == SDL_BLENDMODE_NONE) {
++                SDL_DrawLines(surface, verts, count, SDL_MapRGBA(surface->format, r, g, b, a));
++            } else {
++                SDL_BlendLines(surface, verts, count, blend, r, g, b, a);
++            }
++            break;
++        }
+ 
+-            case SDL_RENDERCMD_COPY: {
+-                SDL_Rect *verts = (SDL_Rect *) (((Uint8 *) vertices) + cmd->data.draw.first);
+-                const SDL_Rect *srcrect = verts;
+-                SDL_Rect *dstrect = verts + 1;
+-                SDL_Texture *texture = cmd->data.draw.texture;
+-                SDL_Surface *src = (SDL_Surface *) texture->driverdata;
+-
+-                SetDrawState(surface, &drawstate);
+-
+-                PrepTextureForCopy(cmd);
+-
+-                /* Apply viewport */
+-                if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
+-                    dstrect->x += drawstate.viewport->x;
+-                    dstrect->y += drawstate.viewport->y;
++        case SDL_RENDERCMD_FILL_RECTS: {
++            const Uint8 r = cmd->data.draw.r, g = cmd->data.draw.g, b = cmd->data.draw.b, a = cmd->data.draw.a;
++            const int count = (int)cmd->data.draw.count;
++            SDL_Rect *verts = (SDL_Rect *)(((Uint8 *)vertices) + cmd->data.draw.first);
++            const SDL_BlendMode blend = cmd->data.draw.blend;
++            const SDL_bool opaque = (blend == SDL_BLENDMODE_NONE || (blend == SDL_BLENDMODE_BLEND && a == 0xFF));
++            const int mode = OGPUR_Blend(blend);
++            int i;
++            (void)mode;
++            SetDrawState(surface, &drawstate);
++            if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
++                for (i = 0; i < count; i++) {
++                    verts[i].x += drawstate.viewport->x;
++                    verts[i].y += drawstate.viewport->y;
+                 }
+-
+-                if ( srcrect->w == dstrect->w && srcrect->h == dstrect->h ) {
+-                    SDL_BlitSurface(src, srcrect, surface, dstrect);
+-                } else {
+-                    /* If scaling is ever done, permanently disable RLE (which doesn't support scaling)
+-                     * to avoid potentially frequent RLE encoding/decoding.
+-                     */
+-                    SDL_SetSurfaceRLE(surface, 0);
+-
+-                    /* Prevent to do scaling + clipping on viewport boundaries as it may lose proportion */
+-                    if (dstrect->x < 0 || dstrect->y < 0 || dstrect->x + dstrect->w > surface->w || dstrect->y + dstrect->h > surface->h) {
+-                        SDL_Surface *tmp = SDL_CreateRGBSurfaceWithFormat(0, dstrect->w, dstrect->h, 0, src->format->format);
+-                        /* Scale to an intermediate surface, then blit */
+-                        if (tmp) {
+-                            SDL_Rect r;
+-                            SDL_BlendMode blendmode;
+-                            Uint8 alphaMod, rMod, gMod, bMod;
+-
+-                            SDL_GetSurfaceBlendMode(src, &blendmode);
+-                            SDL_GetSurfaceAlphaMod(src, &alphaMod);
+-                            SDL_GetSurfaceColorMod(src, &rMod, &gMod, &bMod);
+-
+-                            r.x = 0;
+-                            r.y = 0;
+-                            r.w = dstrect->w;
+-                            r.h = dstrect->h;
+-
+-                            SDL_SetSurfaceBlendMode(src, SDL_BLENDMODE_NONE);
+-                            SDL_SetSurfaceColorMod(src, 255, 255, 255);
+-                            SDL_SetSurfaceAlphaMod(src, 255);
+-
+-                            SDL_PrivateUpperBlitScaled(src, srcrect, tmp, &r, texture->scaleMode);
+-
+-                            SDL_SetSurfaceColorMod(tmp, rMod, gMod, bMod);
+-                            SDL_SetSurfaceAlphaMod(tmp, alphaMod);
+-                            SDL_SetSurfaceBlendMode(tmp, blendmode);
+-
+-                            SDL_BlitSurface(tmp, NULL, surface, dstrect);
+-                            SDL_FreeSurface(tmp);
+-                            /* No need to set back r/g/b/a/blendmode to 'src' since it's done in PrepTextureForCopy() */
+-                        }
+-                    } else{
+-                        SDL_PrivateUpperBlitScaled(src, srcrect, surface, dstrect, texture->scaleMode);
+-                    }
++            }
++            if (gpu && !OGPUR_FollowClip(data, surface)) {
++                break;
++            }
++            if (gpu && opaque && data->can_fill) {
++                const Uint32 pixel = SDL_MapRGBA(surface->format, r, g, b, a);
++                for (i = 0; i < count; i++) {
++                    OGPUR_Reserve(data, 4, 0);
++                    ogpu_fill(&data->batch, verts[i].x, verts[i].y, verts[i].w, verts[i].h, pixel);
+                 }
++                GPU_DONE();
+                 break;
+             }
+-
+-            case SDL_RENDERCMD_COPY_EX: {
+-                CopyExData *copydata = (CopyExData *) (((Uint8 *) vertices) + cmd->data.draw.first);
+-                SetDrawState(surface, &drawstate);
+-                PrepTextureForCopy(cmd);
+-
+-                /* Apply viewport */
+-                if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
+-                    copydata->dstrect.x += drawstate.viewport->x;
+-                    copydata->dstrect.y += drawstate.viewport->y;
++#if OGPUR_V12
++            if (gpu && data->can_fill_blend && mode >= 0) {
++                for (i = 0; i < count; i++) {
++                    OGPUR_Reserve(data, 5, 0);
++                    ogpu_fill_blend(&data->batch, verts[i].x, verts[i].y, verts[i].w, verts[i].h, OGPUR_ARGB(r, g, b, a), mode);
+                 }
+-
+-                SW_RenderCopyEx(renderer, surface, cmd->data.draw.texture, &copydata->srcrect,
+-                                &copydata->dstrect, copydata->angle, &copydata->center, copydata->flip,
+-                                copydata->scale_x, copydata->scale_y);
++                GPU_DONE();
+                 break;
+             }
++#endif
++            if (gpu && data->can_composite && (blend == SDL_BLENDMODE_BLEND || blend == SDL_BLENDMODE_ADD)) {
++                /* v1.1: a 1x1 colour composited over the rectangle */
++                for (i = 0; i < count; i++) {
++                    Uint32 *px = OGPUR_Reserve(data, 32, 1);
++                    int slot = OGPUR_ColourSlot(data, px, r, g, b, 0xFF);
++                    ogpu_composite(&data->batch, slot, 0, 0, 1, 1, verts[i].x, verts[i].y, verts[i].w, verts[i].h,
++                                   a, (blend == SDL_BLENDMODE_ADD) ? OGPU_COMP_ADD : 0);
++                }
++                GPU_DONE();
++                break;
++            }
++            CPU_PATH();
++            if (blend == SDL_BLENDMODE_NONE) {
++                SDL_FillRects(surface, verts, count, SDL_MapRGBA(surface->format, r, g, b, a));
++            } else {
++                SDL_BlendFillRects(surface, verts, count, blend, r, g, b, a);
++            }
++            break;
++        }
+ 
+-            case SDL_RENDERCMD_GEOMETRY: {
+-                int i;
+-                SDL_Rect *verts = (SDL_Rect *) (((Uint8 *) vertices) + cmd->data.draw.first);
+-                const int count = (int) cmd->data.draw.count;
+-                SDL_Texture *texture = cmd->data.draw.texture;
+-                const SDL_BlendMode blend = cmd->data.draw.blend;
+-
+-                SetDrawState(surface, &drawstate);
+-
+-                if (texture) {
+-                    SDL_Surface *src = (SDL_Surface *) texture->driverdata;
+-
+-                    GeometryCopyData *ptr = (GeometryCopyData *) verts;
+-
+-                    PrepTextureForCopy(cmd);
+-
+-                    /* Apply viewport */
+-                    if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
+-                        SDL_Point vp;
+-                        vp.x = drawstate.viewport->x;
+-                        vp.y = drawstate.viewport->y;
+-                        trianglepoint_2_fixedpoint(&vp);
+-                        for (i = 0; i < count; i++) {
+-                            ptr[i].dst.x += vp.x;
+-                            ptr[i].dst.y += vp.y;
+-                        }
+-                    }
+-
+-                    for (i = 0; i < count; i += 3, ptr += 3) {
+-                        SDL_SW_BlitTriangle(
+-                                src,
+-                                &(ptr[0].src), &(ptr[1].src), &(ptr[2].src),
+-                                surface,
+-                                &(ptr[0].dst), &(ptr[1].dst), &(ptr[2].dst),
+-                                ptr[0].color, ptr[1].color, ptr[2].color);
++        case SDL_RENDERCMD_COPY: {
++            SDL_Rect *verts = (SDL_Rect *)(((Uint8 *)vertices) + cmd->data.draw.first);
++            const SDL_Rect *srcrect = verts;
++            SDL_Rect *dstrect = verts + 1;
++            SDL_Texture *texture = cmd->data.draw.texture;
++            SDL_Surface *src = (SDL_Surface *)texture->driverdata;
++
++            SetDrawState(surface, &drawstate);
++            if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
++                dstrect->x += drawstate.viewport->x;
++                dstrect->y += drawstate.viewport->y;
++            }
++            if (gpu) {
++                SDL_FRect fdst;
++                SDL_FPoint centre;
++                if (!OGPUR_FollowClip(data, surface)) {
++                    break;
++                }
++                fdst.x = (float)dstrect->x;
++                fdst.y = (float)dstrect->y;
++                fdst.w = (float)dstrect->w;
++                fdst.h = (float)dstrect->h;
++                centre.x = centre.y = 0.0f;
++                if (OGPUR_GpuCopy(data, cmd, srcrect, dstrect, &fdst, 0.0, &centre, SDL_FLIP_NONE, 1.0f, 1.0f)) {
++                    GPU_DONE();
++                    break;
++                }
++            }
++            OGPUR_PrepareTexture(data, texture);
++            CPU_PATH();
++            PrepTextureForCopy(cmd);
++            if (srcrect->w == dstrect->w && srcrect->h == dstrect->h) {
++                SDL_BlitSurface(src, srcrect, surface, dstrect);
++            } else {
++                SDL_SetSurfaceRLE(surface, 0);
++                if (dstrect->x < 0 || dstrect->y < 0 || dstrect->x + dstrect->w > surface->w || dstrect->y + dstrect->h > surface->h ||
++                    (surface->format->palette && src->format->format != surface->format->format)) {
++                    SDL_Surface *tmp = SDL_CreateRGBSurfaceWithFormat(0, dstrect->w, dstrect->h, 0, src->format->format);
++                    if (tmp) {
++                        SDL_Rect r;
++                        SDL_BlendMode blendmode;
++                        Uint8 alphaMod, rMod, gMod, bMod;
++
++                        SDL_GetSurfaceBlendMode(src, &blendmode);
++                        SDL_GetSurfaceAlphaMod(src, &alphaMod);
++                        SDL_GetSurfaceColorMod(src, &rMod, &gMod, &bMod);
++                        r.x = 0;
++                        r.y = 0;
++                        r.w = dstrect->w;
++                        r.h = dstrect->h;
++                        SDL_SetSurfaceBlendMode(src, SDL_BLENDMODE_NONE);
++                        SDL_SetSurfaceColorMod(src, 255, 255, 255);
++                        SDL_SetSurfaceAlphaMod(src, 255);
++                        SDL_PrivateUpperBlitScaled(src, srcrect, tmp, &r, texture->scaleMode);
++                        SDL_SetSurfaceColorMod(tmp, rMod, gMod, bMod);
++                        SDL_SetSurfaceAlphaMod(tmp, alphaMod);
++                        SDL_SetSurfaceBlendMode(tmp, blendmode);
++                        SDL_BlitSurface(tmp, NULL, surface, dstrect);
++                        SDL_FreeSurface(tmp);
+                     }
+                 } else {
+-                    GeometryFillData *ptr = (GeometryFillData *) verts;
+-
+-                    /* Apply viewport */
+-                    if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
+-                        SDL_Point vp;
+-                        vp.x = drawstate.viewport->x;
+-                        vp.y = drawstate.viewport->y;
+-                        trianglepoint_2_fixedpoint(&vp);
+-                        for (i = 0; i < count; i++) {
+-                            ptr[i].dst.x += vp.x;
+-                            ptr[i].dst.y += vp.y;
+-                        }
+-                    }
++                    SDL_PrivateUpperBlitScaled(src, srcrect, surface, dstrect, texture->scaleMode);
++                }
++            }
++            break;
++        }
+ 
+-                    for (i = 0; i < count; i += 3, ptr += 3) {
+-                        SDL_SW_FillTriangle(surface, &(ptr[0].dst), &(ptr[1].dst), &(ptr[2].dst), blend, ptr[0].color, ptr[1].color, ptr[2].color);
+-                    }
++        case SDL_RENDERCMD_COPY_EX: {
++            CopyExData *copydata = (CopyExData *)(((Uint8 *)vertices) + cmd->data.draw.first);
++            SetDrawState(surface, &drawstate);
++            if (drawstate.viewport && (drawstate.viewport->x || drawstate.viewport->y)) {
++                copydata->dstrect.x += drawstate.viewport->x;
++                copydata->dstrect.y += drawstate.viewport->y;
++                copydata->fdst.x += (float)drawstate.viewport->x;
++                copydata->fdst.y += (float)drawstate.viewport->y;
++            }
++            if (gpu) {
++                if (!OGPUR_FollowClip(data, surface)) {
++                    break;
++                }
++                if (OGPUR_GpuCopy(data, cmd, &copydata->srcrect, &copydata->dstrect, &copydata->fdst, copydata->angle,
++                                  &copydata->center, copydata->flip, copydata->scale_x, copydata->scale_y)) {
++                    GPU_DONE();
++                    break;
+                 }
+-                break;
+             }
++            OGPUR_PrepareTexture(data, cmd->data.draw.texture);
++            CPU_PATH();
++            PrepTextureForCopy(cmd);
++            OGPUR_SW_RenderCopyEx(renderer, surface, cmd->data.draw.texture, &copydata->srcrect,
++                                  &copydata->dstrect, copydata->angle, &copydata->center, copydata->flip,
++                                  copydata->scale_x, copydata->scale_y);
++            break;
++        }
+ 
+-            case SDL_RENDERCMD_NO_OP:
+-                break;
++        case SDL_RENDERCMD_GEOMETRY: {
++            const OGPUR_Vertex *v = (const OGPUR_Vertex *)(((Uint8 *)vertices) + cmd->data.draw.first);
++            const int count = (int)cmd->data.draw.count;
++
++            SetDrawState(surface, &drawstate);
++#if OGPUR_TRIS
++            if (gpu) {
++                if (!OGPUR_FollowClip(data, surface)) {
++                    break;
++                }
++                if (OGPUR_GpuGeometry(data, cmd, v, count, drawstate.viewport)) {
++                    GPU_DONE();
++                    break;
++                }
++            }
++#endif
++            if (cmd->data.draw.texture) {
++                OGPUR_PrepareTexture(data, cmd->data.draw.texture);
++            }
++            CPU_PATH();
++            OGPUR_CpuGeometry(surface, cmd, v, count, drawstate.viewport);
++            break;
+         }
+ 
++        case SDL_RENDERCMD_NO_OP:
++            break;
++        }
+         cmd = cmd->next;
+     }
++#undef CPU_PATH
++#undef GPU_DONE
+ 
++    /* Send what is left; Present, ReadPixels and texture updates wait for it. */
++    OGPUR_Flush(data);
+     return 0;
+ }
+ 
+-static int SW_RenderReadPixels(SDL_Renderer *renderer, const SDL_Rect *rect,
+-                               Uint32 format, void *pixels, int pitch)
++static int OGPUR_RenderReadPixels(SDL_Renderer *renderer, const SDL_Rect *rect,
++                                  Uint32 format, void *pixels, int pitch)
+ {
+-    SDL_Surface *surface = SW_ActivateRenderer(renderer);
+-    Uint32 src_format;
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
++    SDL_Surface *surface = OGPUR_ActivateRenderer(renderer);
+     void *src_pixels;
+ 
+     if (!surface) {
+         return -1;
+     }
+-
+-    /* NOTE: The rect is already adjusted according to the viewport by
+-     * SDL_RenderReadPixels.
+-     */
+-
+-    if (rect->x < 0 || rect->x + rect->w > surface->w ||
+-        rect->y < 0 || rect->y + rect->h > surface->h) {
++    OGPUR_Sync(data);
++    if (rect->x < 0 || rect->x + rect->w > surface->w || rect->y < 0 || rect->y + rect->h > surface->h) {
+         return SDL_SetError("Tried to read outside of surface bounds");
+     }
+-
+-    src_format = surface->format->format;
+-    src_pixels = (void *)((Uint8 *)surface->pixels +
+-                          rect->y * surface->pitch +
++    src_pixels = (void *)((Uint8 *)surface->pixels + rect->y * surface->pitch +
+                           rect->x * surface->format->BytesPerPixel);
+-
+-    return SDL_ConvertPixels(rect->w, rect->h,
+-                             src_format, src_pixels, surface->pitch,
++    return SDL_ConvertPixels(rect->w, rect->h, surface->format->format, src_pixels, surface->pitch,
+                              format, pixels, pitch);
+ }
+ 
+-static int SW_RenderPresent(SDL_Renderer *renderer)
++static int OGPUR_RenderPresent(SDL_Renderer *renderer)
+ {
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
+     SDL_Window *window = renderer->window;
+ 
+     if (!window) {
+         return -1;
+     }
++    OGPUR_Sync(data);
+     return SDL_UpdateWindowSurface(window);
+ }
+ 
+-static void SW_DestroyTexture(SDL_Renderer *renderer, SDL_Texture *texture)
+-{
+-    SDL_Surface *surface = (SDL_Surface *)texture->driverdata;
+-
+-    SDL_FreeSurface(surface);
+-}
+-
+-static void SW_DestroyRenderer(SDL_Renderer *renderer)
++static void OGPUR_DestroyRenderer(SDL_Renderer *renderer)
+ {
+     SDL_Window *window = renderer->window;
+-    SW_RenderData *data = (SW_RenderData *)renderer->driverdata;
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
+ 
++    if (data) {
++        OGPUR_Sync(data);
++        if (SDL_GetHintBoolean("SDL_OPENGPU_STATS", SDL_FALSE)) {
++            SDL_Log("opengpu renderer: %lu commands drawn by OpenGPU, %lu on the CPU",
++                    (unsigned long)data->ops_gpu, (unsigned long)data->ops_cpu);
++        }
++        SDL_free(data->buf[0].stream);
++        SDL_free(data->buf[1].stream);
++        SDL_free(data->buf[0].scratch);
++        SDL_free(data->buf[1].scratch);
++        SDL_free(data);
++    }
+     if (window) {
+         SDL_DestroyWindowSurface(window);
+     }
+-    SDL_free(data);
++    SDL_OS3_GPU_Close();
+ }
+ 
+-int SW_CreateRendererForSurface(SDL_Renderer *renderer, SDL_Surface *surface)
++static int OGPUR_CreateRenderer(SDL_Renderer *renderer, SDL_Window *window, Uint32 flags)
+ {
+-    SW_RenderData *data;
+-
+-    if (!surface) {
+-        return SDL_InvalidParamError("surface");
+-    }
+-
+-    data = (SW_RenderData *)SDL_calloc(1, sizeof(*data));
+-    if (!data) {
+-        SW_DestroyRenderer(renderer);
+-        return SDL_OutOfMemory();
+-    }
+-    data->surface = surface;
+-    data->window = surface;
+-
+-    renderer->WindowEvent = SW_WindowEvent;
+-    renderer->GetOutputSize = SW_GetOutputSize;
+-    renderer->CreateTexture = SW_CreateTexture;
+-    renderer->UpdateTexture = SW_UpdateTexture;
+-    renderer->LockTexture = SW_LockTexture;
+-    renderer->UnlockTexture = SW_UnlockTexture;
+-    renderer->SetTextureScaleMode = SW_SetTextureScaleMode;
+-    renderer->SetRenderTarget = SW_SetRenderTarget;
+-    renderer->QueueSetViewport = SW_QueueSetViewport;
+-    renderer->QueueSetDrawColor = SW_QueueSetViewport; /* SetViewport and SetDrawColor are (currently) no-ops. */
+-    renderer->QueueDrawPoints = SW_QueueDrawPoints;
+-    renderer->QueueDrawLines = SW_QueueDrawPoints; /* lines and points queue vertices the same way. */
+-    renderer->QueueFillRects = SW_QueueFillRects;
+-    renderer->QueueCopy = SW_QueueCopy;
+-    renderer->QueueCopyEx = SW_QueueCopyEx;
+-    renderer->QueueGeometry = SW_QueueGeometry;
+-    renderer->RunCommandQueue = SW_RunCommandQueue;
+-    renderer->RenderReadPixels = SW_RenderReadPixels;
+-    renderer->RenderPresent = SW_RenderPresent;
+-    renderer->DestroyTexture = SW_DestroyTexture;
+-    renderer->DestroyRenderer = SW_DestroyRenderer;
+-    renderer->info = SW_RenderDriver.info;
+-    renderer->driverdata = data;
+-
+-    return 0;
+-}
+-
+-static int SW_CreateRenderer(SDL_Renderer *renderer, SDL_Window *window, Uint32 flags)
+-{
+-    const char *hint;
++    OGPUR_RenderData *data;
+     SDL_Surface *surface;
++    const char *hint;
+     SDL_bool no_hint_set;
++    int i, fmt;
+ 
+-    /* Set the vsync hint based on our flags, if it's not already set */
+-    hint = SDL_GetHint(SDL_HINT_RENDER_VSYNC);
+-    if (!hint || !*hint) {
+-        no_hint_set = SDL_TRUE;
+-    } else {
+-        no_hint_set = SDL_FALSE;
++    if (!SDL_OS3_GPU_Open()) {
++        return SDL_SetError("opengpu.library isn't installed, or SDL_OPENGPU is 0");
+     }
+ 
++    hint = SDL_GetHint(SDL_HINT_RENDER_VSYNC);
++    no_hint_set = (!hint || !*hint) ? SDL_TRUE : SDL_FALSE;
+     if (no_hint_set) {
+         SDL_SetHint(SDL_HINT_RENDER_VSYNC, (flags & SDL_RENDERER_PRESENTVSYNC) ? "1" : "0");
+     }
+-
+     surface = SDL_GetWindowSurface(window);
+-
+-    /* Reset the vsync hint if we set it above */
+     if (no_hint_set) {
+         SDL_SetHint(SDL_HINT_RENDER_VSYNC, "");
+     }
+-
+     if (!surface) {
++        SDL_OS3_GPU_Close();
+         return -1;
+     }
+-    return SW_CreateRendererForSurface(renderer, surface);
++    /* A target OpenGPU has no format for would draw everything on the CPU:
++       the software renderer does that better, so let SDL pick it. */
++    fmt = OGPUR_Format(surface->format->format);
++    if (!fmt || !OGPUR_Can(OGPU_OP_COMPOSITE, fmt)) {
++        SDL_OS3_GPU_Close();
++        return SDL_SetError("OpenGPU can't draw on a %s window", SDL_GetPixelFormatName(surface->format->format));
++    }
++
++    data = (OGPUR_RenderData *)SDL_calloc(1, sizeof(*data));
++    if (!data) {
++        SDL_OS3_GPU_Close();
++        return SDL_OutOfMemory();
++    }
++    renderer->driverdata = data;
++    for (i = 0; i < 2; i++) {
++        data->buf[i].stream = (Uint32 *)SDL_malloc(OGPUR_STREAM_WORDS * sizeof(Uint32));
++        data->buf[i].scratch = (Uint32 *)SDL_malloc(OGPUR_SCRATCH_WORDS * sizeof(Uint32));
++        if (!data->buf[i].stream || !data->buf[i].scratch) {
++            renderer->window = NULL;
++            OGPUR_DestroyRenderer(renderer);
++            return SDL_OutOfMemory();
++        }
++    }
++    data->window = surface;
++    OGPUR_SetTargetSurface(data, surface);
++
++    renderer->WindowEvent = OGPUR_WindowEvent;
++    renderer->GetOutputSize = OGPUR_GetOutputSize;
++    renderer->CreateTexture = OGPUR_CreateTexture;
++    renderer->UpdateTexture = OGPUR_UpdateTexture;
++#if OGPUR_V12 && SDL_HAVE_YUV
++    renderer->UpdateTextureYUV = OGPUR_UpdateTextureYUV;
++    renderer->UpdateTextureNV = OGPUR_UpdateTextureNV;
++#endif
++    renderer->LockTexture = OGPUR_LockTexture;
++    renderer->UnlockTexture = OGPUR_UnlockTexture;
++    renderer->SetTextureScaleMode = OGPUR_SetTextureScaleMode;
++    renderer->SetRenderTarget = OGPUR_SetRenderTarget;
++    renderer->QueueSetViewport = OGPUR_QueueSetViewport;
++    renderer->QueueSetDrawColor = OGPUR_QueueSetViewport;
++    renderer->QueueDrawPoints = OGPUR_QueueDrawPoints;
++    renderer->QueueDrawLines = OGPUR_QueueDrawPoints;
++    renderer->QueueFillRects = OGPUR_QueueFillRects;
++    renderer->QueueCopy = OGPUR_QueueCopy;
++    renderer->QueueCopyEx = OGPUR_QueueCopyEx;
++    renderer->QueueGeometry = OGPUR_QueueGeometry;
++    renderer->RunCommandQueue = OGPUR_RunCommandQueue;
++    renderer->RenderReadPixels = OGPUR_RenderReadPixels;
++    renderer->RenderPresent = OGPUR_RenderPresent;
++    renderer->DestroyTexture = OGPUR_DestroyTexture;
++    renderer->DestroyRenderer = OGPUR_DestroyRenderer;
++    renderer->info = OPENGPU_RenderDriver.info;
++    renderer->info.flags = SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE;
++    if (flags & SDL_RENDERER_PRESENTVSYNC) {
++        renderer->info.flags |= SDL_RENDERER_PRESENTVSYNC;
++    }
++#if OGPUR_V12 && SDL_HAVE_YUV
++    /* YUV textures, when OpenGPU converts YUV on this machine */
++    if (OGPUR_Can(OGPU_OP_YUV, OGPU_FMT_ARGB32)) {
++        static const Uint32 yuv[] = { SDL_PIXELFORMAT_IYUV, SDL_PIXELFORMAT_YV12, SDL_PIXELFORMAT_NV12,
++                                      SDL_PIXELFORMAT_NV21, SDL_PIXELFORMAT_YUY2, SDL_PIXELFORMAT_UYVY,
++                                      SDL_PIXELFORMAT_YVYU };
++        Uint32 n = renderer->info.num_texture_formats;
++        for (i = 0; i < (int)SDL_arraysize(yuv) && n < SDL_arraysize(renderer->info.texture_formats); i++) {
++            renderer->info.texture_formats[n++] = yuv[i];
++        }
++        renderer->info.num_texture_formats = n;
++        data->can_yuv = SDL_TRUE;
++    }
++#endif
++    return 0;
+ }
+ 
+-SDL_RenderDriver SW_RenderDriver = {
+-    SW_CreateRenderer,
++SDL_RenderDriver OPENGPU_RenderDriver = {
++    OGPUR_CreateRenderer,
+     {
+-     "software",
+-     SDL_RENDERER_SOFTWARE | SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE,
++     "opengpu",
++     SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE,
+      8,
+      {
+-      SDL_PIXELFORMAT_ARGB8888,
+-      SDL_PIXELFORMAT_ABGR8888,
++      SDL_PIXELFORMAT_ARGB8888, /* OpenGPU's ARGB32: the format to use */
++      SDL_PIXELFORMAT_RGB888,   /* XRGB, drawn as ARGB32 without its alpha: SDL's
++                                   choice for pictures without alpha */
++      SDL_PIXELFORMAT_RGB565,   /* OpenGPU's RGB565 */
++      SDL_PIXELFORMAT_BGRA8888, /* OpenGPU's BGRA32 (stream v1.2) */
++      SDL_PIXELFORMAT_RGB555,   /* OpenGPU's RGB555 (stream v1.2) */
++      SDL_PIXELFORMAT_ABGR8888, /* the rest are drawn on the CPU */
+       SDL_PIXELFORMAT_RGBA8888,
+-      SDL_PIXELFORMAT_BGRA8888,
+-      SDL_PIXELFORMAT_RGB888,
+-      SDL_PIXELFORMAT_BGR888,
+-      SDL_PIXELFORMAT_RGB565,
+-      SDL_PIXELFORMAT_RGB555
++      SDL_PIXELFORMAT_BGR888
+      },
+      0,
+      0}
+ };
+ 
+-#endif /* SDL_VIDEO_RENDER_SW */
+-
+-/* vi: set ts=4 sw=4 expandtab: */
++#endif /* SDL_VIDEO_RENDER_OPENGPU */

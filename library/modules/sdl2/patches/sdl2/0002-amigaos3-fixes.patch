@@ -1,0 +1,93 @@
+diff --git a/src/render/software/SDL_render_sw.c b/src/render/software/SDL_render_sw.c
+index 8abf428..78c129e 100644
+--- a/src/render/software/SDL_render_sw.c
++++ b/src/render/software/SDL_render_sw.c
+@@ -807,8 +807,13 @@ static int SW_RunCommandQueue(SDL_Renderer *renderer, SDL_RenderCommand *cmd, vo
+                      */
+                     SDL_SetSurfaceRLE(surface, 0);
+ 
+-                    /* Prevent to do scaling + clipping on viewport boundaries as it may lose proportion */
+-                    if (dstrect->x < 0 || dstrect->y < 0 || dstrect->x + dstrect->w > surface->w || dstrect->y + dstrect->h > surface->h) {
++                    /* Prevent to do scaling + clipping on viewport boundaries as it may lose proportion.
++                     * The same two steps onto a palette target in another format: SDL's
++                     * scaled blit from 32-bit to 8-bit fails (returns -1), so on an
++                     * AmigaOS 3.x AGA window surface every scaled texture copy was
++                     * dropped (Open, 6 Oct 2026). */
++                    if (dstrect->x < 0 || dstrect->y < 0 || dstrect->x + dstrect->w > surface->w || dstrect->y + dstrect->h > surface->h ||
++                        (surface->format->palette && src->format->format != surface->format->format)) {
+                         SDL_Surface *tmp = SDL_CreateRGBSurfaceWithFormat(0, dstrect->w, dstrect->h, 0, src->format->format);
+                         /* Scale to an intermediate surface, then blit */
+                         if (tmp) {
+diff --git a/src/video/SDL_blit_N.c b/src/video/SDL_blit_N.c
+index 41161d5..15d06e5 100644
+--- a/src/video/SDL_blit_N.c
++++ b/src/video/SDL_blit_N.c
+@@ -957,6 +957,10 @@ static void Blit_RGB444_RGB888ARMSIMD(SDL_BlitInfo *info)
+                       (((src)&0x0000E000) >> 11) | \
+                       (((src)&0x000000C0) >> 6));  \
+     }
++/* The no-table loops below (an 8-bit palette that is exactly the 3-3-2 dither,
++ * as SDL gives an AmigaOS 3.x AGA window surface) never moved src on: every
++ * pixel of a row took the row's first, and the unrolled loop stepped before it
++ * read. Both now read a pixel, then step (6 Oct 2026). */
+ static void Blit_RGB888_index8(SDL_BlitInfo *info)
+ {
+ #ifndef USE_DUFFS_LOOP
+@@ -983,11 +987,13 @@ static void Blit_RGB888_index8(SDL_BlitInfo *info)
+             /* *INDENT-OFF* */ /* clang-format off */
+             DUFFS_LOOP(
+                 RGB888_RGB332(*dst++, *src);
++                ++src;
+             , width);
+             /* *INDENT-ON* */ /* clang-format on */
+ #else
+             for (c = width / 4; c; --c) {
+                 /* Pack RGB into 8bit pixel */
++                RGB888_RGB332(*dst++, *src);
+                 ++src;
+                 RGB888_RGB332(*dst++, *src);
+                 ++src;
+@@ -1097,11 +1103,13 @@ static void Blit_RGB101010_index8(SDL_BlitInfo *info)
+             /* *INDENT-OFF* */ /* clang-format off */
+             DUFFS_LOOP(
+                 RGB101010_RGB332(*dst++, *src);
++                ++src;
+             , width);
+             /* *INDENT-ON* */ /* clang-format on */
+ #else
+             for (c = width / 4; c; --c) {
+                 /* Pack RGB into 8bit pixel */
++                RGB101010_RGB332(*dst++, *src);
+                 ++src;
+                 RGB101010_RGB332(*dst++, *src);
+                 ++src;
+diff --git a/src/video/SDL_video.c b/src/video/SDL_video.c
+index b519602..49d2d22 100644
+--- a/src/video/SDL_video.c
++++ b/src/video/SDL_video.c
+@@ -2765,7 +2765,25 @@ static SDL_Surface *SDL_CreateWindowFramebuffer(SDL_Window *window)
+         return NULL;
+     }
+ 
++#ifdef SDL_VIDEO_DRIVER_AMIGAOS3
++    {
++        /* An 8-bit window surface (AmigaOS 3.x on AGA) would start with
++         * SDL_AllocPalette's all-white palette, so every SDL_MapRGB and every
++         * blit landed on white. Give it the 3-3-2 palette SDL dithers to
++         * (SDL_DitherColors); a program's own SDL_SetPaletteColors replaces it,
++         * and the driver loads whatever palette the surface has each frame.
++         * (Open, 6 Oct 2026) */
++        SDL_Surface *surface = SDL_CreateRGBSurfaceFrom(pixels, w, h, bpp, pitch, Rmask, Gmask, Bmask, Amask);
++        if (surface && surface->format->palette) {
++            SDL_Color colors[256];
++            SDL_DitherColors(colors, 8);
++            SDL_SetPaletteColors(surface->format->palette, colors, 0, 256);
++        }
++        return surface;
++    }
++#else
+     return SDL_CreateRGBSurfaceFrom(pixels, w, h, bpp, pitch, Rmask, Gmask, Bmask, Amask);
++#endif
+ }
+ 
+ SDL_bool SDL_HasWindowSurface(SDL_Window *window)

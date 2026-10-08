@@ -1,0 +1,115 @@
+diff -ruN a/src/timer/amigaos3/SDL_systimer.c b/src/timer/amigaos3/SDL_systimer.c
+--- a/src/timer/amigaos3/SDL_systimer.c	2026-10-08 05:33:48.428445663 +0100
++++ b/src/timer/amigaos3/SDL_systimer.c	2026-10-08 05:33:48.431686728 +0100
+@@ -17,6 +17,7 @@
+ #if SDL_TIMER_AMIGAOS3
+ 
+ #include "SDL_timer.h"
++#include "SDL_os3timer.h"
+ 
+ #ifdef WARPUP
+ #pragma pack(push,2)
+@@ -25,6 +26,7 @@
+ #include <proto/dos.h>    /* Delay() */
+ #include <proto/timer.h>
+ #include <devices/timer.h>
++#include <clib/alib_protos.h>
+ #ifdef WARPUP
+ #pragma pop
+ #endif
+@@ -179,26 +181,80 @@
+     return (Uint64)eclock_freq;
+ }
+ 
++/* Open (2026): a timer request in the calling task, on UNIT_MICROHZ.
++   Returns NULL if timer.device can't be opened. */
++static struct timerequest *OS3_OpenWaitTimer(void)
++{
++    struct MsgPort *port = CreateMsgPort();
++    struct timerequest *tr;
++
++    if (!port) {
++        return NULL;
++    }
++    tr = (struct timerequest *)CreateIORequest(port, sizeof(struct timerequest));
++    if (!tr) {
++        DeleteMsgPort(port);
++        return NULL;
++    }
++    if (OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_MICROHZ, (struct IORequest *)tr, 0) != 0) {
++        DeleteIORequest((struct IORequest *)tr);
++        DeleteMsgPort(port);
++        return NULL;
++    }
++    return tr;
++}
++
++static void OS3_CloseWaitTimer(struct timerequest *tr)
++{
++    struct MsgPort *port = tr->tr_node.io_Message.mn_ReplyPort;
++    CloseDevice((struct IORequest *)tr);
++    DeleteIORequest((struct IORequest *)tr);
++    DeleteMsgPort(port);
++}
++
++Uint32 SDL_OS3_WaitSignals(Uint32 sigmask, Uint32 ms)
++{
++    struct timerequest *tr;
++    ULONG timer_sig, got;
++
++    if (ms == 0) {
++        got = SetSignal(0, 0) & sigmask;
++        if (got) {
++            SetSignal(0, got);
++        }
++        return got;
++    }
++    if (ms == 0xFFFFFFFFUL || (tr = OS3_OpenWaitTimer()) == NULL) {
++        return sigmask ? Wait(sigmask) & sigmask : 0;
++    }
++    timer_sig = 1UL << tr->tr_node.io_Message.mn_ReplyPort->mp_SigBit;
++    tr->tr_node.io_Command = TR_ADDREQUEST;
++    tr->tr_time.tv_secs = ms / 1000;
++    tr->tr_time.tv_micro = (ms % 1000) * 1000;
++    SendIO((struct IORequest *)tr);
++    got = Wait(sigmask | timer_sig);
++    if (!CheckIO((struct IORequest *)tr)) {
++        AbortIO((struct IORequest *)tr);
++    }
++    WaitIO((struct IORequest *)tr);
++    OS3_CloseWaitTimer(tr);
++    return got & sigmask;
++}
++
+ void SDL_Delay(Uint32 ms)
+ {
+-    /* dos.library Delay() for coarse timing.
+-       Delay(n) waits n * 1/50 s (one 50Hz tick ~= 20ms per tick).
+-       Delay(0) yields the current timeslice immediately -- this is
+-       CRITICAL for AmigaOS cooperative multitasking: SDL_AtomicLock
+-       calls SDL_Delay(0) inside its spin loop, and without a real
+-       yield the waiting task monopolizes the CPU and starves the task
+-       that holds the lock. */
+-    ULONG ticks;
++    /* Delay(0) gives up the rest of the time slice: SDL_AtomicLock's spin
++       loop calls SDL_Delay(0), and without a real yield the waiting task
++       would starve the one holding the lock.
++
++       Open (2026): other delays wait on timer.device's UNIT_MICROHZ, so
++       SDL_Delay(1) is about a millisecond. Upstream used dos.library's
++       Delay(), whose 1/50 s ticks made every delay a multiple of 20 ms
++       and held frame-capped games at 25 or 50 frames a second. */
+     if (ms == 0) {
+-        /* Yield immediately -- Delay(0) does one task switch on AmigaOS */
+         Delay(0UL);
+     } else {
+-        /* Round up: 1 tick = 20ms at 50Hz.  Use (ms + 19) / 20 to
+-           ensure we wait at least ms milliseconds.
+-           Maximum practical delay via Delay() is ~24 days (ULONG ticks). */
+-        ticks = (ULONG)((ms + 19UL) / 20UL);
+-        if (ticks == 0) ticks = 1;
+-        Delay(ticks);
++        SDL_OS3_WaitSignals(0, ms);
+     }
+ }
+ 
