@@ -94,8 +94,8 @@ case $NAME in *amigaos*)
 esac
 
 # The GLA core takes Mesa's own flags (from the state tracker's compile line).
-# That includes the target's -m flags and, on AmigaOS, -noixemul, -fbaserel32
-# and the shim header.
+# That includes the target's -m flags and, on AmigaOS, -noixemul, -fbaserel32,
+# -fno-delete-null-pointer-checks and the shim header.
 FLAGS=$("$PY" - "$B" <<'PY'
 import json, shlex, sys
 b = sys.argv[1]
@@ -106,7 +106,7 @@ for e in json.load(open(b + "/compile_commands.json")):
             x = a[i]
             if x == "-include":
                 keep += [x, a[i + 1]]; i += 1
-            elif x[:2] in ("-D", "-I") or x.startswith(("-std=", "-m")) or x in ("-noixemul", "-fbaserel32"):
+            elif x[:2] in ("-D", "-I") or x.startswith(("-std=", "-m")) or x in ("-noixemul", "-fbaserel32", "-fno-delete-null-pointer-checks"):
                 keep.append(x)
             i += 1
         print(" ".join(shlex.quote(x) for x in keep))

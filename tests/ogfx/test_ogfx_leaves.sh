@@ -22,7 +22,7 @@ for build in "-O0 -m68020" "-O2 -m68020" "-O0 -m68040" "-O2 -m68040" "-O2 -m6800
     set -- $build
     opt=$1 cpu=$2
     # shellcheck disable=SC2086
-    "$cc" -std=gnu99 $opt $cpu -fno-lto -fno-builtin -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror \
+    "$cc" -std=gnu99 $opt $cpu -fno-delete-null-pointer-checks -fno-lto -fno-builtin -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror \
         -c "$gfx/ogfx_leaves.c" -o "$tmp/leaves.o"
     und=$("${prefix}nm" -u "$tmp/leaves.o" | tr -d ' U' | grep -v '^__mulsi3$' | tr -d '\n' || true)   # a 68000 has no 32-bit multiply: libgcc's, which -lgcc links
     [ -z "$und" ] || { echo "FAIL $build: the leaves call $und"; fail=1; }
@@ -36,7 +36,7 @@ for build in "-O0 -m68020" "-O2 -m68020" "-O0 -m68040" "-O2 -m68040" "-O2 -m6800
     done
     if "$cc" -v 2>&1 | grep -q amigaos; then echo "ok   $build: objects and tags (no qemu for AmigaOS programs)"; continue; fi
     # shellcheck disable=SC2086
-    "$cc" -std=gnu99 $opt $cpu -static -Wall -Wextra "$here/ogfx_leaves_test.c" "$tmp/leaves.o" -o "$tmp/t"
+    "$cc" -std=gnu99 $opt $cpu -fno-delete-null-pointer-checks -static -Wall -Wextra "$here/ogfx_leaves_test.c" "$tmp/leaves.o" -o "$tmp/t"
     if command -v "$qemu" >/dev/null; then
         out=$("$qemu" -cpu m68040 "$tmp/t") || { echo "FAIL $build: $out" | tail -3; fail=1; continue; }   # the C library is 68020 code: every build runs on a 68040
         echo "ok   $build: $out"

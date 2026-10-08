@@ -15,7 +15,8 @@
 #   library/modules/sdl2/build.sh [OUT_DIR] [TARGETS]
 #       OUT_DIR  default build/; TARGETS default: module stub static tests satellites
 #       (satellites: SDL2_image, SDL2_mixer, SDL2_ttf and SDL2_net, with
-#       FreeType and libxmp, all pinned in UPSTREAM.json: satellites/Makefile)
+#       FreeType and libxmp, all pinned in UPSTREAM.json: satellites/Makefile;
+#       patches/freetype holds the Team's changes to FreeType)
 #   CPU="-m68020 -m68881"   another CPU (default -m68040 -m68881)
 #
 # Needs the GCC 16 stove (STOVE, default ~/AmigaChrome/stoves/os32-gcc16/prefix),
@@ -105,6 +106,10 @@ case " $TARGETS " in
         t=$(fetch $lib)
         rm -rf "$WORK/$(pin $lib dir)"
         tar xf "$t" -C "$WORK"
+        # the Team's changes to a satellite, when it has any (patches/freetype)
+        for p in "$HERE"/patches/$lib/*.patch; do
+            if [ -f "$p" ]; then patch -s -p1 -d "$WORK/$(pin $lib dir)" < "$p"; fi
+        done
     done
     rm -rf "$WORK/obj-satellites"
     make -f "$HERE/satellites/Makefile" -j"$(nproc)" OUT="$OUT" WORK="$WORK" ${CPU:+CPU="$CPU"} satellites

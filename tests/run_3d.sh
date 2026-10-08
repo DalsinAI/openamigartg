@@ -18,11 +18,11 @@ cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanit
 STOVE=${STOVE:-$HOME/AmigaChrome/stoves/os32}
 CC68K=${CC68K:-$STOVE/prefix/bin/m68k-amigaos-gcc}
 if [ -x "$CC68K" ]; then
-    "$CC68K" -m68020 -mnobitfield -O2 -Wall -Wextra -Werror -fno-builtin -c -o "$OUT/ogpu_3d-m68k.o" "$OGPU/ogpu_3d.c"
+    "$CC68K" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -fno-builtin -c -o "$OUT/ogpu_3d-m68k.o" "$OGPU/ogpu_3d.c"
     # no conditional branch first after a label (GCC 6.5's flags bug: tests/scan_68k_branches.py)
-    "$CC68K" -m68020 -mnobitfield -O2 -fomit-frame-pointer -fno-builtin -S -o "$OUT/ogpu_3d-m68k.s" "$OGPU/ogpu_3d.c"
+    "$CC68K" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-builtin -S -o "$OUT/ogpu_3d-m68k.s" "$OGPU/ogpu_3d.c"
     python3 "$HERE/scan_68k_branches.py" "$OUT/ogpu_3d-m68k.s"
-    "$CC68K" -m68020 -std=gnu11 -I"$HERE/../include" -c -o "$OUT/w3d_layout.o" "$HERE/w3d_layout.c"
+    "$CC68K" -m68020 -std=gnu11 -fno-delete-null-pointer-checks -I"$HERE/../include" -c -o "$OUT/w3d_layout.o" "$HERE/w3d_layout.c"
     echo "library/opengpu/ogpu_3d.c builds for the 68k; include/Warp3D/Warp3D.h has every offset 68k programs use"
 else
     echo "no m68k compiler; the 68k checks are skipped"

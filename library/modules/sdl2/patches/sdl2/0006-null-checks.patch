@@ -1,0 +1,46 @@
+--- a/src/video/SDL_surface.c
++++ b/src/video/SDL_surface.c
+@@ -1300,6 +1300,10 @@
+                                    surface->format->BitsPerPixel, surface->format->Rmask,
+                                    surface->format->Gmask, surface->format->Bmask,
+                                    surface->format->Amask);
++            if (!tmp) {
++                SDL_FreeSurface(convert);
++                return NULL;
++            }
+ 
+             /* Share the palette, if any */
+             if (surface->format->palette) {
+@@ -1312,6 +1316,11 @@
+ 
+             /* Convertion of the colorkey */
+             tmp2 = SDL_ConvertSurface(tmp, format, 0);
++            if (!tmp2) {
++                SDL_FreeSurface(tmp);
++                SDL_FreeSurface(convert);
++                return NULL;
++            }
+ 
+             /* Get the converted colorkey */
+             SDL_memcpy(&converted_colorkey, tmp2->pixels, tmp2->format->BytesPerPixel);
+--- a/src/video/SDL_video.c
++++ b/src/video/SDL_video.c
+@@ -1374,6 +1374,9 @@
+     CHECK_WINDOW_MAGIC(window, SDL_PIXELFORMAT_UNKNOWN);
+ 
+     display = SDL_GetDisplayForWindow(window);
++    if (!display) {
++        return SDL_PIXELFORMAT_UNKNOWN;
++    }
+     return display->current_mode.format;
+ }
+ 
+@@ -3377,7 +3380,7 @@
+     }
+ 
+     display = SDL_GetDisplayForWindow(window);
+-    if (display->fullscreen_window == window) {
++    if (display && display->fullscreen_window == window) {
+         display->fullscreen_window = NULL;
+     }
+ 

@@ -37,7 +37,7 @@ else
 fi
 # The same tests big-endian on a 68040, when a Linux m68k compiler and qemu are installed.
 if command -v m68k-linux-gnu-gcc >/dev/null && command -v qemu-m68k >/dev/null; then
-    m68k-linux-gnu-gcc -std=c99 -O2 -m68040 -static -Wall -Wextra -Werror \
+    m68k-linux-gnu-gcc -std=c99 -O2 -fno-delete-null-pointer-checks -m68040 -static -Wall -Wextra -Werror \
         -o "$OUT/test_opengpu-m68k" "$HERE/test_opengpu.c" "$HERE/golden_scenes.c" "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c"
     qemu-m68k -cpu m68040 "$OUT/test_opengpu-m68k" "$HERE/golden/opengpu-g1.txt" "$HERE/golden/opengpu-v11.txt" "$HERE/golden/opengpu-v12.txt"
 else
@@ -46,8 +46,8 @@ fi
 STOVE=${STOVE:-$HOME/AmigaChrome/stoves/os32}
 CC68K=${CC68K:-$STOVE/prefix/bin/m68k-amigaos-gcc}
 if [ -x "$CC68K" ]; then
-    "$CC68K" -m68020 -O2 -Wall -Wextra -Werror -c -o "$OUT/modes-m68k.o" "$HERE/../library/modes.c"
-    "$CC68K" -m68020 -O2 -Wall -Wextra -Werror -fno-builtin -c -o "$OUT/ogpu_core-m68k.o" "$HERE/../library/opengpu/ogpu_core.c"
+    "$CC68K" -m68020 -O2 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -c -o "$OUT/modes-m68k.o" "$HERE/../library/modes.c"
+    "$CC68K" -m68020 -O2 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -fno-builtin -c -o "$OUT/ogpu_core-m68k.o" "$HERE/../library/opengpu/ogpu_core.c"
     echo "library/modes.c and library/opengpu/ogpu_core.c build for the 68k"
 else
     echo "no m68k compiler; the 68k check is skipped"
