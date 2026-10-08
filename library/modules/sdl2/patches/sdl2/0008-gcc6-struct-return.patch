@@ -1,0 +1,71 @@
+AmigaOS 3.x: GCC 6 programs get SDL's six struct-returning calls through helpers that take the result's address (GCC 6 passes it in A0, the GCC 16 that builds SDL in A1).
+
+--- a/include/SDL_guid.h
++++ b/include/SDL_guid.h
+@@ -96,6 +96,17 @@
+  */
+ extern DECLSPEC SDL_GUID SDLCALL SDL_GUIDFromString(const char *pchGUID);
+ 
++/* AmigaOS 3.x: GCC 6 passes the address for a returned struct in A0, the
++ * GCC 16 that builds SDL2.module and libSDL2.a takes it in A1. A program
++ * built with GCC 6 gets the calls that return a struct through helpers in
++ * libSDL2.a that take the address as an argument (stubs/sdl2/SDL2_structret.c). */
++#if defined(__AMIGA__) && !defined(__amigaos4__) && !defined(__MORPHOS__) && !defined(__AROS__) && \
++    defined(__GNUC__) && (__GNUC__ <= 6) && !defined(SDL_OS3_NO_STRUCTRET_FIX)
++extern DECLSPEC void SDLCALL SDL_OS3_GUIDFromString_p(SDL_GUID *r, const char *pchGUID);
++#define SDL_GUIDFromString(a) \
++    __extension__ ({ SDL_GUID sdl_os3_r_; SDL_OS3_GUIDFromString_p(&sdl_os3_r_, (a)); sdl_os3_r_; })
++#endif
++
+ /* Ends C function definitions when using C++ */
+ #ifdef __cplusplus
+ }
+--- a/include/SDL_joystick.h
++++ b/include/SDL_joystick.h
+@@ -1077,6 +1077,23 @@
+  */
+ extern DECLSPEC SDL_JoystickPowerLevel SDLCALL SDL_JoystickCurrentPowerLevel(SDL_Joystick *joystick);
+ 
++/* AmigaOS 3.x: GCC 6 passes the address for a returned struct in A0, the
++ * GCC 16 that builds SDL2.module and libSDL2.a takes it in A1. A program
++ * built with GCC 6 gets the calls that return a struct through helpers in
++ * libSDL2.a that take the address as an argument (stubs/sdl2/SDL2_structret.c). */
++#if defined(__AMIGA__) && !defined(__amigaos4__) && !defined(__MORPHOS__) && !defined(__AROS__) && \
++    defined(__GNUC__) && (__GNUC__ <= 6) && !defined(SDL_OS3_NO_STRUCTRET_FIX)
++extern DECLSPEC void SDLCALL SDL_OS3_JoystickGetDeviceGUID_p(SDL_JoystickGUID *r, int device_index);
++extern DECLSPEC void SDLCALL SDL_OS3_JoystickGetGUID_p(SDL_JoystickGUID *r, SDL_Joystick *joystick);
++extern DECLSPEC void SDLCALL SDL_OS3_JoystickGetGUIDFromString_p(SDL_JoystickGUID *r, const char *pchGUID);
++#define SDL_JoystickGetDeviceGUID(a) \
++    __extension__ ({ SDL_JoystickGUID sdl_os3_r_; SDL_OS3_JoystickGetDeviceGUID_p(&sdl_os3_r_, (a)); sdl_os3_r_; })
++#define SDL_JoystickGetGUID(a) \
++    __extension__ ({ SDL_JoystickGUID sdl_os3_r_; SDL_OS3_JoystickGetGUID_p(&sdl_os3_r_, (a)); sdl_os3_r_; })
++#define SDL_JoystickGetGUIDFromString(a) \
++    __extension__ ({ SDL_JoystickGUID sdl_os3_r_; SDL_OS3_JoystickGetGUIDFromString_p(&sdl_os3_r_, (a)); sdl_os3_r_; })
++#endif
++
+ /* Ends C function definitions when using C++ */
+ #ifdef __cplusplus
+ }
+--- a/include/SDL_gamecontroller.h
++++ b/include/SDL_gamecontroller.h
+@@ -1099,6 +1099,20 @@
+ extern DECLSPEC const char* SDLCALL SDL_GameControllerGetAppleSFSymbolsNameForAxis(SDL_GameController *gamecontroller, SDL_GameControllerAxis axis);
+ 
+ 
++/* AmigaOS 3.x: GCC 6 passes the address for a returned struct in A0, the
++ * GCC 16 that builds SDL2.module and libSDL2.a takes it in A1. A program
++ * built with GCC 6 gets the calls that return a struct through helpers in
++ * libSDL2.a that take the address as an argument (stubs/sdl2/SDL2_structret.c). */
++#if defined(__AMIGA__) && !defined(__amigaos4__) && !defined(__MORPHOS__) && !defined(__AROS__) && \
++    defined(__GNUC__) && (__GNUC__ <= 6) && !defined(SDL_OS3_NO_STRUCTRET_FIX)
++extern DECLSPEC void SDLCALL SDL_OS3_GameControllerGetBindForAxis_p(SDL_GameControllerButtonBind *r, SDL_GameController *gamecontroller, SDL_GameControllerAxis axis);
++extern DECLSPEC void SDLCALL SDL_OS3_GameControllerGetBindForButton_p(SDL_GameControllerButtonBind *r, SDL_GameController *gamecontroller, SDL_GameControllerButton button);
++#define SDL_GameControllerGetBindForAxis(a, b) \
++    __extension__ ({ SDL_GameControllerButtonBind sdl_os3_r_; SDL_OS3_GameControllerGetBindForAxis_p(&sdl_os3_r_, (a), (b)); sdl_os3_r_; })
++#define SDL_GameControllerGetBindForButton(a, b) \
++    __extension__ ({ SDL_GameControllerButtonBind sdl_os3_r_; SDL_OS3_GameControllerGetBindForButton_p(&sdl_os3_r_, (a), (b)); sdl_os3_r_; })
++#endif
++
+ /* Ends C function definitions when using C++ */
+ #ifdef __cplusplus
+ }

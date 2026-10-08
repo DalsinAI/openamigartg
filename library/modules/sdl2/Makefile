@@ -42,7 +42,7 @@ OGPU_BUILD3D := $(wildcard $(OGPU_SRC)/ogpu_build3d.c)
 # in place of the access.
 CFLAGS_BASE = -std=gnu11 $(OPT) $(CPU) -fno-delete-null-pointer-checks -noixemul -Wall -Wno-unused-parameter \
          -Wno-sign-compare -Wno-unused-but-set-variable \
-         -I$(SDL)/include -I$(SDL)/src -I$(SDK_INC) -I$(ROOT)/include -I$(ROOT)/stubs/sdl2 \
+         -I$(SDL)/include -I$(SDL)/src -I$(SDK_INC) -I$(ROOT)/include -I$(ROOT)/stubs/sdl2 -I$(HERE)include/openinput \
          -DSDL_VIDEO_RENDER_OPENGPU=1 -D__AMIGAOS3__
 
 SRCS_CORE = \
@@ -119,7 +119,7 @@ STUB_DIR   = $(WORK)/obj-stub
 TEST_DIR   = $(OUT)/tests/sdl2
 
 OGPU_OBJS = ogpu_build.o $(if $(OGPU_BUILD3D),ogpu_build3d.o)
-STATIC_OBJS = $(addprefix $(STATIC_DIR)/,$(SRCS:.c=.o) c2p.o $(OGPU_OBJS))
+STATIC_OBJS = $(addprefix $(STATIC_DIR)/,$(SRCS:.c=.o) c2p.o $(OGPU_OBJS) SDL2_structret.o)
 CORE_OBJS   = $(addprefix $(CORE_DIR)/,$(SRCS:.c=.o) c2p.o $(OGPU_OBJS))
 TEST_OBJS   = $(addprefix $(STATIC_DIR)/,$(SRCS_TEST:.c=.o))
 INLINE      = $(SDK_INC)/inline/opengpu.h
@@ -203,16 +203,25 @@ $(STUB_DIR)/SDL2_stub.o: $(ROOT)/stubs/sdl2/SDL2_stub.c $(ROOT)/stubs/sdl2/SDL2_
 $(STUB_DIR)/SDL2_gl.o: $(ROOT)/stubs/sdl2/SDL2_gl.c $(ROOT)/stubs/sdl2/SDL2_stub.h $(ROOT)/stubs/sdl2/sdl2_module.h $(STUB_DIR)/SDL2_gl_procs.h $(INLINE)
 	@mkdir -p $(dir $@)
 	$(CC) $(STUB_CFLAGS) $(GLA_INC) -c $< -o $@
-$(OUT)/libSDL2.a: $(STUB_DIR)/SDL2_stub.o $(STUB_DIR)/SDL2_gl.o
+# SDL's six struct-returning calls for GCC 6 programs (stubs/sdl2/SDL2_structret.c,
+# patches/sdl2/0008), in libSDL2.a and libSDL2_static.a.
+$(STUB_DIR)/SDL2_structret.o: $(ROOT)/stubs/sdl2/SDL2_structret.c
+	@mkdir -p $(dir $@)
+	$(CC) $(STUB_CFLAGS) -c $< -o $@
+$(STATIC_DIR)/SDL2_structret.o: $(ROOT)/stubs/sdl2/SDL2_structret.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_BASE) -c $< -o $@
+$(OUT)/libSDL2.a: $(STUB_DIR)/SDL2_stub.o $(STUB_DIR)/SDL2_gl.o $(STUB_DIR)/SDL2_structret.o
 	@rm -f $@; $(AR) rcs $@ $^; $(RANLIB) $@; echo "built $@"
 
 # SDL's tests, unchanged, under tests/sdl2/sdltest_run.c (their log on
 # standard output, and an end after SDLTEST_SECONDS), and the Team's own
 # (tests/sdl2): rendercompare checks the opengpu renderer's pictures against
-# the software renderer's, sdlcheck the back ends. NAME is linked with
+# the software renderer's, sdlcheck the back ends, padcheck joysticks and
+# game controllers. NAME is linked with
 # libSDL2_static.a, NAME.m with libSDL2.a (SDL2.module).
 TESTS = testsprite2 testrendercopyex
-OWN_TESTS = rendercompare sdlcheck
+OWN_TESTS = rendercompare sdlcheck padcheck
 STATIC_TESTS = $(addprefix $(TEST_DIR)/,$(TESTS) $(OWN_TESTS))
 MODULE_TESTS = $(addsuffix .m,$(STATIC_TESTS))
 tests: $(STATIC_TESTS) $(MODULE_TESTS)
