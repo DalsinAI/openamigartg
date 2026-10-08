@@ -114,7 +114,7 @@ Nothing third-party is committed. `build.sh`:
 | SDL2_image 2.8.12 | Zlib | stb_image (PNG, JPEG), nanosvg, QOI, miniz and tiny_jpeg are its own, built in |
 | SDL2_mixer 2.8.2 | Zlib | stb_vorbis, minimp3, dr_flac and Timidity are its own, built in |
 | SDL2_ttf 2.24.0 | Zlib | without HarfBuzz |
-| SDL2_net 2.4.0 | Zlib | over bsdsocket.library (libnix's `-lsocket`) |
+| SDL2_net 2.4.0 | Zlib | over bsdsocket.library (libnix's `-lsocket`; its `select()` is `satellites/net_shim.c`'s, as libnix's never sees a socket with data) |
 | FreeType 2.14.3 | FreeType Licence | for SDL2_ttf |
 | libxmp 4.7.3 | MIT | for SDL2_mixer's MOD, XM, S3M, IT, MED and the other tracker formats |
 
