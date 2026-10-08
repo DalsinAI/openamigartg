@@ -36,7 +36,7 @@ deals with byte order in these places:
 
 - **Version:** Mesa 26.2.4, pinned by SHA-256 in `mesa/UPSTREAM.json` and
   fetched at build time. It is MIT, and its notices are kept.
-- **Our changes:** the patches in `mesa/patches/`.
+- **The Team's changes:** the patches in `mesa/patches/`.
   - 0001-0006 are the AmigaOS port. It was openamigamesa's until
     8 October 2026; it moved here with the one-library design, and
     openamigamesa keeps OpenDemos.
