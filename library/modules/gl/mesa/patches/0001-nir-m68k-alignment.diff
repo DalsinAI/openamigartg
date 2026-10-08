@@ -1,0 +1,13 @@
+--- a/src/compiler/nir/nir_opt_varyings.c	2026-10-06 14:37:35.127018189 +0000
++++ b/src/compiler/nir/nir_opt_varyings.c	2026-10-06 14:37:35.148021592 +0000
+@@ -3204,8 +3204,10 @@
+  * over the full struct are correct and efficient.
+  * If this assert fires, audit all nir_scalar assignments below.
+  */
++#if !defined(__m68k__) /* the 68k aligns to 2 bytes, so the struct is smaller; padding stays zeroed */
+ static_assert(sizeof(dedup_entry) == (sizeof(void *) == 8 ? 48 : 28),
+               "dedup_entry layout changed");
++#endif
+ 
+ static uint32_t
+ dedup_entry_hash_accum(const void *key, uint32_t hash)
