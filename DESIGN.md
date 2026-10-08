@@ -601,7 +601,7 @@ reaches the ring on the Cradle and the CPU core elsewhere.
   - The caller calls the module's own close, then `OGPU_ModuleClose`, which unloads it.
   - A name with ':' or '/' is a path (tests load `PROGDIR:Test.module`).
   - opengpu.library 0.5 has the two calls. A stub on 0.4 or older loads the module itself, the same way.
-  - Modules are linked without libnix's startup. `library/modules/common` stands in for it: the entry's jump and libnix's list heads (`module_start.s`, first on the link line, naming `__initlibraries` and `__initcpp`), and `module_rt.c`, which runs the init and exit lists, turns `exit()` during start into a failed open, and gives `getenv` through `GetVar` (libnix's doesn't work in a module).
+  - Modules are linked without libnix's startup. `library/modules/common` stands in for it: the module's first code and libnix's list heads (`module_start.S`, first on the link line, naming `__initlibraries` and `__initcpp`), and `module_rt.c`, which runs the init and exit lists, turns `exit()` during start into a failed open, and gives `getenv` through `GetVar` (libnix's doesn't work in a module).
   - `tests/modules`: Test.module and ModuleCheck check this on an Amiga, and open SDL2.module and GL.module when they are installed.
 
 #### 2. LVOs (bias 30)
@@ -645,7 +645,7 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
   - the virgl winsys over `OGPU_OP_VIRGL`.
   - It builds softpipe and virgl. virgl is used when `OGPU_Query(OGPU_OP_VIRGL)` answers "full", softpipe otherwise.
   - openamigamesa keeps OpenDemos only, built against `libGL.a`.
-- `modules/common/` (library owner): what a module has in place of libnix's startup (`module_start.s`, `module_rt.c`).
+- `modules/common/` (library owner): what a module has in place of libnix's startup (`module_start.S`, `module_rt.c`).
 - `modules/sdl2/` (SDL 2 helper): SDL2.module, with the backends (video on openrtg, render on opengpu, audio on AHI, input, threads) and the SDL build (source fetched pinned).
 - `stubs/sdl2/` (SDL 2 helper: libSDL2.a, the dynapi stub plus the ModuleOpen glue) and `stubs/gl/` (library owner: libGL.a, generated).
 - `build.sh` builds everything. Each part has its own build script, and a helper adds one line to `library/build.sh` and nothing else.
@@ -721,6 +721,15 @@ A per-opener library base alone wouldn't do: SDL's and GL's calls go through fun
 2. Then the same modules rebuilt -fbaserel32, with the loader's per-program data. Programs don't change: the link stubs and OGPU_ModuleOpen hide it.
 
 **What a user sees:** one copy of Mesa's and SDL's code in memory, a small data copy per running program, and no loading per program after the first.
+
+##### Residency, step 2: as built (8 October 2026)
+
+- **Two kinds, told apart by the first code.** A shared module (built `-fbaserel32`, linked `-resident32`) starts with a BRA.W over a header (`struct OGPUModuleHeader`: the magic "OGSM", the entry, `___a4_init`, `___data_size`, `___datadata_relocs`; `module_start.S`). Anything else is a module for each program and is loaded as in step 1. `opengpu.library` (`ogpu_module.c`) keeps shared modules in a list, found again by `SameLock` on a lock it holds, and unloads one when its last program closes it.
+- **Each open:** a copy of the data and BSS from the data as loaded (which no program uses), the data-to-data relocations applied, then the entry with A4 on the copy (libnix's init list, the constructors). A stub on an older library calls the first code itself; that sets A4 on the data LoadSeg gave it, which is then the program's own.
+- **Calls.** Every module table now starts with `struct OGPUModuleTable { version, a4, caller_a4 }`, and the tables are version 2 (`OGPU_MODULE_A4_VERSION`); a version 1 caller is refused, as it would call without A4. `libSDL2.a` sets A4 in C (built `-ffixed-a4`, `OGPU_A4`); `libGL.a`'s generated entries copy each call's arguments (their size from Mesa's glapi XML) below a saved A4 and A5. `gla_get_proc_address` hands out libGL.a's own entries.
+- **Back into the program, and threads.** `ogpu_module_callout` calls the program with its A4 (SDL's audio callback, timers, thread functions, event filters and watchers). A thread a module starts takes the module's A4 from its `tc_TrapData`, set by its parent (libnix's `-resident32` convention): SDL's threads do. Mesa starts none here, and a shared GL.module refuses `pthread_create`, as the stove's libpthread would start one without A4.
+- **Checked at build.** `tools/baserel_check.py` lists every absolute reference from the code into the data and every A4-relative one to something in the code; a module's `baserel.allow` names the reviewed ones (tables that are only read, and glsl's built-in struct field tables, which each program's constructors fill with the same values). It found libnix's `__initcpp` reaching the end of its list through A4, so `module_rt.c` has its own, and Kalms' c2p keeping its sizes in a BSS of its own, so it takes them in registers now.
+- **Measured** on a scratch copy of the Showcase instance (AC090 68040, virgl): a first GL open takes 19.2 MB and a further one 345 KB (SDL 2: 1.06 MB, then 171 KB). Three softpipe Gears at once take 49.8 MB over idle, against 71.4 MB with a copy each; frame rates are as before.
 
 ## 6. Warp3D, built in
 
