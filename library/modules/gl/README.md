@@ -76,6 +76,14 @@ opengpu.library's `OGPU_ModuleOpen` (`include/opengpu/module.h`):
   without C++ exceptions (nothing in it catches one), and it starts no
   threads here; a shared build refuses `pthread_create` (posix_shim.c), as
   the stove's libpthread would start a thread without the program's A4.
+- **Programs.** One on libGL.a is an ordinary program: `LFLAGS` in
+  `gla-link.env` has no `-fbaserel32`. One with Mesa inside (test_gla,
+  OpenDemos.static) is `-fbaserel32` like Mesa and links with `MESA_LFLAGS`
+  (`-resident32`) and `PROGOBJS` (`mesa/amigaos/initcpp.c`). A plain
+  `-fbaserel32` program, started by the stove's nlbcrt0, never returns to
+  the Shell when it ends, even `int main(void) { return 0; }`; `-resident32`
+  ones (nlrcrt0) end as they should. From #40 until this was found,
+  `LFLAGS` carried `-fbaserel32`, so OpenDemos hung as it exited.
 - GL runs on the program's stack: give `main` a big one (OpenDemos asks
   libnix for 1 MB).
 

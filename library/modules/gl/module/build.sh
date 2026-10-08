@@ -59,7 +59,7 @@ $CC $MODF -c -o "$W/gl_exports.o" "$W/gl_exports.c"
 # module_start.o first: its first code is the module's. -nostartfiles: no
 # libnix startup (module_rt.c stands in). -resident32: the data-to-data
 # relocations, for each program's copy.
-$CC $LFLAGS -resident32 -nostartfiles $WEAK -Wl,-Map,"$W/GL.module.map" -o "$W/GL.module.debug" "$W/module_start.o" "$W/module_rt.o" "$W/gl_module.o" "$W/gl_exports.o" \
+$CC $MESA_LFLAGS -nostartfiles $WEAK -Wl,-Map,"$W/GL.module.map" -o "$W/GL.module.debug" "$W/module_start.o" "$W/module_rt.o" "$W/gl_module.o" "$W/gl_exports.o" \
     $GLAOBJS gla_present_os3.o $SHIM ${FIXOBJS:-} -Wl,--start-group $LIBS $OPT -Wl,--end-group $SYSLIBS -latomic -lamiga
 # No float-to-int store through the FPCR register may ship (tools/fpcr_check.py),
 # and the data is reached only through A4 (tools/baserel_check.py).

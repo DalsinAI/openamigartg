@@ -125,6 +125,18 @@ for l in open(sys.argv[1]):
 PY
 )
 fi
+# Two kinds of program on AmigaOS (8 October 2026). One that links Mesa itself
+# (test_gla, OpenDemos.static) is -fbaserel32 like Mesa, and is linked
+# -resident32 (MESA_LFLAGS): the stove's plain -fbaserel32 program start
+# (nlbcrt0) hangs as the program ends, even for "int main(void) { return 0; }",
+# where -resident32's (nlrcrt0) ends as it should. One that uses GL through
+# libGL.a (OpenDemos) is an ordinary program (LFLAGS, without -fbaserel32):
+# GL.module's A4 is libGL.a's business.
+MESA_LFLAGS=$LFLAGS
+case " $LFLAGS " in *" -fbaserel32 "*)
+    MESA_LFLAGS="$LFLAGS -resident32"
+    LFLAGS=$(echo " $LFLAGS " | sed 's/ -fbaserel32 / /; s/^ *//; s/ *$//') ;;
+esac
 CC=$(sed -n "s/^c = \[*'\{0,1\}\([^]']*\).*/\1/p" "${CROSS:+$TOP/$CROSS}" 2>/dev/null | head -1)
 CC=${CC:-cc}
 cd "$B"
@@ -146,17 +158,20 @@ case $NAME in *amigaos*)
 esac
 # Mesa's c11 threads name the pthread_mutexattr calls weakly; a static link must ask for them.
 WEAK="-Wl,-u,pthread_mutexattr_init -Wl,-u,pthread_mutexattr_settype -Wl,-u,pthread_mutexattr_destroy"
-$CC $LFLAGS -std=c99 -O2 -Wall -Wextra -Werror -I"$SRC/include" -I"$REPO" ${CROSS:+-static $WEAK} -o test_gla \
+$CC $MESA_LFLAGS -std=c99 -O2 -Wall -Wextra -Werror -I"$SRC/include" -I"$REPO" ${CROSS:+-static $WEAK} -o test_gla \
     "$TOP/tests/test_gla.c" gla_core.o gla_virgl.o $HOSTV $SHIM $PROGOBJS $FIXOBJS -Wl,--start-group $LIBS $OPT -Wl,--end-group \
     $SYSLIBS ${CROSS:+-latomic}
-# What programs built on this (OpenDemos) need to link against it, as shell assignments.
+# What programs built on this (OpenDemos) need to link against it, as shell
+# assignments: LFLAGS for a program on libGL.a; MESA_LFLAGS, FLAGS and
+# PROGOBJS (libnix's constructor runner, amigaos/initcpp.c) for one that links
+# Mesa itself.
 q() { printf "%s='%s'\n" "$1" "$(printf %s "$2" | sed "s/'/'\\\\''/g")"; }
 { q CC "$CC"; q FLAGS "$FLAGS"; q LFLAGS "$LFLAGS"; q SRC "$SRC"; q LIBS "$LIBS"; q OPT "$OPT"
   q SHIM "$SHIM"; q SYSLIBS "$SYSLIBS"; q WEAK "$WEAK"; q GLAOBJS "gla_core.o gla_virgl.o"; q FIXOBJS "$FIXOBJS"
-  q PROGOBJS "$PROGOBJS"; } > gla-link.env
+  q PROGOBJS "$PROGOBJS"; q MESA_LFLAGS "$MESA_LFLAGS"; } > gla-link.env
 case $NAME in *amigaos*)
     # The unstripped test is ~20 MB of symbols; the copy for the Amiga is stripped.
-    # (strip refuses a -fbaserel32 program whose data is this big; tools/hunk_strip.py doesn't.)
+    # (strip refuses a -resident32 program whose data is this big; tools/hunk_strip.py doesn't.)
     "${CC%gcc}strip" -o test_gla.stripped test_gla 2>/dev/null || python3 "$REPO/tools/hunk_strip.py" test_gla test_gla.stripped
     echo "built $B/test_gla ($B/test_gla.stripped for the Amiga)" ;;
 *)  echo "built $B/test_gla" ;;
