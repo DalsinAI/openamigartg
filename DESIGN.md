@@ -283,12 +283,32 @@ calls that touch RTG bitmaps, passing everything else to the original code.
   in video RAM (CPU memory when the board is full); GetBitMapAttr reports it.
   RTG bitmaps are marked as CyberGraphX and AROS mark them (no planar planes),
   so programs that check for RTG before poking planes keep working.
-- **Drawing:** BltBitMap, BltBitMapRastPort, BltMaskBitMapRastPort, ClipBlit,
-  BltClear, BltTemplate, BltPattern, RectFill, SetRast, Draw and PolyDraw,
-  area fills, WritePixel and ReadPixel, the pixel line and array functions,
-  Text, ScrollRaster: on RTG bitmaps they become OpenGPU commands (fill, copy,
-  template, line, invert, planar-to-chunky) or CPU code on the chunky bitmap;
-  on planar bitmaps they go to the original graphics.library.
+- **Drawing: OpenGfx owns the patches, OpenRTG provides the RTG side**
+  (decided by the Team, 8 October 2026; amigachrome
+  `docs/design/native-stack/Design-OS323-Platform-Integration.md`, section 4,
+  and `Design-Graphics-OpenRTG-OpenGfx-OpenGPU.md`). `opengfx.library` owns
+  every graphics.library drawing and text patch: BltBitMap,
+  BltBitMapRastPort, BltMaskBitMapRastPort, ClipBlit, BltClear, BltTemplate,
+  BltPattern, RectFill, SetRast, Draw and PolyDraw, area fills, WritePixel and
+  ReadPixel, the pixel line and array functions, Text, TextLength,
+  TextExtent, TextFit and ScrollRaster, drawing text with OpenFont's glyphs
+  and metrics. OpenFont patches nothing. One owner per call means two
+  patches never chain on the same function.
+  OpenRTG stops patching those calls and becomes the RTG provider OpenGfx
+  calls: for a bitmap that is OpenRTG's, OpenGfx asks `openrtg.library` to do
+  the work (fill, copy, template, line, invert, planar-to-chunky as OpenGPU
+  commands, or CPU code on the chunky bitmap) through a provider interface
+  `openrtg.library` exports; planar bitmaps go to the original
+  graphics.library as before. OpenRTG keeps everything that is not drawing:
+  its screens, bitmaps, display database, monitors, the pointer and the board
+  drivers.
+  **The way there:** `openrtg.library` 0.10 (in OpenUp, off unless picked)
+  still patches these calls itself, in `library/screens.c`. That stays until
+  `opengfx.library`'s glue is built (the native stack roadmap's close of M0).
+  Then OpenRTG's drawing patches become pass-through, since patches are never
+  taken out (section 4's patching rules), and the same code is reached through
+  the provider interface instead. A machine with OpenRTG and without OpenGfx
+  draws on the CPU through the original graphics.library: correct, slower.
 - **The pointer:** each monitor's front screen gets the board's hardware
   sprite (acrtg-v2), which Cradle shows as the PC's cursor.
 - **Boards:** a small driver interface (find, init, mode, pan, fill, copy,
@@ -762,7 +782,9 @@ What it means for the order of the work:
   when it opens. OpenRTG's answers must be fast, from a table built once.
 - **Then the core drawing** (phase 3, through OpenGPU): RectFill and
   BltPattern (the fills under every window), BltBitMap, BltTemplate and Text,
-  Draw and Move, area fills.
+  Draw and Move, area fills. Since 8 October 2026 these are OpenGfx's patches
+  calling OpenRTG as the RTG provider (section 4, Drawing); the measurements
+  here still say which calls to make fast first.
 - **Pens must be cheap.** GetRGB32 was called about a thousand times a second
   on Workbench, and ObtainBestPenA hundreds of times.
 - **Nothing called Picasso96's own libraries.** Workbench and MultiView reach
