@@ -14,7 +14,7 @@
  * the time OGPU_Submit returns. OGPU_Wait gives a batch's first error.
  * OGPU_ModuleOpen loads a module from LIBS:OpenGPU/ (GL.module, SDL2.module)
  * for the calling program (include/opengpu/module.h): a shared one once for
- * every program, with data of each program's own (ogpu_module.c).
+ * every program, with data of each program's own, and kept (ogpu_module.c).
  * 0.6: OpenGfx inside (library/ogfx, include/opengpu/gfx.h): opengfx.library's
  * calls are the LVOs from 66, and graphics.library's drawing and text patches
  * are thin entries into it.
@@ -22,6 +22,12 @@
  * through OpenGfx's RectFill and Text instead of patching them a second time.
  * 0.8: OpenGfx patches every graphics.library drawing call (22), and OpenRTG
  * provides the fourteen new ones instead of patching them itself.
+ * 0.9: resident. A shared module stays loaded after its last program closes
+ * it, until the system resets or memory runs short: the library's
+ * low-memory handler (exec runs it when an allocation fails), or its
+ * expunge, unloads the ones no program has open, and nothing else does.
+ * And the library keeps no writable globals: exec, dos.library and the
+ * driver names are in its base, so it can run from ROM.
  * Built bare by library/build.sh.
  */
 #include <exec/types.h>
@@ -48,7 +54,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 8
+#define LIB_REVISION 9
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -56,6 +62,8 @@
 struct OpenGPUBase {
     struct Library lib;
     BPTR seglist;
+    struct ExecBase *sys;                       /* exec, as lib_init was given it */
+    struct DosLibrary *dos;                     /* dos.library, opened by the first process that needs it */
     struct SignalSemaphore lock;                /* fences and results */
     ULONG fence;                                /* the last one given */
     LONG result[RESULTS];
@@ -66,22 +74,28 @@ struct OpenGPUBase {
     struct OGPUDriver *drv;                     /* its table, or NULL: the CPU does everything */
     UBYTE drv_ok[256];                          /* opcodes the driver carries out (for some format) */
     unsigned long drv_last;                     /* the driver's last fence, before a batch runs on the CPU */
+    char drv_names[MAX_DRIVERS][32];            /* drivers_load's scratch, under drv_lock */
     struct ogpu_modules modules;                /* shared modules loaded (ogpu_module.c) */
+    struct Interrupt low_mem;                   /* the low-memory handler: unloads unused modules */
+    UBYTE low_mem_on;                           /* added (exec 39 and later) */
     struct ogfx_state ogfx;                     /* OpenGfx (library/ogfx) */
 };
 const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 
-struct ExecBase *SysBase;
-struct DosLibrary *DOSBase;
+/* No writable globals (the library may run from ROM): each function takes
+ * exec and dos.library from the base, under the names the system's headers
+ * call them by. */
+#define EXEC(base) struct ExecBase *SysBase = (base)->sys
+#define DOS(base) struct DosLibrary *DOSBase = (base)->dos
 
 /* Run as a program, the library does nothing. This must stay the first code
  * in the file: build.sh keeps source order (-fno-toplevel-reorder). */
 int start(void) { return -1; }
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.8 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
+static const char lib_id[] = "opengpu.library 0.9 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.8 (8.10.2026) OpenGPU, Dalsin Limited";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.9 (8.10.2026) OpenGPU, Dalsin Limited";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";
@@ -100,6 +114,7 @@ static LONG OGPU_Wait(REG(d0, ULONG fence), REG(a6, struct OpenGPUBase *base));
 static APTR OGPU_ModuleOpen(REG(a0, CONST_STRPTR name), REG(d0, ULONG version), REG(a1, APTR *table), REG(a6, struct OpenGPUBase *base));
 static void OGPU_ModuleClose(REG(a0, APTR handle), REG(a6, struct OpenGPUBase *base));
 static void drivers_close(struct OpenGPUBase *base);
+static LONG low_memory(REG(a0, struct MemHandlerData *mhd), REG(a1, struct OpenGPUBase *base), REG(a6, struct ExecBase *sys));
 
 static const APTR lib_vectors[] = {
     (APTR)lib_open, (APTR)lib_close, (APTR)lib_expunge, (APTR)lib_null,
@@ -126,13 +141,25 @@ const struct Resident lib_romtag = {
 
 static struct Library *lib_init(REG(d0, struct OpenGPUBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys))
 {
-    SysBase = sys;
+    struct ExecBase *SysBase = sys;
+    base->sys = sys;
     base->seglist = seglist;
     base->lib.lib_Revision = LIB_REVISION;
     InitSemaphore(&base->lock);
     InitSemaphore(&base->drv_lock);
-    ogpu_modules_init(&base->modules);
+    ogpu_modules_init(&base->modules, sys);
     ogfx_init(&base->ogfx, sys);
+    /* Ahead of ramlib's handler, which expunges libraries: a module no
+     * program uses is the first thing to give back. */
+    if (sys->LibNode.lib_Version >= 39) {
+        base->low_mem.is_Node.ln_Type = NT_INTERRUPT;
+        base->low_mem.is_Node.ln_Pri = 50;
+        base->low_mem.is_Node.ln_Name = (char *)lib_name;
+        base->low_mem.is_Data = base;
+        base->low_mem.is_Code = (void (*)(void))low_memory;
+        AddMemHandler(&base->low_mem);
+        base->low_mem_on = 1;
+    }
     return &base->lib;
 }
 static struct Library *lib_open(REG(a6, struct OpenGPUBase *base))
@@ -148,11 +175,18 @@ static BPTR lib_close(REG(a6, struct OpenGPUBase *base))
         return lib_expunge(base);
     return 0;
 }
+/* ramlib calls this when memory is short, or a program asks (RemLibrary).
+ * Shared modules no program has open go now, as from the low-memory
+ * handler (ogpu_module.c). The library itself goes only when nothing has it
+ * open and no module is left. */
 static BPTR lib_expunge(REG(a6, struct OpenGPUBase *base))
 {
+    EXEC(base);
+    LONG left = ogpu_modules_flush(&base->modules, base->sys, base->dos);
     /* graphics.library's patched vectors point into the library: it stays. */
-    if (base->lib.lib_OpenCnt || !ogfx_may_expunge(&base->ogfx)) { base->lib.lib_Flags |= LIBF_DELEXP; return 0; }
+    if (base->lib.lib_OpenCnt || left || !ogfx_may_expunge(&base->ogfx)) { base->lib.lib_Flags |= LIBF_DELEXP; return 0; }
     BPTR seglist = base->seglist;
+    if (base->low_mem_on) RemMemHandler(&base->low_mem);
     drivers_close(base);
     ogfx_expunge(&base->ogfx);
     Remove(&base->lib.lib_Node);
@@ -160,6 +194,18 @@ static BPTR lib_expunge(REG(a6, struct OpenGPUBase *base))
     return seglist;
 }
 static ULONG lib_null(void) { return 0; }
+
+/* Exec's low-memory handler: an allocation has failed (C:Avail FLUSH makes
+ * one fail on purpose). Called in the allocating task, under Forbid; it
+ * mustn't wait or allocate, and ogpu_modules_flush doesn't. Try again when
+ * a module went. */
+static LONG low_memory(REG(a0, struct MemHandlerData *mhd), REG(a1, struct OpenGPUBase *base), REG(a6, struct ExecBase *sys))
+{
+    ULONG loaded = base->modules.loaded;
+    if (!loaded) return MEM_DID_NOTHING;
+    ogpu_modules_flush(&base->modules, base->sys, base->dos);
+    return base->modules.loaded < loaded ? MEM_TRY_AGAIN : MEM_DID_NOTHING;
+}
 
 /* ---- the CPU back end ------------------------------------------------------------ */
 
@@ -186,8 +232,11 @@ static int has_3d(const UBYTE *s, ULONG words)
 #endif
 
 /* A batch on the 68k: done when this returns. */
-static LONG cpu_run(APTR stream, ULONG words)
+static LONG cpu_run(struct OpenGPUBase *base, APTR stream, ULONG words)
 {
+#ifdef OGPU_WITH_3D
+    EXEC(base);
+#endif
     struct ogpu_core core;      /* on the caller's stack, so callers never wait on each other */
 #ifdef OGPU_WITH_3D
     struct ogpu3d *d3 = NULL;   /* 3D state: about 1.7 KB, too much for a small stack, so from memory */
@@ -216,12 +265,13 @@ static LONG cpu_run(APTR stream, ULONG words)
  * start from ROM, before dos.library is there). */
 static int dos_open(struct OpenGPUBase *base)
 {
-    if (!DOSBase) {
+    EXEC(base);
+    if (!base->dos) {
         ObtainSemaphore(&base->drv_lock);
-        if (!DOSBase) DOSBase = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)dos_name, 36);
+        if (!base->dos) base->dos = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)dos_name, 36);
         ReleaseSemaphore(&base->drv_lock);
     }
-    return DOSBase != NULL;
+    return base->dos != NULL;
 }
 
 /* A driver's first call: its table, or NULL. */
@@ -249,6 +299,7 @@ static int same_name(const char *a, const char *b)
 /* Open LIBS:OpenGPU/name; 1 when it is the driver now in use. */
 static int driver_try(struct OpenGPUBase *base, const char *name)
 {
+    EXEC(base);
     char path[64];
     int i = 0, j = 0;
     struct Library *lib;
@@ -282,8 +333,9 @@ static int driver_try(struct OpenGPUBase *base, const char *name)
  * has asked, everything runs on the CPU. */
 static void drivers_load(struct OpenGPUBase *base)
 {
+    EXEC(base);
     struct Task *me;
-    static char names[MAX_DRIVERS][32];         /* under drv_lock */
+    char (*names)[32] = base->drv_names;        /* under drv_lock */
     int n = 0, i, k;
     BPTR lock;
     struct FileInfoBlock *fib;
@@ -293,6 +345,7 @@ static void drivers_load(struct OpenGPUBase *base)
     ObtainSemaphore(&base->drv_lock);
     if (base->drv_tried) { ReleaseSemaphore(&base->drv_lock); return; }
     dos_open(base);
+    DOS(base);
     if (DOSBase && (fib = AllocDosObject(DOS_FIB, NULL)) != NULL) {
         struct Process *pr = (struct Process *)me;
         APTR win = pr->pr_WindowPtr;
@@ -327,11 +380,12 @@ static void drivers_load(struct OpenGPUBase *base)
 
 static void drivers_close(struct OpenGPUBase *base)
 {
+    EXEC(base);
     if (base->drv_lib) CloseLibrary(base->drv_lib);
     base->drv_lib = NULL;
     base->drv = NULL;
-    if (DOSBase) CloseLibrary((struct Library *)DOSBase);
-    DOSBase = NULL;
+    if (base->dos) CloseLibrary((struct Library *)base->dos);
+    base->dos = NULL;
 }
 
 /* 1 when the driver carries out every command in the batch. */
@@ -351,6 +405,7 @@ static int driver_takes(struct OpenGPUBase *base, const UBYTE *s, ULONG words)
 
 static ULONG OGPU_Query(REG(d0, ULONG op), REG(d1, ULONG format), REG(a6, struct OpenGPUBase *base))
 {
+    EXEC(base);
     int answer = -1;
     drivers_load(base);
     if (base->drv) {
@@ -373,6 +428,7 @@ static STRPTR OGPU_BackEndName(REG(d0, ULONG index), REG(a6, struct OpenGPUBase 
 
 static LONG OGPU_Submit(REG(a0, APTR stream), REG(d0, ULONG words), REG(a1, ULONG *fence), REG(a6, struct OpenGPUBase *base))
 {
+    EXEC(base);
     LONG r = OGPU_OK;
     ULONG f;
     unsigned long df = ON_CPU;
@@ -397,7 +453,7 @@ static LONG OGPU_Submit(REG(a0, APTR stream), REG(d0, ULONG words), REG(a1, ULON
         }
         ReleaseSemaphore(&base->drv_lock);
     }
-    if (!on_driver) r = cpu_run(stream, words);
+    if (!on_driver) r = cpu_run(base, stream, words);
     ObtainSemaphore(&base->lock);
     f = ++base->fence;
     if (!f) f = ++base->fence;                  /* 0 is never a fence */
@@ -410,6 +466,7 @@ static LONG OGPU_Submit(REG(a0, APTR stream), REG(d0, ULONG words), REG(a1, ULON
 
 static LONG OGPU_Wait(REG(d0, ULONG fence), REG(a6, struct OpenGPUBase *base))
 {
+    EXEC(base);
     LONG r = OGPU_OK;
     unsigned long df = ON_CPU;
     ObtainSemaphore(&base->lock);
@@ -434,14 +491,15 @@ static LONG OGPU_Wait(REG(d0, ULONG fence), REG(a6, struct OpenGPUBase *base))
 
 static APTR OGPU_ModuleOpen(REG(a0, CONST_STRPTR name), REG(d0, ULONG version), REG(a1, APTR *table), REG(a6, struct OpenGPUBase *base))
 {
+    EXEC(base);
     struct Task *me = FindTask(NULL);
     if (table) *table = NULL;
     if (me->tc_Node.ln_Type != NT_PROCESS || !dos_open(base)) return NULL;
-    return ogpu_module_open(&base->modules, name, version, table, &base->lib);
+    return ogpu_module_open(&base->modules, base->sys, base->dos, name, version, table, &base->lib);
 }
 
-/* After the module's own close call. */
+/* After the module's own close call. A shared module stays loaded. */
 static void OGPU_ModuleClose(REG(a0, APTR handle), REG(a6, struct OpenGPUBase *base))
 {
-    ogpu_module_close(&base->modules, handle);
+    ogpu_module_close(&base->modules, base->sys, base->dos, handle);
 }
