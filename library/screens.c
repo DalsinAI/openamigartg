@@ -369,6 +369,26 @@ static int ogpu_fill_piece(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LO
     return ogpu_submit_batch(&b);
 }
 
+static int ogpu_pattern_piece(struct ortg_bitmap *bm,
+                              LONG x0, LONG y0, LONG x1, LONG y1,
+                              LONG dx, LONG dy, const struct fill_ctx *f,
+                              const struct ink *k)
+{
+    UBYTE stream[ORTG_OGPU_WORDS * 4];
+    struct OGPUBatch b;
+    if (!f || !f->ptrn || !k || dx || dy || !k->mask ||
+        (k->bpp == 1 && k->mask != 0xFF))
+        return 0;
+    if (!ogpu_can(OGPU_OP_PATTERN, bm)) return 0;
+    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
+    ogpu_target_bitmap(&b, 0, bm);
+    ogpu_target(&b, 0);
+    ogpu_pattern(&b, (ULONG)f->ptrn, (ULONG)f->ptsz,
+                 x0, y0, x1 - x0 + 1, y1 - y0 + 1,
+                 k->a, k->b, k->mode & ~INVERSVID);
+    return ogpu_submit_batch(&b);
+}
+
 static int ogpu_template_piece(struct ortg_bitmap *bm,
                                LONG x0, LONG y0, LONG x1, LONG y1,
                                LONG dx, LONG dy, const struct tmpl_ctx *t,
@@ -497,6 +517,8 @@ static void fill_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
     struct ink k;
     ink_of(&f->p, bm, &k);
     if (!f->ptrn && ogpu_fill_piece(bm, x0, y0, x1, y1, &k))
+        return;
+    if (f->ptrn && ogpu_pattern_piece(bm, x0, y0, x1, y1, dx, dy, f, &k))
         return;
     for (LONG y = y0; y <= y1; y++) {
         if (!f->ptrn) {
