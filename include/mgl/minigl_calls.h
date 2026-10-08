@@ -1,0 +1,237 @@
+/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+ * SPDX-License-Identifier: MIT
+ * Made by library/minigl/gen_api.py from library/minigl/minigl_api.txt. */
+/* The calls programs make, as functions: libmgl.a has them. With
+ * <proto/minigl.h> they are inlines through the table instead
+ * (libraries/minigl_dispatch.h). Included by <mgl/gl.h>. */
+#ifndef MGL_MINIGL_CALLS_H
+#define MGL_MINIGL_CALLS_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+GLboolean MGLInit(void);            /* libmgl.a: opens minigl.library (MiniGLOpen) */
+void MGLTerm(void);                 /* libmgl.a: closes it */
+
+void glActiveTextureARB(GLenum unit);
+void glAlphaFunc(GLenum func, GLclampf ref);
+GLboolean glAreTexturesResident(GLsizei n, const GLuint *textures, GLboolean *residences);
+void glArrayElement(GLint i);
+void glBegin(GLenum mode);
+void glBindTexture(GLenum target, GLuint texture);
+void glBlendEquation(GLenum mode);
+void glBlendFunc(GLenum sfactor, GLenum dfactor);
+void glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha);
+void glCallList(GLuint list);
+void glClear(GLbitfield mask);
+void glClearColor(GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha);
+void glClearDepth(GLclampd depth);
+void glClientActiveTextureARB(GLenum unit);
+void glColor3f(GLfloat red, GLfloat green, GLfloat blue);
+void glColor3fv(GLfloat *v);
+void glColor3ub(GLubyte red, GLubyte green, GLubyte blue);
+void glColor3ubv(GLubyte *v);
+void glColor4f(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
+void glColor4fv(GLfloat *v);
+void glColor4ub(GLubyte red, GLubyte green, GLubyte blue, GLubyte alpha);
+void glColor4ubv(GLubyte *v);
+void glColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha);
+void glColorMaterial(GLenum face, GLenum mode);
+void glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
+void glColorTable(GLenum target, GLenum internalformat, GLint width, GLenum format, GLenum type, GLvoid *data);
+void glColorTableEXT(GLenum target, GLenum internalformat, GLint width, GLenum format, GLenum type, GLvoid *data);
+void glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border);
+void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height);
+void glCullFace(GLenum mode);
+void glDeleteLists(GLuint list, GLsizei range);
+void glDeleteTextures(GLsizei n, const GLuint *textures);
+void glDepthFunc(GLenum func);
+void glDepthMask(GLboolean flag);
+void glDepthRange(GLclampd n, GLclampd f);
+void glDisable(GLenum cap);
+void glDisableClientState(GLenum cap);
+void glDrawArrays(GLenum mode, GLint first, GLsizei count);
+void glDrawBuffer(GLenum mode);
+void glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *pointer);
+void glEdgeFlag(GLboolean flag);
+void glEdgeFlagPointer(GLsizei stride, const GLvoid *pointer);
+void glEdgeFlagv(const GLboolean *flag);
+void glEnable(GLenum cap);
+void glEnableClientState(GLenum cap);
+void glEnd(void);
+void glEndList(void);
+void glFinish(void);
+void glFlush(void);
+void glFogf(GLenum pname, GLfloat param);
+void glFogfv(GLenum pname, GLfloat *param);
+void glFogi(GLenum pname, GLint param);
+void glFrontFace(GLenum mode);
+void glFrustum(GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar);
+GLuint glGenLists(GLsizei range);
+void glGenTextures(GLsizei n, GLuint *textures);
+void glGetBooleanv(GLenum pname, GLboolean *params);
+void glGetDoublev(GLenum pname, GLdouble *params);
+GLenum glGetError(void);
+void glGetFloatv(GLenum pname, GLfloat *params);
+void glGetIntegerv(GLenum pname, GLint *params);
+void glGetLightfv(GLenum light, GLenum pname, GLfloat *params);
+void glGetMaterialfv(GLenum face, GLenum pname, GLfloat *params);
+void glGetPointerv(GLenum pname, GLvoid **params);
+const GLubyte *glGetString(GLenum name);
+void glHint(GLenum target, GLenum mode);
+void glIndexi(GLint c);
+void glIndexiv(const GLint *c);
+void glIndexPointer(GLenum type, GLsizei stride, const GLvoid *pointer);
+void glInterleavedArrays(GLenum format, GLsizei stride, const GLvoid *pointer);
+GLboolean glIsEnabled(GLenum cap);
+GLboolean glIsList(GLuint list);
+GLboolean glIsTexture(GLuint texture);
+void glLightf(GLenum light, GLenum pname, GLfloat param);
+void glLightfv(GLenum light, GLenum pname, const GLfloat *params);
+void glLightModelf(GLenum pname, GLfloat param);
+void glLightModelfv(GLenum pname, const GLfloat *params);
+void glLineWidth(GLfloat w);
+void glLoadIdentity(void);
+void glLoadMatrixd(const GLdouble *m);
+void glLoadMatrixf(const GLfloat *m);
+void glLockArrays(GLuint first, GLsizei count);
+void glMaterialf(GLenum face, GLenum pname, GLfloat param);
+void glMaterialfv(GLenum face, GLenum pname, const GLfloat *params);
+void glMatrixMode(GLenum mode);
+void glMultiDrawArrays(GLenum mode, const GLint *first, const GLsizei *count, GLsizei primcount);
+void glMultiTexCoord2fARB(GLenum unit, GLfloat s, GLfloat t);
+void glMultiTexCoord2fvARB(GLenum unit, GLfloat *v);
+void glMultMatrixd(const GLdouble *m);
+void glMultMatrixf(const GLfloat *m);
+void glNewList(GLuint list, GLenum mode);
+void glNormal3f(GLfloat x, GLfloat y, GLfloat z);
+void glNormal3fv(GLfloat *v);
+void glNormalPointer(GLenum type, GLsizei stride, const GLvoid *pointer);
+void glOrtho(GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar);
+void glPixelStorei(GLenum pname, GLint param);
+void glPointSize(GLfloat s);
+void glPolygonMode(GLenum face, GLenum mode);
+void glPolygonOffset(GLfloat factor, GLfloat units);
+void glPopMatrix(void);
+void glPrioritizeTextures(GLsizei n, const GLuint *textures, const GLclampf *priorities);
+void glPushMatrix(void);
+void glReadBuffer(GLenum mode);
+void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels);
+void glRotated(GLdouble angle, GLdouble x, GLdouble y, GLdouble z);
+void glRotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z);
+void glRotatefEXT(GLfloat angle, const GLint xyz);
+void glRotatefEXTs(GLfloat sin_an, GLfloat cos_an, const GLint xyz);
+void glScaled(GLdouble x, GLdouble y, GLdouble z);
+void glScalef(GLfloat x, GLfloat y, GLfloat z);
+void glScissor(GLint x, GLint y, GLsizei width, GLsizei height);
+void glShadeModel(GLenum mode);
+void glTexCoord2f(GLfloat s, GLfloat t);
+void glTexCoord2fv(GLfloat *v);
+void glTexCoord4f(GLfloat s, GLfloat t, GLfloat r, GLfloat q);
+void glTexCoord4fv(GLfloat *v);
+void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
+void glTexEnvf(GLenum target, GLenum pname, GLfloat param);
+void glTexEnvfv(GLenum target, GLenum pname, const GLfloat *params);
+void glTexEnvi(GLenum target, GLenum pname, GLint param);
+void glTexEnviv(GLenum target, GLenum pname, GLint *param);
+void glTexGenfv(GLenum coord, GLenum pname, const GLfloat *params);
+void glTexGeni(GLenum coord, GLenum mode, GLenum map);
+void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels);
+void glTexParameterf(GLenum target, GLenum pname, GLfloat param);
+void glTexParameteri(GLenum target, GLenum pname, GLint param);
+void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels);
+void glTranslated(GLdouble x, GLdouble y, GLdouble z);
+void glTranslatef(GLfloat x, GLfloat y, GLfloat z);
+GLint gluBuild2DMipmaps(GLenum target, GLint internalFormat, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *data);
+void gluCylinder(GLUquadricObj *q, GLdouble base, GLdouble top, GLdouble height, GLint slices, GLint stacks);
+void gluDeleteQuadric(GLUquadricObj *q);
+void gluDisk(GLUquadricObj *q, GLdouble inner, GLdouble outer, GLint slices, GLint loops);
+const GLubyte *gluErrorString(GLenum errCode);
+void gluLookAt(GLfloat ex, GLfloat ey, GLfloat ez, GLfloat cx, GLfloat cy, GLfloat cz, GLfloat ux, GLfloat uy, GLfloat uz);
+GLUquadricObj *gluNewQuadric(void);
+void glUnlockArrays(void);
+void gluPerspective(GLfloat fovy, GLfloat aspect, GLfloat znear, GLfloat zfar);
+void gluQuadricCallback(GLUquadricObj *q, GLenum which, MGLUfuncptr fn);
+void gluQuadricDrawStyle(GLUquadricObj *q, GLenum drawStyle);
+void gluQuadricNormals(GLUquadricObj *q, GLenum normals);
+void gluQuadricOrientation(GLUquadricObj *q, GLenum orientation);
+void gluQuadricTexture(GLUquadricObj *q, GLboolean textureCoords);
+void gluSphere(GLUquadricObj *q, GLdouble radius, GLint slices, GLint stacks);
+int glutCreateWindow(const char *title);
+void glutDisplayFunc(void (*func)(void));
+int glutEnterGameMode(void);
+int glutGameModeGet(GLenum query);
+void glutGameModeString(const char *string);
+int glutGet(GLenum state);
+void glutIdleFunc(void (*func)(void));
+void glutInit(int *argcp, char **argv);
+void glutInitDisplayMode(unsigned int mode);
+void glutInitWindowPosition(int x, int y);
+void glutInitWindowSize(int width, int height);
+void glutKeyboardFunc(void (*func)(unsigned char key, int x, int y));
+void glutLeaveGameMode(void);
+void glutMainLoop(void);
+void glutPostRedisplay(void);
+void glutReshapeFunc(void (*func)(int width, int height));
+void glutSolidCone(GLdouble base, GLdouble height, GLint slices, GLint stacks);
+void glutSolidCube(GLdouble size);
+void glutSolidDodecahedron(void);
+void glutSolidSphere(GLdouble radius, GLint slices, GLint stacks);
+void glutSolidTorus(GLdouble innerRadius, GLdouble outerRadius, GLint sides, GLint rings);
+void glutSwapBuffers(void);
+void glVertex2f(GLfloat x, GLfloat y);
+void glVertex2fv(GLfloat *v);
+void glVertex3f(GLfloat x, GLfloat y, GLfloat z);
+void glVertex3fv(GLfloat *v);
+void glVertex4f(GLfloat x, GLfloat y, GLfloat z, GLfloat w);
+void glVertex4fv(GLfloat *v);
+void glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
+void glViewport(GLint x, GLint y, GLsizei width, GLsizei height);
+void mglChooseGuardBand(GLboolean flag);
+void mglChooseMtexBufferSize(int size);
+void mglChooseNumberOfBuffers(int number);
+void mglChoosePixelDepth(int depth);
+void mglChooseTextureBufferSize(int size);
+void mglChooseVertexBufferSize(int size);
+void mglChooseWindowMode(GLboolean flag);
+void mglChooseZBufferDepth(int bits);
+void mglClearPointer(void);
+void *mglCreateContext(int offx, int offy, int w, int h);
+void *mglCreateContextFromBitMap(struct BitMap *bitmap);
+void *mglCreateContextFromID(GLint id, GLint *w, GLint *h);
+void *mglCreateContextFromWindow(struct Window *window);
+void mglDeleteContext(void);
+void mglDrawMultitexBuffer(GLenum s, GLenum d, GLenum env);
+void mglEnableSync(GLboolean enable);
+void mglExit(void);
+void *mglGetInputWindowHandle(void);
+GLint mglGetSupportedScreenModes(MGLScreenModeCallback CallbackFn);
+void *mglGetWindowHandle(void);
+void mglIdleFunc(IdleFn i);
+void mglKeyFunc(KeyHandlerFn k);
+GLboolean mglLockBack(MGLLockInfo *info);
+GLboolean mglLockDisplay(void);
+void mglLockMode(GLenum lockMode);
+void mglMainLoop(void);
+void mglMinTriArea(GLfloat area);
+void mglMouseFunc(MouseHandlerFn m);
+void mglPrintMatrix(GLenum mode);
+void mglPrintMatrixStack(GLenum mode);
+void mglProhibitAlphaFallback(GLboolean flag);
+void mglProhibitMipMapping(GLboolean flag);
+void mglProposeCloseDesktop(GLboolean closeme);
+GLboolean mglResizeContext(GLsizei width, GLsizei height);
+void mglSetPointer(void);
+void mglSetZOffset(GLfloat offset);
+void mglSpecialFunc(SpecialHandlerFn s);
+void mglSwitchDisplay(void);
+void mglTexMemStat(GLint *Current, GLint *Peak);
+void mglUnlockDisplay(void);
+void mglWriteShotPPM(char *filename);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
