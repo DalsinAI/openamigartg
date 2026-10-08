@@ -115,6 +115,12 @@
    Makefile defines SDL_VIDEO_RENDER_OPENGPU), then software. */
 #define SDL_VIDEO_RENDER_SW         1
 
+/* OpenGL: SDL_GL_* on OpenGPU's GL module (Mesa: GL 4.3 and GLES 3.1 on the
+   PC's graphics chip through virgl, GL 3.3 and GLES 3.1 with softpipe), for
+   programs linked with -lGL (src/video/amigaos3/SDL_os3gl.c). GLES contexts
+   come from SDL_GL_CONTEXT_PROFILE_ES. */
+#define SDL_VIDEO_OPENGL            1
+
 /* Audio: AHI, then Paula's audio.device. */
 #define SDL_AUDIO_DRIVER_AHI        1
 #define SDL_AUDIO_DRIVER_PAULA      1
@@ -125,7 +131,9 @@
 #define SDL_JOYSTICK_AMIGAOS3       1
 #define SDL_FILESYSTEM_AMIGAOS3     1
 
-#define SDL_HAPTIC_DISABLED         1
+/* Haptic: SDL's dummy driver, so SDL_Init(SDL_INIT_HAPTIC) succeeds with
+   no devices, as games that ask for it expect. */
+#define SDL_HAPTIC_DUMMY            1
 #define SDL_HIDAPI_DISABLED         1
 #define SDL_SENSOR_DISABLED         1
 #define SDL_LOADSO_DISABLED         1

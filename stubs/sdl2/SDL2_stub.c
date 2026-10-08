@@ -42,15 +42,11 @@
   which is then this program's copy.
 */
 
-#include "SDL.h"
-#include "SDL_syswm.h"
-#include "SDL_vulkan.h"
+#include "SDL2_stub.h"
 
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <stdlib.h>
-
-#include "sdl2_module.h"
 
 /* opengpu.library's calls through the stub's own base, so a program's
    OpenGPUBase is left alone. */
@@ -63,26 +59,12 @@ static APTR SDL2Stub_handle = NULL;
 
 #define SDL_DYNAPI_VERSION 1
 
-/* The jump table: one pointer per function, in SDL_dynapi_procs.h order. */
-#define SDL_DYNAPI_PROC(rc, fn, params, args, ret) typedef rc (SDLCALL *SDL_DYNAPIFN_##fn) params;
-#include "SDL_dynapi_procs.h"
-#undef SDL_DYNAPI_PROC
-
-typedef struct
-{
-#define SDL_DYNAPI_PROC(rc, fn, params, args, ret) SDL_DYNAPIFN_##fn fn;
-#include "SDL_dynapi_procs.h"
-#undef SDL_DYNAPI_PROC
-} SDL_DYNAPI_jump_table;
-
-static SDL_DYNAPI_jump_table jump_table;
-static int jump_table_ready = 0;
+SDL_DYNAPI_jump_table SDL2Stub_jump_table;
+int SDL2Stub_ready = 0;
+APTR SDL2Stub_a4 = NULL;
+const struct SDL2GLBridge *SDL2Stub_gl = NULL;
 static BPTR SDL2Stub_seg = 0;
 static struct SDL2ModuleTable *SDL2Stub_module = NULL;
-static APTR SDL2Stub_a4 = NULL;     /* the module's A4 for this program */
-
-/* Every call into the module: its A4 for the call, the program's after. */
-#define SDL2STUB_A4() OGPU_A4(SDL2Stub_a4)
 
 static void SDL2Stub_Fail(const char *why)
 {
@@ -98,23 +80,33 @@ static void SDL2Stub_Fail(const char *why)
 static LONG SDL2Stub_DynapiEntry(void)
 {
     SDL2STUB_A4();
-    return SDL2Stub_module->dynapi_entry(SDL_DYNAPI_VERSION, &jump_table, sizeof(jump_table));
+    return SDL2Stub_module->dynapi_entry(SDL_DYNAPI_VERSION, &SDL2Stub_jump_table, sizeof(SDL2Stub_jump_table));
 }
 
-static void SDL2Stub_Init(void)
+/* The program's GL, for SDL_GL_*: only a module with set_gl (version 3)
+   takes it; an older one has no OpenGL and says so. */
+static void SDL2Stub_SetGL(void)
+{
+    if (SDL2Stub_gl && SDL2Stub_module->head.version >= SDL2_MODULE_GL_VERSION) {
+        SDL2STUB_A4();
+        SDL2Stub_module->set_gl(SDL2Stub_gl);
+    }
+}
+
+void SDL2Stub_Init(void)
 {
     SDL2ModuleArgs args;
     SDL2ModuleEntry entry;
 
     /* The first SDL call comes from the program's main task (SDL_Init or
        SDL_SetMainReady), before any SDL thread exists. */
-    if (jump_table_ready) {
+    if (SDL2Stub_ready) {
         return;
     }
     SDL2Stub_OpenGPUBase = OpenLibrary((CONST_STRPTR) "opengpu.library", 0);
     if (SDL2Stub_OpenGPUBase && (SDL2Stub_OpenGPUBase->lib_Version > 0 ||
                                  SDL2Stub_OpenGPUBase->lib_Revision >= OGPU_MODULE_LIB_REVISION)) {
-        SDL2Stub_handle = OGPU_ModuleOpen((CONST_STRPTR)SDL2_MODULE_NAME, SDL2_MODULE_VERSION, (APTR *)&SDL2Stub_module);
+        SDL2Stub_handle = OGPU_ModuleOpen((CONST_STRPTR)SDL2_MODULE_NAME, SDL2_MODULE_OPEN_VERSION, (APTR *)&SDL2Stub_module);
         if (!SDL2Stub_handle && IoErr() == ERROR_OBJECT_NOT_FOUND) {
             SDL2Stub_Fail("this program needs " SDL2_MODULE_FILE " (OpenGPU), which isn't installed.");
         }
@@ -127,7 +119,7 @@ static void SDL2Stub_Init(void)
         args.SysBase = SysBase;
         args.DOSBase = (struct Library *)DOSBase;
         args.OpenGPUBase = SDL2Stub_OpenGPUBase;
-        args.version = SDL2_MODULE_VERSION;
+        args.version = SDL2_MODULE_OPEN_VERSION;
         SDL2Stub_module = (struct SDL2ModuleTable *)entry(&args);
     }
     if (!SDL2Stub_module) {
@@ -140,7 +132,8 @@ static void SDL2Stub_Init(void)
     if (SDL2Stub_DynapiEntry() < 0) {
         SDL2Stub_Fail(SDL2_MODULE_FILE " is older than this program, or couldn't start. Install a newer OpenGPU.");
     }
-    jump_table_ready = 1;
+    SDL2Stub_SetGL();
+    SDL2Stub_ready = 1;
 }
 
 static void __attribute__((destructor)) SDL2Stub_Close(void)
@@ -162,23 +155,14 @@ static void __attribute__((destructor)) SDL2Stub_Close(void)
         CloseLibrary(SDL2Stub_OpenGPUBase);
         SDL2Stub_OpenGPUBase = NULL;
     }
-    jump_table_ready = 0;
+    SDL2Stub_ready = 0;
 }
 
-#define SDL2STUB_INIT() do { if (!jump_table_ready) SDL2Stub_Init(); } while (0)
-
-/* Every function except the varargs ones. */
-#define SDL_DYNAPI_PROC(rc, fn, params, args, ret) \
-    rc SDLCALL fn params                           \
-    {                                              \
-        SDL2STUB_INIT();                           \
-        {                                          \
-            SDL2STUB_A4();                         \
-            ret jump_table.fn args;                \
-        }                                          \
-    }
+/* Every function except the varargs ones and the window GL calls
+   (SDL2_gl.c). */
+#define SDL_DYNAPI_PROC SDL2STUB_PROC
 #define SDL_DYNAPI_PROC_NO_VARARGS
-#include "SDL_dynapi_procs.h"
+#include "SDL2_stub_procs.h"
 #undef SDL_DYNAPI_PROC
 #undef SDL_DYNAPI_PROC_NO_VARARGS
 
@@ -191,7 +175,7 @@ static void __attribute__((destructor)) SDL2Stub_Close(void)
         va_start(ap, fmt);                                                                    \
         {                                                                                     \
             SDL2STUB_A4();                                                                    \
-            jump_table.SDL_LogMessageV(category, SDL_LOG_PRIORITY_##prio, fmt, ap);           \
+            SDL2Stub_jump_table.SDL_LogMessageV(category, SDL_LOG_PRIORITY_##prio, fmt, ap);           \
         }                                                                                     \
         va_end(ap);                                                                           \
     }
@@ -205,22 +189,22 @@ int SDLCALL SDL_SetError(SDL_PRINTF_FORMAT_STRING const char *fmt, ...)
     {
         SDL2STUB_A4();
         va_start(ap, fmt);
-        result = jump_table.SDL_vsnprintf(buf, sizeof(buf), fmt, ap);
+        result = SDL2Stub_jump_table.SDL_vsnprintf(buf, sizeof(buf), fmt, ap);
         va_end(ap);
         if (result >= 0 && (size_t)result >= sizeof(buf)) {
             size_t len = (size_t)result + 1;
-            str = (char *)jump_table.SDL_malloc(len);
+            str = (char *)SDL2Stub_jump_table.SDL_malloc(len);
             if (str) {
                 va_start(ap, fmt);
-                result = jump_table.SDL_vsnprintf(str, len, fmt, ap);
+                result = SDL2Stub_jump_table.SDL_vsnprintf(str, len, fmt, ap);
                 va_end(ap);
             }
         }
         if (result >= 0) {
-            result = jump_table.SDL_SetError("%s", str);
+            result = SDL2Stub_jump_table.SDL_SetError("%s", str);
         }
         if (str != buf) {
-            jump_table.SDL_free(str);
+            SDL2Stub_jump_table.SDL_free(str);
         }
         return result;
     }
@@ -234,7 +218,7 @@ int SDLCALL SDL_sscanf(const char *buf, SDL_SCANF_FORMAT_STRING const char *fmt,
     {
         SDL2STUB_A4();
         va_start(ap, fmt);
-        retval = jump_table.SDL_vsscanf(buf, fmt, ap);
+        retval = SDL2Stub_jump_table.SDL_vsscanf(buf, fmt, ap);
         va_end(ap);
         return retval;
     }
@@ -248,7 +232,7 @@ int SDLCALL SDL_snprintf(SDL_OUT_Z_CAP(maxlen) char *buf, size_t maxlen, SDL_PRI
     {
         SDL2STUB_A4();
         va_start(ap, fmt);
-        retval = jump_table.SDL_vsnprintf(buf, maxlen, fmt, ap);
+        retval = SDL2Stub_jump_table.SDL_vsnprintf(buf, maxlen, fmt, ap);
         va_end(ap);
         return retval;
     }
@@ -262,7 +246,7 @@ int SDLCALL SDL_asprintf(char **strp, SDL_PRINTF_FORMAT_STRING const char *fmt, 
     {
         SDL2STUB_A4();
         va_start(ap, fmt);
-        retval = jump_table.SDL_vasprintf(strp, fmt, ap);
+        retval = SDL2Stub_jump_table.SDL_vasprintf(strp, fmt, ap);
         va_end(ap);
         return retval;
     }
@@ -275,7 +259,7 @@ void SDLCALL SDL_Log(SDL_PRINTF_FORMAT_STRING const char *fmt, ...)
     {
         SDL2STUB_A4();
         va_start(ap, fmt);
-        jump_table.SDL_LogMessageV(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_INFO, fmt, ap);
+        SDL2Stub_jump_table.SDL_LogMessageV(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_INFO, fmt, ap);
         va_end(ap);
     }
 }
@@ -287,7 +271,7 @@ void SDLCALL SDL_LogMessage(int category, SDL_LogPriority priority, SDL_PRINTF_F
     {
         SDL2STUB_A4();
         va_start(ap, fmt);
-        jump_table.SDL_LogMessageV(category, priority, fmt, ap);
+        SDL2Stub_jump_table.SDL_LogMessageV(category, priority, fmt, ap);
         va_end(ap);
     }
 }
