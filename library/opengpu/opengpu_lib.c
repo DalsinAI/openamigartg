@@ -20,6 +20,8 @@
  * are thin entries into it.
  * 0.7: OpenGfx's look hook (LVOs 150 and 156): OpenLook draws window frames
  * through OpenGfx's RectFill and Text instead of patching them a second time.
+ * 0.8: OpenGfx patches every graphics.library drawing call (22), and OpenRTG
+ * provides the fourteen new ones instead of patching them itself.
  * Built bare by library/build.sh.
  */
 #include <exec/types.h>
@@ -46,7 +48,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 7
+#define LIB_REVISION 8
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -77,9 +79,9 @@ struct DosLibrary *DOSBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.7 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
+static const char lib_id[] = "opengpu.library 0.8 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.7 (8.10.2026) OpenGPU, Dalsin Limited";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.8 (8.10.2026) OpenGPU, Dalsin Limited";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";

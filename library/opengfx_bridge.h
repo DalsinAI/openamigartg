@@ -9,7 +9,8 @@
  * OpenGfx, else with opengfx.library.
  *
  * Kept private so OpenRTG still builds standalone. ABI v1 is frozen; change
- * this only with the OpenGfx ABI.
+ * this only with the OpenGfx ABI. The 1.4 record extends it (fourteen more
+ * calls after v1's eight).
  */
 #ifndef ORTG_OPENGFX_BRIDGE_H
 #define ORTG_OPENGFX_BRIDGE_H
@@ -102,12 +103,51 @@ struct ortg_ogfx_provider_v1 {
     LONG (*blttemplate)(APTR, struct ortg_ogfx_blttemplate *);
 };
 
+/* OpenGfx 1.4 (opengpu.library 0.8): the fourteen other drawing calls, in
+ * a longer record that starts with the v1 one (gfx.h, struct OGFXProviderAll). */
+struct ortg_ogfx_bltpattern { struct RastPort *rp; PLANEPTR mask; LONG x0, y0, x1, y1; LONG mask_bpr; };
+struct ortg_ogfx_setrast { struct RastPort *rp; ULONG pen; };
+struct ortg_ogfx_draw { struct RastPort *rp; LONG x, y; };
+struct ortg_ogfx_polydraw { struct RastPort *rp; LONG count; WORD *array; };
+struct ortg_ogfx_pixel { struct RastPort *rp; LONG x, y; LONG result; };
+struct ortg_ogfx_bltbmrp { struct BitMap *src; LONG sx, sy; struct RastPort *rp; LONG dx, dy, width, height; ULONG minterm; PLANEPTR mask; };
+struct ortg_ogfx_clipblit { struct RastPort *src_rp; LONG sx, sy; struct RastPort *rp; LONG dx, dy, width, height; ULONG minterm; };
+struct ortg_ogfx_array {
+    struct RastPort *rp;
+    LONG x0, y0, x1, y1;
+    ULONG width;
+    UBYTE *array;
+    LONG bytes_per_row;
+    struct RastPort *temp_rp;
+    LONG result;
+};
+
+struct ortg_ogfx_provider_all {
+    struct ortg_ogfx_provider_v1 v1;
+    LONG (*bltpattern)(APTR, struct ortg_ogfx_bltpattern *);
+    LONG (*setrast)(APTR, struct ortg_ogfx_setrast *);
+    LONG (*draw)(APTR, struct ortg_ogfx_draw *);
+    LONG (*polydraw)(APTR, struct ortg_ogfx_polydraw *);
+    LONG (*writepixel)(APTR, struct ortg_ogfx_pixel *);
+    LONG (*readpixel)(APTR, struct ortg_ogfx_pixel *);
+    LONG (*bltbitmaprastport)(APTR, struct ortg_ogfx_bltbmrp *);
+    LONG (*bltmaskbitmaprastport)(APTR, struct ortg_ogfx_bltbmrp *);
+    LONG (*clipblit)(APTR, struct ortg_ogfx_clipblit *);
+    LONG (*writechunkypixels)(APTR, struct ortg_ogfx_array *);
+    LONG (*writepixelarray8)(APTR, struct ortg_ogfx_array *);
+    LONG (*writepixelline8)(APTR, struct ortg_ogfx_array *);
+    LONG (*readpixelline8)(APTR, struct ortg_ogfx_array *);
+    LONG (*readpixelarray8)(APTR, struct ortg_ogfx_array *);
+};
+#define ORTG_OGFX_ALL_INTERFACE 0x00010004UL     /* OGFX_Version() 1.4: OpenGfx patches all 22 */
+
 #define ORTG_OGFX_InstallPatches(base)     LP0(0x24, LONG, OGFX_InstallPatches, , base)
 #define ORTG_OGFX_RegisterProvider(base,provider)     LP1(0x36, LONG, OGFX_RegisterProvider, struct ortg_ogfx_provider_v1 *, provider, a0, , base)
 #define ORTG_OGFX_UnregisterProvider(base,owner)     LP1(0x3c, LONG, OGFX_UnregisterProvider, APTR, owner, a0, , base)
 
 /* The same three calls in opengpu.library 0.6 and later (LVOs 72, 90, 96). */
 #define ORTG_OPENGPU_OGFX_REVISION 6
+#define ORTG_OGPU_OGFX_Version(base)     LP0(0x42, ULONG, OGFX_Version, , base)
 #define ORTG_OGPU_OGFX_InstallPatches(base)     LP0(0x48, LONG, OGFX_InstallPatches, , base)
 #define ORTG_OGPU_OGFX_RegisterProvider(base,provider)     LP1(0x5a, LONG, OGFX_RegisterProvider, struct ortg_ogfx_provider_v1 *, provider, a0, , base)
 #define ORTG_OGPU_OGFX_UnregisterProvider(base,owner)     LP1(0x60, LONG, OGFX_UnregisterProvider, APTR, owner, a0, , base)
