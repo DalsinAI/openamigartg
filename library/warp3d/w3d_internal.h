@@ -47,6 +47,7 @@ struct W3DBase {
     /* Speed against looks, as Wazp3D offered them (ENV:Warp3D/Fog, Perspective,
      * Filtering, Lighting: "0" turns one off; all on by default). */
     int no_fog, no_persp, no_filter, no_light;
+    long trace;                                 /* ENV:Warp3D/Trace n: the first n trace lines to the serial port */
     int quality;                                /* ENV:Warp3D/Perspective: 0 per 8 pixels (default) */
 };
 
@@ -134,6 +135,7 @@ struct w3dctx {
     struct ogpu3d d3;
     ULONG fence;
     W3D_Bitmap texbm;                           /* W3D_SetDrawRegionTexture's drawing area */
+    W3D_Texture *known_tex;                     /* the last texture found in the context's list */
 };
 
 /* ---- shared ---------------------------------------------------------------- */
@@ -160,6 +162,7 @@ LONG w3d_f2l(float f);                          /* rounded to the nearest */
 ULONG w3d_fbits(float f);
 
 void w3d_read_prefs(struct W3DBase *base);     /* again for each new context */
+void w3d_trace(const char *fmt, ...);          /* a line to the serial port while tracing */
 
 /* w3d_batch.c */
 int  w3d_open_area(struct w3dctx *x, struct BitMap *bm, W3D_Bitmap *wbm, int yoffset);

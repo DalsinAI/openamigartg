@@ -51,6 +51,7 @@ Both drivers draw the same pixels, because both run the same core: W3DCheck and 
   - Specular, added after texturing.
 - **Drawing areas.**
   - Any CyberGraphX bitmap of 15 bits or more. R5G6B5 and A8R8G8B8 are drawn in place; the other formats through an ARGB32 copy.
+  - W3D_BestModeID answers a 16-bit mode when 15 bits are asked for, as R5G6B5 is drawn in place.
   - W3D_Bitmaps in every W3D_FMT.
   - Double height, y offsets, scissors.
 - **Not offered:**
@@ -67,6 +68,8 @@ Both drivers draw the same pixels, because both run the same core: W3DCheck and 
 - `Fog`, `Perspective`, `Filtering` and `Lighting` can each be switched off for speed. These are Wazp3D's options of those names.
 
 Each new context reads them.
+
+For finding faults, `SetEnv Warp3D/Trace n` writes the next n calls the library sees (contexts, states, draws, flushes) to the serial port.
 
 `Warp3DPrefs FROMWAZP3D SAVE` carries Wazp3D's settings over from ENVARC:Wazp3D.cfg, or takes Wazp3D's defaults when there is none, and leaves Wazp3D's files where they are. The installer runs it when it finds Wazp3D.
 
@@ -98,8 +101,11 @@ The 3D core alone on the 68k (Test3D rates), in nanoseconds a pixel:
 | Texture and Gouraud with Z | 208 |
 | Bilinear, Z, fog and perspective | 390 |
 
-Third-party program:
-- Cow3D 6 (Alain Thellier's Warp3D test program, run from a local copy, not in this repository) draws correctly on both drivers.
+Third-party programs, run from local copies that are not in this repository:
+- Cow3D 6 (Alain Thellier's Warp3D test program) draws correctly on both drivers.
+- The classic minigl.library 29.1 (Aminet `driver/video/MiniGL_Library_Classic.lha`) runs on this library.
+  - Its cube, ring and warp demos draw correctly.
+  - Its gears demo draws its gears without their chrome texture. From its third draw on, minigl.library leaves a texture pointer in the context that Warp3D never gave out (a float sits where `CurrentTex[0]` belongs). This library checks every texture pointer against the context's own textures and draws untextured instead of reading memory that is not a texture. Wazp3D shows a black screen for the same demo.
 
 Correctness:
 - W3DCheck passes all 183 of its checks on both drivers.

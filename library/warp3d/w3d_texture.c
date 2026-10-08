@@ -179,12 +179,15 @@ LIBCALL W3D_Texture *LIB_W3D_AllocTexObj(REG(a0, W3D_Context *c), REG(a1, ULONG 
         }
     }
     AddTail((struct List *)&c->tex, &tex->link);
+    w3d_trace("AllocTexObj %ldx%ld format %ld mipmaps %lx: %lx", (long)w, (long)h, (long)fmt, (unsigned long)(mm ? mm->ti_Data : 0),
+              (unsigned long)tex);
     return tex;
 fail:
     for (lv = 0; lv < OGPU_TEX_LEVELS; lv++) w3d_free(t->level[lv]);
     w3d_free(t->srcpal);
     w3d_free(t); w3d_free(tex);
 fail0:
+    w3d_trace("AllocTexObj %ldx%ld format %ld: error %ld", (long)w, (long)h, (long)fmt, (long)e);
     if (error) *error = e;
     return 0;
 }
@@ -195,6 +198,7 @@ void w3d_free_texture(struct w3dctx *x, W3D_Texture *tex)
     int lv;
     if (x->body) w3d_flush(x);                  /* the batch may point at it */
     if (x->sent_tex == tex) x->sent_tex = 0;
+    if (x->known_tex == tex) x->known_tex = 0;
     Remove(&tex->link);
     for (lv = 0; lv < OGPU_TEX_LEVELS; lv++) w3d_free(t->level[lv]);
     w3d_free(t->srcpal);

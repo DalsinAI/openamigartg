@@ -214,6 +214,7 @@ ULONG w3d_flush(struct w3dctx *x)
     UBYTE *stream;
     ULONG r = W3D_SUCCESS;
     if (!x->body) return W3D_SUCCESS;
+    w3d_trace("flush %ld words %ld bytes", (long)x->b.words, (long)x->vused);
     x->body = 0;
     x->list_at = -1;
     x->sent_tex = 0;
