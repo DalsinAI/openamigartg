@@ -26,7 +26,17 @@ def scan(objdump, *paths):
     """[(file, function, instruction)] for every store through the FPCR register
     in paths (objects and programs; AmigaOS hunk libraries (.a) aren't
     archives objdump can take apart, so scan their objects)."""
-    out = subprocess.run([objdump, "-m", "m68k:68040", "-d"] + list(paths), capture_output=True, text=True).stdout
+    paths = list(paths)
+    r = subprocess.run([objdump, "-m", "m68k:68040", "-d"] + paths, capture_output=True, text=True)
+    if r.returncode != 0:
+        # objdump can crash part-way through a long list (it did at the 20th of
+        # Mesa's objects, 8 October 2026), and what it had printed by then
+        # looked like a clean scan: split the list and scan the halves.
+        if len(paths) == 1:
+            raise RuntimeError("fpcr_check: %s couldn't disassemble %s (exit %d)" % (objdump, paths[0], r.returncode))
+        half = len(paths) // 2
+        return scan(objdump, *paths[:half]) + scan(objdump, *paths[half:])
+    out = r.stdout
     found, member, saved, fn = [], paths[0] if paths else "?", None, "?"
     for line in out.splitlines():
         m = MEMBER.match(line)
