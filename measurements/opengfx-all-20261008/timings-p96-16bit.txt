@@ -1,0 +1,26 @@
+us per call, best of N runs                 p96-16-shipped (9)       p96-16-main (9)        p96-16-new (9)
+RectFill 300x200                                          57.6                  54.3                  51.5
+RectFill 300x200 COMPLEMENT                                9.1                   8.6                   7.7
+RectFill 300x200 area pattern                            100.9                 100.1                 100.5
+Text 40 characters JAM1                                   21.1                  18.9                  15.5
+Text 40 characters JAM2                                   15.3                  15.2                  17.3
+BltTemplate 128x64                                        66.4                  61.6                  75.4
+ClipBlit 300x100 in the window                             6.9                   7.4                   7.8
+ScrollRaster 300x200 by 8                                 13.4                  15.4                  15.2
+BltBitMapRastPort planar 128x64                          116.1                  91.8                 108.3
+20 lines across and down                                  29.7                  32.7                  34.5
+20 lines at 45 degrees                                    58.6                  57.8                  67.4
+20 slanted lines                                          72.6                  71.5                  83.2
+WritePixel 100 times                                      18.2                  14.3                  18.1
+WriteChunkyPixels 128x128                                152.1                 127.4                 143.5
+WritePixelArray ARGB 128x128                              41.1                  40.8                  37.1
+WritePixelArray LUT8 128x128                             151.0                 133.2                 143.8
+ReadPixelArray ARGB 128x128                               41.5                  38.7                  47.4
+FillPixelArray 300x200                                    50.4                  43.2                  48.1
+InvertPixelArray 300x200                                   6.7                   6.4                   6.6
+WritePixelArrayAlpha 128x128                               0.1                   0.1                   0.1
+RectFill 8x8, x100                                       124.2                 127.3                 135.9
+Text 1 character, x100                                   179.8                 194.1                 223.0
+ReadPixel x100                                          9721.6                8942.0                9655.4
+BltBitMapRastPort 16x16, x100                            399.0                 414.3                 413.8
+RectFill 8x8 off screen, x100                            144.5                  87.8                  91.0

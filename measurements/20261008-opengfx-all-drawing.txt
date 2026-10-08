@@ -1,0 +1,61 @@
+OpenGfx owns every drawing call: opengpu.library 0.8, openrtg.library 0.13
+8 October 2026, a scratch copy of the OpenUp 0.6.17 lab instance (OS 3.2.3,
+AC090 68040, ACRTG), never a live instance. OpenLook 0.6 (opengadtools main,
+with the depth fix), Open theme, light. Workbench at 800 x 600 on:
+
+  Picasso96 32-bit   mode $510A1300 (no OpenRTG; OpenLook puts OpenGfx's patches in)
+  Picasso96 16-bit   mode $510A1102
+  the OpenRTG part   mode $61011100, 16-bit (openrtg.library registers as OpenGfx's provider)
+
+Before: opengpu.library 0.7 + openrtg.library 0.12 (main). After: opengpu.library
+0.8 + openrtg.library 0.13 (this branch). Picasso96 also against OpenUp 0.6.17 as
+shipped (OpenLook 0.5, opengpu.library 0.6: no OpenGfx patches at all).
+
+Each boot: OpenPrefs Look, SYS: and MultiView (a PNG) opened, a screenshot;
+the pointer, driven from outside the Amiga, opens MultiView's menu, a screenshot; GfxPatches ALL;
+GfxBench N=60 three times; OpenGfxCheck QUICK; on OpenRTG, OpenRTGExact.
+Three boots of each configuration, interleaved.
+
+Patches (opengfx-all-20261008/gfxpatches-*.txt, GfxPatches ALL from opengadtools):
+  after, all three:       all 22 calls, exactly one Open patch each: OpenGfx's.
+                          On Picasso96 its own patches sit behind OpenGfx's on
+                          some calls (BltPattern, the pixel calls, the chunky
+                          and *8 calls; Text at 16 bits), as they did before.
+  before, OpenRTG part:   OpenGfx's on the 8, OpenRTG's own on the other 14.
+  OpenUp 0.6.17 shipped:  OpenLook's own on RectFill and Text, nothing on the
+                          rest (Picasso96's own only).
+
+Pictures (opengfx-all-20261008/*.png, before left, after right):
+  Picasso96 32-bit:  windows and menu the same, pixel for pixel, below the
+                     screen's title bar (its clock).
+  Picasso96 16-bit:  the same but for 2 pixels (the dock's page dot).
+  OpenRTG 16-bit:    the same, pixel for pixel.
+  Across boots, in both before and after, Workbench's drawer icons and some
+  pen colours (on 16-bit screens) come out one of two ways, and once in
+  three boots of the 32-bit after the dock opened over the backdrop rather
+  than its grey backing; the pairs here are boots where they came out alike.
+  Windows, menus, the dock and MultiView worked in every boot.
+
+Checks: OpenGfxCheck QUICK "all the same" everywhere (492 calls, three ways
+and in Fast RAM); OpenRTGExact 24 of 24 the same, before and after.
+
+Timings (opengfx-all-20261008/timings-*.txt): GfxBench, microseconds a call,
+the best of nine runs (three boots, three runs each). The machine was busy
+(load 17 to 33 on 12 cores, other builds running), so differences under about
+15 per cent are noise. No call is slower beyond that: on Picasso96 32-bit and
+on the OpenRTG part every line is within the noise or faster; on Picasso96
+16-bit the largest after/before ratios are Text 1 character x100 (223 / 194),
+20 slanted lines (83 / 72) and BltTemplate (75 / 62), within the noise of the
+same lines at 32 bits, where after is the faster. A pass-through costs
+OpenGfx one entry and one C call on top of the patch below it.
+
+  Picasso96 32-bit, us a call     shipped   before    after
+    RectFill 8x8, x100              130.7    158.8    142.4
+    Text 1 character, x100          193.7    237.2    192.8
+    BltBitMapRastPort 16x16, x100   453.6    447.2    460.4
+    ClipBlit 300x100                  9.0     10.2      8.9
+  OpenRTG 16-bit                             before    after
+    RectFill 8x8, x100                       174.7    162.6
+    Text 1 character, x100                   208.9    207.6
+    BltBitMapRastPort 16x16, x100           2620.6   2575.9
+    ClipBlit 300x100                          28.6     24.0

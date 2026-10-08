@@ -1,0 +1,25 @@
+opengpu.library 0.8 is loaded
+call                    Open  whose             RTG system's  others
+Text                    1     OpenGfx           1             0
+TextLength              1     OpenGfx           0             0
+TextExtent              1     OpenGfx           0             0
+TextFit                 1     OpenGfx           0             0
+RectFill                1     OpenGfx           0             0
+BltBitMap               1     OpenGfx           1             0
+BltTemplate             1     OpenGfx           1             0
+ScrollRaster            1     OpenGfx           1             0
+BltPattern              1     OpenGfx           1             0
+SetRast                 1     OpenGfx           1             0
+Draw                    1     OpenGfx           1             0
+PolyDraw                1     OpenGfx           0             0
+WritePixel              1     OpenGfx           1             0
+ReadPixel               1     OpenGfx           1             0
+BltBitMapRastPort       1     OpenGfx           0             0
+BltMaskBitMapRastPort   1     OpenGfx           1             0
+ClipBlit                1     OpenGfx           0             0
+WriteChunkyPixels       1     OpenGfx           1             0
+WritePixelArray8        1     OpenGfx           1             0
+WritePixelLine8         1     OpenGfx           1             0
+ReadPixelLine8          1     OpenGfx           1             0
+ReadPixelArray8         1     OpenGfx           1             0
+all 22 calls: exactly one Open patch each (the RTG system's own patches behind it, as before)

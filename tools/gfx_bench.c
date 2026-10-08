@@ -160,6 +160,14 @@ int main(int argc, char **argv)
         BENCH("InvertPixelArray 300x200", InvertPixelArray(rp, x0, y0, 300, 200));
         BENCH("WritePixelArrayAlpha 128x128", wpaa(argba, 0, 0, 512, rp, x0 + 150, y0 + 150, 128, 128, 0xFFFFFFFFUL));
     }
+    /* small calls, where a patch's own cost shows (OpenGfx 1.4 patches
+     * every drawing call: 8 October 2026) */
+    SetDrMd(rp, JAM1);
+    BENCH("RectFill 8x8, x100", for (int k = 0; k < 100; k++) RectFill(rp, x0 + (k & 31) * 9, y0 + 220, x0 + (k & 31) * 9 + 7, y0 + 227));
+    BENCH("Text 1 character, x100", for (int k = 0; k < 100; k++) { Move(rp, x0 + (k & 31) * 9, y0 + 240); Text(rp, (STRPTR)"x", 1); });
+    BENCH("ReadPixel x100", for (int k = 0; k < 100; k++) (void)ReadPixel(rp, x0 + k, y0 + 250));
+    if (planar) BENCH("BltBitMapRastPort 16x16, x100", for (int k = 0; k < 100; k++) BltBitMapRastPort(planar, 0, 0, rp, x0 + (k & 15) * 17, y0 + 260, 16, 16, 0xC0));
+    if (planar) BENCH("RectFill 8x8 off screen, x100", for (int k = 0; k < 100; k++) RectFill(&prp, (k & 7) * 9, 20, (k & 7) * 9 + 7, 27));
     if (planar) FreeBitMap(planar);
     FreeVec(argb); FreeVec(argba); FreeVec(pens);
     CloseWindow(win);
