@@ -240,6 +240,16 @@ and intuition.library, which know only the chipset. OpenRTG does what
 Picasso96 and CyberGraphX do: it adds the boards' modes and takes over the
 calls that touch RTG bitmaps, passing everything else to the original code.
 
+**OpenGfx handoff (8 October 2026).** OpenGfx is now the sole owner of four
+overlapping `graphics.library` vectors: `Text`, `RectFill`, `BltBitMap`
+and `ScrollRaster`. When `opengfx.library` 1.0 is present, OpenRTG
+registers its RTG implementations through OpenGfx's provider ABI and asks
+OpenGfx to install those four patches. OpenRTG then does not install
+competing patches for them. If OpenGfx is absent, OpenRTG keeps its existing
+standalone patch path. All of OpenRTG's other RTG-specific hooks remain owned
+by OpenRTG.
+
+
 - **Display database:** NextDisplayInfo, FindDisplayInfo, GetDisplayInfoData,
   ModeNotAvailable, BestModeIDA and GetVPModeID answer for the RTG ModeIDs as
   well, so ScreenMode prefs, the ASL screen mode requester and programs see
