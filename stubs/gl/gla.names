@@ -1,0 +1,15 @@
+gla_buffer_create
+gla_buffer_destroy
+gla_buffer_resize
+gla_context_create
+gla_context_destroy
+gla_display_create
+gla_display_create_virgl
+gla_display_destroy
+gla_display_driver
+gla_display_version
+gla_get_proc_address
+gla_make_current
+gla_os3_present_init
+gla_os3_virgl_transport
+gla_swap

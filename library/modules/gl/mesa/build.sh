@@ -81,6 +81,14 @@ LIBS="src/mesa/libmesa.a src/gallium/drivers/softpipe/libsoftpipe.a src/gallium/
  src/util/blake3/libblake3.a src/c11/impl/libmesa_util_c11.a"
 OPT=$(cd "$B" && ninja -t targets all | grep -oE '^src/(util/libmesa_util_(simd|clflush|clflushopt)|mesa/libmesa_sse41)\.a' | sort -u | tr '\n' ' ')
 ninja -C "$B" $LIBS $OPT
+# GCC 16's -m68040 sometimes saves FPCR, around a float-to-int store, in the
+# register the store indexes with (tools/fpcr_check.py). The objects that do
+# are built again at -m68020 and linked ahead of the libraries.
+FIXOBJS=
+case $NAME in *amigaos*)
+    FIXOBJS=$("$PY" "$HERE/fpcr_fix.py" "$B" "$(dirname "$(command -v m68k-amigaos-gcc)")/m68k-amigaos-objdump" "$B/fpcr-fixed" $LIBS $OPT)
+    FIXOBJS=$(echo $FIXOBJS) ;;
+esac
 
 # The GLA core takes Mesa's own flags (from the state tracker's compile line).
 # That includes the target's -m flags and, on AmigaOS, -noixemul and the shim header.
@@ -132,12 +140,12 @@ esac
 # Mesa's c11 threads name the pthread_mutexattr calls weakly; a static link must ask for them.
 WEAK="-Wl,-u,pthread_mutexattr_init -Wl,-u,pthread_mutexattr_settype -Wl,-u,pthread_mutexattr_destroy"
 $CC $LFLAGS -std=c99 -O2 -Wall -Wextra -Werror -I"$SRC/include" -I"$REPO" ${CROSS:+-static $WEAK} -o test_gla \
-    "$TOP/tests/test_gla.c" gla_core.o gla_virgl.o $HOSTV $SHIM -Wl,--start-group $LIBS $OPT -Wl,--end-group \
+    "$TOP/tests/test_gla.c" gla_core.o gla_virgl.o $HOSTV $SHIM $FIXOBJS -Wl,--start-group $LIBS $OPT -Wl,--end-group \
     $SYSLIBS ${CROSS:+-latomic}
 # What programs built on this (OpenDemos) need to link against it, as shell assignments.
 q() { printf "%s='%s'\n" "$1" "$(printf %s "$2" | sed "s/'/'\\\\''/g")"; }
 { q CC "$CC"; q FLAGS "$FLAGS"; q LFLAGS "$LFLAGS"; q SRC "$SRC"; q LIBS "$LIBS"; q OPT "$OPT"
-  q SHIM "$SHIM"; q SYSLIBS "$SYSLIBS"; q WEAK "$WEAK"; q GLAOBJS "gla_core.o gla_virgl.o"; } > gla-link.env
+  q SHIM "$SHIM"; q SYSLIBS "$SYSLIBS"; q WEAK "$WEAK"; q GLAOBJS "gla_core.o gla_virgl.o"; q FIXOBJS "$FIXOBJS"; } > gla-link.env
 case $NAME in *amigaos*)
     # The unstripped test is ~20 MB of symbols; the copy for the Amiga is stripped.
     "${CC%gcc}strip" -o test_gla.stripped test_gla
