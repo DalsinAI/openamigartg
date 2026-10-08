@@ -1,0 +1,32 @@
+--- a/src/SDL12_compat.c
++++ b/src/SDL12_compat.c
+@@ -1339,6 +1339,17 @@
+ 
+         return SDL_FALSE; /* didn't find it anywhere reasonable. :( */
+     }
++#elif defined(__amigaos3__)
++    /* AmigaOS 3 (Open), altered by Dalsin Limited, 2026: SDL 2 is OpenGPU's
++       SDL2.module, reached through libSDL2.a's calls, which are linked into
++       libSDL.a under the names SDL2X_ (sdl12_amiga.c). A symbol is looked up
++       in their table; nothing is loaded here. */
++    #define SDL20_REQUIRED_VER SDL_VERSIONNUM(2,0,7)
++    extern void *SDL12Amiga_LookupSDL20(const char *name);
++    static int Loaded_SDL20 = 0;
++    #define LoadSDL20Library() ((Loaded_SDL20 = 1) != 0)
++    #define LookupSDL20Sym(sym) SDL12Amiga_LookupSDL20(sym)
++    #define CloseSDL20Library() { Loaded_SDL20 = 0; }
+ #elif defined(__unix__)
+     #include <dlfcn.h>
+     #define SDL20_LIBNAME "libSDL2-2.0.so.0"
+@@ -1517,6 +1528,11 @@
+     buf[0] = '\0';
+     DosQueryModuleName(pib->pib_hmte, maxpath, buf);
+ }
++#elif defined(__amigaos3__)
++extern void SDL12Amiga_GetExeName(char *buf, unsigned maxpath);
++static void OS_GetExeName(char *buf, const unsigned maxpath) {
++    SDL12Amiga_GetExeName(buf, maxpath);
++}
+ #elif defined(__APPLE__) || defined(__FREEBSD__)
+ static void OS_GetExeName(char *buf, const unsigned maxpath) {
+     const char *progname = getprogname();

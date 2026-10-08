@@ -25,7 +25,7 @@ time:
 | --- | --- | --- |
 | SDL 2 | `-lSDL2` (and `-lGL` when it calls `SDL_GL_`) | opengpu.library, SDL2.module (and GL.module) |
 | SDL_image, SDL_mixer, SDL_ttf, SDL_net | `-lSDL2_image` and the others, before `-lSDL2` | as SDL 2 (SDL_net: bsdsocket.library) |
-| SDL 1.2 (a kit built with it) | `-lSDL -lSDL2` (`sdl-config --libs`) | as SDL 2 |
+| SDL 1.2 (a kit built with it) | `-lSDL` (`sdl-config --libs`; with `--gl`, `-lSDL_gl` and `-lGL` too) | as SDL 2 |
 | OpenGL, GLES, GLA | `-lGL` | opengpu.library, GL.module |
 | TinyGL | `-ltinygl -lGL` (`pkg-config tinygl`) | opengpu.library, GL.module, tinygl.library |
 | MiniGL | `-lminigl` (stubs) or `-lmgl` (GLUT-style helpers) | minigl.library |
@@ -159,13 +159,25 @@ GL:
 
 ### SDL 1.2
 
-A kit built with SDL 1.2 (`make_sdk.py --sdl12`) has `include/SDL/`,
-`libSDL.a`, `bin/sdl-config` and `sdl.pc`. SDL 1.2 there is sdl12-compat
-(Zlib): every SDL 1.2 call becomes SDL 2 calls, so SDL 1.2 programs draw,
-play and read input through SDL2.module, with the same opengpu renderer,
-AHI and joystick code as SDL 2 programs. `sdl-config` works as
-`sdl2-config` does (`--cflags`, `--libs`, `--gl`, `SDL2_CPU`,
-`SDL2_RUNTIME`). `examples/sdl12/bounce.c` is an SDL 1.2 program.
+A kit built with SDL 1.2 (openamigartg `library/modules/sdl12`, which
+`make_sdk.py` picks up) has `include/SDL/`, `libSDL.a`, `libSDL_gl.a`,
+`bin/sdl-config` and `sdl.pc`. SDL 1.2 there is sdl12-compat 1.2.78 (Zlib):
+every SDL 1.2 call becomes SDL 2 calls, so SDL 1.2 programs draw, play and
+read input through SDL2.module, with the same opengpu renderer, AHI and
+joystick code as SDL 2 programs.
+
+- `libSDL.a` has SDL 2's link library inside it, its names changed to
+  `SDL2X_` (sdl12-compat defines the `SDL_` names with SDL 1.2's meanings),
+  so a program links `-lSDL` and nothing else. It must not link `-lSDL2`
+  as well.
+- OpenGL (`SDL_OPENGL`, `SDL_GL_SwapBuffers`) needs `sdl-config --libs --gl`
+  (`-Wl,-u,_SDL12Amiga_gl -lSDL_gl ... -lGL`). Without it the `SDL_GL_` calls
+  answer 0 and `SDL_SetVideoMode(..., SDL_OPENGL)` fails.
+- The kit has no GLU: `sdl-config --cflags` gives `-DNO_SDL_GLU`, so
+  `SDL_opengl.h` leaves `GL/glu.h` out.
+- `sdl-config` takes `SDL2_CPU` and `SDL2_RUNTIME` as `sdl2-config` does.
+
+`examples/sdl12/bounce.c` is an SDL 1.2 program.
 
 ## 6. OpenGL, GLES and GLA
 
