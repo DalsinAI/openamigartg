@@ -1,0 +1,13 @@
+{
+  "sdl12-compat": {
+    "name": "sdl12-compat",
+    "version": "1.2.78",
+    "file": "sdl12-compat-1.2.78.tar.gz",
+    "dir": "sdl12-compat-1.2.78",
+    "url": "https://github.com/libsdl-org/sdl12-compat/releases/download/release-1.2.78/sdl12-compat-1.2.78.tar.gz",
+    "sha256": "bdc5277cf3a8ae18c7493a7d4d0867c53439a9e5a661133dcf1f2eb0b9ddca4d",
+    "bytes": 488162,
+    "licence": "Zlib (dr_mp3 inside it: public domain or MIT-0)",
+    "used_for": "SDL 1.2's API on OpenGPU's SDL 2: include/SDL/ and libSDL.a"
+  }
+}

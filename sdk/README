@@ -39,8 +39,9 @@ What is in it
   lib/libminigl.a libmgl.a
                           MiniGL (minigl.library), and its GLUT-style helpers
   lib/libtinygl.a         TinyGL's calls, on GL (link it before -lGL)
-  lib/libSDL.a            SDL 1.2: sdl12-compat, on SDL 2 (only in a kit
-                          built with it)
+  lib/libSDL.a            SDL 1.2: sdl12-compat, on SDL 2, with SDL 2's
+                          link library inside it (only in a kit built with it)
+  lib/libSDL_gl.a         SDL 1.2's OpenGL calls (sdl-config --gl)
   lib/pkgconfig/          sdl2, SDL2_image, SDL2_mixer, SDL2_ttf, SDL2_net,
                           gl, glesv2 and tinygl (and sdl, with SDL 1.2)
   lib/cmake/              find_package(SDL2) and the satellites
@@ -130,6 +131,10 @@ Things to know
 - SDL 1.2 programs run through sdl12-compat on OpenGPU's SDL 2, so they
   draw, play and read input through SDL2.module, like SDL 2 programs.
   sdl-config takes the same SDL2_CPU and SDL2_RUNTIME settings, and --gl.
+  -lSDL is all such a program links: libSDL.a has SDL 2's link library
+  inside it. --gl adds SDL 1.2's OpenGL (-lSDL_gl and -lGL). The kit has no
+  GLU, so sdl-config --cflags gives -DNO_SDL_GLU, and SDL_opengl.h leaves
+  GL/glu.h out.
 - TinyGL programs run on GL.module like other GL programs. They also need
   LIBS:tinygl.library (OpenUp installs it), which they open themselves.
   SetEnv TinyGL/Driver CPU picks softpipe. A program that includes only
