@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: MIT
  *
  * The GLA core: Mesa's GL state tracker and softpipe behind a small C API.
- * gl.library's GLA calls (glACreateContextTags and friends) sit on it on
- * OS 3.2, and the host tests call it directly. It knows nothing of the
+ * On OS 3.2 programs reach it through OpenGPU's GL module (libGL.a and
+ * GL.module), and the host tests call it directly. It knows nothing of the
  * Amiga: finished frames go to a present hook, which on OS 3.2 sends them
  * through OpenGPU (one PIXELS command) or OpenRTG (WritePixelArray). */
 #ifndef GLA_CORE_H
