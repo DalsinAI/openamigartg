@@ -1,0 +1,20 @@
+--- a/src/util/u_endian.h
++++ b/src/util/u_endian.h
+@@ -94,6 +94,17 @@
+ 
+ #endif
+ 
++/* No endian.h (AmigaOS with libnix): GCC and Clang say it themselves. */
++#if !defined(UTIL_ARCH_LITTLE_ENDIAN) && defined(__BYTE_ORDER__)
++#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
++# define UTIL_ARCH_LITTLE_ENDIAN 1
++# define UTIL_ARCH_BIG_ENDIAN 0
++#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
++# define UTIL_ARCH_LITTLE_ENDIAN 0
++# define UTIL_ARCH_BIG_ENDIAN 1
++#endif
++#endif
++
+ #if !defined(UTIL_ARCH_LITTLE_ENDIAN) || !defined(UTIL_ARCH_BIG_ENDIAN)
+ # error "UTIL_ARCH_LITTLE_ENDIAN and/or UTIL_ARCH_BIG_ENDIAN were unset."
+ #elif UTIL_ARCH_LITTLE_ENDIAN == UTIL_ARCH_BIG_ENDIAN
