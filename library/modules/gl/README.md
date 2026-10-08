@@ -106,3 +106,38 @@ virglrenderer 1.3.0 on the PC's graphics chip):
   4.2 → 342, 1.5 → 421, 0.3 → 512: the module costs nothing per call.
 - **ModuleCheck** (`tests/modules`) opens GL.module in 1,020 ms and finds
   its 1,315 calls.
+
+## Speed on the 68k
+
+Softpipe's rates above (4.0, 1.5 and 0.3 fps) were below the 5.8, 2.6 and
+0.9 fps of 6 October. The Team measured why on a scratch copy of the
+Showcase instance, at 320x240. Each figure is the steady rate after the
+first 10 seconds (start-up, display lists and shaders are left out) over
+30 to 70 seconds. GL.module was built with each set of flags, and the
+6 October build of Mesa was relinked into a static OpenDemos.
+
+| Build | Runtime of 8 Oct | JIT of amigachrome #293 |
+| --- | --- | --- |
+| 6 October (`-m68040`, bit fields) | 6.5, 2.4, 0.24 | 16.1, 7.1, 0.41 |
+| `-m68040 -mnobitfield` (until now) | 4.1, 1.6, 0.33 | 16.3 to 17.8, 7.2 to 7.6, 0.44 |
+| `-m68040`, bit fields (now) | 6.3, 2.7, 0.24 | 17.9, 7.5, 0.45 |
+| `-m68020 -m68881 -mnobitfield` | | 6.9, 3.5, 0.41 |
+| `-m68020 -m68881`, bit fields | | 7.2, 3.6, 0.41 |
+| `-m68020 -m68881 -mnobitfield`, `-O2` | | 8.6, 3.5, 0.36 |
+
+Boing, Chrome Gears and Copper Tunnel, in fps.
+
+- **`-mnobitfield`** cost Boing and Chrome Gears a third of their rate on
+  the runtime of 8 October, so it is dropped. On the #293 JIT, which
+  translates bit-field instructions, it makes no difference. The pictures
+  are unchanged (test_gla's b6a1c876, a670987e and 209db179).
+- **`-m68020 -m68881`** halves the rate, so `-m68040` stays.
+- **`-O2`** is no faster than meson's release `-O3` overall.
+- **The FPCR fix** rebuilds one object, `feedback.c`, which the demos don't
+  use, so it plays no part.
+- **So the drop came from `-mnobitfield`.** It arrived with the GL module.
+  The steady rates of that build on that runtime (4.1 and 1.6) match the
+  figures above. Copper Tunnel's 0.9 of 6 October was read from a
+  one-second window title, and no build here reaches it: the steady rate is
+  0.24 to 0.45, with the 6 October build too.
+
