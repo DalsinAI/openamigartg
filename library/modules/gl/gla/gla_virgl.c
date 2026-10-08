@@ -20,6 +20,7 @@
  * for what each call must do. */
 #include "gla_virgl.h"
 
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -399,6 +400,13 @@ static int gv_get_caps(struct virgl_winsys *vws, struct virgl_drm_caps *caps)
         for (i = 0; i < 32; i++) if (v & (1u << i)) r |= 1u << (31 - i);
         *b = r;
     }
+    /* the renderer's name is bytes, not words: the word order above turned
+     * each four of them round ("virgl ( DMAedaR..."), so turn them back */
+    if (set == 2 && n >= offsetof(struct virgl_caps_v2, renderer) + sizeof caps->caps.v2.renderer)
+        for (i = 0; i < sizeof caps->caps.v2.renderer; i += 4) {
+            uint32_t *p = (uint32_t *)&caps->caps.v2.renderer[i];
+            *p = util_bswap32(*p);
+        }
 #endif
     /* copies through staging resources need memory the host maps: not here */
     caps->caps.v2.capability_bits_v2 &= ~VIRGL_CAP_V2_COPY_TRANSFER_BOTH_DIRECTIONS;

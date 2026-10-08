@@ -119,28 +119,113 @@ def main():
                     % (nm, nm, 4 * i, longs[i]))
         s.write("""
 | A0: the call's slot; D0: its arguments, in longs. The first call into GL
-| loads the module (gl_stub_load in gl_stub.c). Then: the program's A4 and A5
-| saved, the arguments copied below them, the module's A4 set, the call, and
-| the program's registers back. D0-D1/A0-A1 are the caller's to lose, and
-| the result in D0, D1 or FP0 comes back untouched.
+| sets up the GL stack (gl_stub_prepare) and loads the module (gl_stub_load,
+| in gl_stub.c). Then: the program's A4 and A5 saved; when the program's
+| stack is too small for GL and this is the call of the task that set it up
+| (not GL calling back into GL), StackSwap onto the GL stack; the arguments
+| copied there from the caller's frame, the module's A4 set, the call, and
+| the program's stack and registers back. StackSwap moves SP and its own
+| return address, so the switches are inline, never subroutines.
+| D0-D1/A0-A1 are the caller's to lose, and the result in D0, D1 or FP0
+| comes back untouched (StackSwap keeps the FPU's registers).
 \t.globl\t_gl_stub_call
 _gl_stub_call:
-\ttst.l\t_gl_stub_module
-\tbne.s\t1f
-\tmovem.l\t%d0/%a0,-(%sp)
-\tjsr\t_gl_stub_load
-\tmovem.l\t(%sp)+,%d0/%a0
-1:\tmove.l\t%a4,-(%sp)
+\tmove.l\t%a4,-(%sp)
 \tlink\t%a5,#0
-\tlea\t12(%a5,%d0.l*4),%a1
-\tbra.s\t3f
-2:\tmove.l\t-(%a1),-(%sp)
-3:\tdbra\t%d0,2b
+\tmovem.l\t%d2-%d3/%a2/%a6,-(%sp)
+\tmove.l\t%d0,%d2
+\tmove.l\t%a0,%a2
+\ttst.l\t_gl_stub_ready
+\tbne.s\t1f
+\tjsr\t_gl_stub_prepare
+1:
+\tmoveq\t#0,%d3
+\tmove.l\t_gl_stub_sss,%d0
+\tbeq.s\t5f
+\ttst.l\t_gl_stub_depth
+\tbne.s\t5f
+\tmove.l\t_gl_stub_sysbase,%a6
+\tmove.l\t276(%a6),%d1
+\tcmp.l\t_gl_stub_task,%d1
+\tbne.s\t5f
+\tmove.l\t%d0,%a0
+\tjsr\t-732(%a6)
+\tmoveq\t#1,%d3
+\taddq.l\t#1,_gl_stub_depth
+5:
+\ttst.l\t_gl_stub_module
+\tbne.s\t2f
+\tjsr\t_gl_stub_load
+\ttst.l\t_gl_stub_fail
+\tbeq.s\t2f
+| The module couldn't be loaded (gl_stub_load said why): back on the
+| program's stack, then end the program as libnix's exit does.
+\ttst.l\t%d3
+\tbeq.s\t9f
+\tsubq.l\t#1,_gl_stub_depth
+\tmove.l\t_gl_stub_sss,%a0
+\tmove.l\t_gl_stub_sysbase,%a6
+\tjsr\t-732(%a6)
+9:\tpea\t20.w
+\tjsr\t_exit
+2:\tlea\t12(%a5,%d2.l*4),%a1
+\tmove.l\t%d2,%d0
+\tbra.s\t4f
+3:\tmove.l\t-(%a1),-(%sp)
+4:\tdbra\t%d0,3b
 \tmove.l\t_gl_stub_a4,%a4
-\tmove.l\t(%a0),%a1
+\tmove.l\t(%a2),%a1
 \tjsr\t(%a1)
+\tlea\t(%sp,%d2.l*4),%sp
+\ttst.l\t%d3
+\tbeq.s\t6f
+\tsubq.l\t#1,_gl_stub_depth
+\tmove.l\t%d0,%d2
+\tmove.l\t%d1,%a2
+\tmove.l\t_gl_stub_sss,%a0
+\tmove.l\t_gl_stub_sysbase,%a6
+\tjsr\t-732(%a6)
+\tmove.l\t%d2,%d0
+\tmove.l\t%a2,%d1
+6:
+\tmovem.l\t(%sp)+,%d2-%d3/%a2/%a6
 \tunlk\t%a5
 \tmove.l\t(%sp)+,%a4
+\trts
+
+| void gl_stub_run(void (*fn)(void)): fn on the GL stack, as a call would be
+| (gl_stub.c starts and closes the module through it).
+\t.globl\t_gl_stub_run
+_gl_stub_run:
+\tmovem.l\t%d2-%d3/%a2/%a6,-(%sp)
+\tmove.l\t20(%sp),%a2
+\tmoveq\t#0,%d3
+\tmove.l\t_gl_stub_sss,%d0
+\tbeq.s\t7f
+\ttst.l\t_gl_stub_depth
+\tbne.s\t7f
+\tmove.l\t_gl_stub_sysbase,%a6
+\tmove.l\t276(%a6),%d1
+\tcmp.l\t_gl_stub_task,%d1
+\tbne.s\t7f
+\tmove.l\t%d0,%a0
+\tjsr\t-732(%a6)
+\tmoveq\t#1,%d3
+\taddq.l\t#1,_gl_stub_depth
+7:
+\tjsr\t(%a2)
+\ttst.l\t%d3
+\tbeq.s\t8f
+\tsubq.l\t#1,_gl_stub_depth
+\tmove.l\t%d0,%d2
+\tmove.l\t%d1,%a2
+\tmove.l\t_gl_stub_sss,%a0
+\tmove.l\t_gl_stub_sysbase,%a6
+\tjsr\t-732(%a6)
+\tmove.l\t%d2,%d0
+\tmove.l\t%a2,%d1
+8:
+\tmovem.l\t(%sp)+,%d2-%d3/%a2/%a6
 \trts
 
 | A call this GL.module doesn't have: 0.
