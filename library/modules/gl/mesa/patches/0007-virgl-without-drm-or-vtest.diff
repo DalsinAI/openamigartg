@@ -1,0 +1,35 @@
+diff --git a/src/gallium/drivers/virgl/meson.build b/src/gallium/drivers/virgl/meson.build
+index 7ddcc90..9cf6f1c 100644
+--- a/src/gallium/drivers/virgl/meson.build
++++ b/src/gallium/drivers/virgl/meson.build
+@@ -25,8 +25,10 @@ libvirgl = static_library(
+ )
+ 
+ virgl_deps = [libvirgl]
+-if not with_platform_windows
++if is_variable('libvirgldrm')
+   virgl_deps += libvirgldrm
++endif
++if is_variable('libvirglvtest')
+   virgl_deps += libvirglvtest
+ endif
+ 
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index 67011f5..4e274b7 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -170,8 +170,12 @@ else
+ endif
+ if with_gallium_virgl
+   subdir('winsys/virgl/common')
+-  if not with_platform_windows
+-    subdir('winsys/virgl/drm')
++  # AmigaOS has neither DRM nor UNIX sockets: its winsys is the GLA core's
++  # (OpenGPU's ring); a host without libdrm builds only vtest.
++  if not with_platform_windows and host_machine.system() != 'amigaos'
++    if dep_libdrm.found()
++      subdir('winsys/virgl/drm')
++    endif
+     subdir('winsys/virgl/vtest')
+   endif
+   subdir('drivers/virgl')

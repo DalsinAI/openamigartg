@@ -1,0 +1,16 @@
+diff --git a/src/gallium/drivers/virgl/virgl_context.c b/src/gallium/drivers/virgl/virgl_context.c
+index bfc9835..f9bc79b 100644
+--- a/src/gallium/drivers/virgl/virgl_context.c
++++ b/src/gallium/drivers/virgl/virgl_context.c
+@@ -22,9 +22,8 @@
+  */
+ 
+ #include <string.h>
+-#ifndef _WIN32
+-#include <libsync.h>
+-#endif
++/* libsync.h (libdrm's) was included here, and nothing in the file uses it:
++ * gone, so virgl builds without libdrm (AmigaOS). */
+ 
+ #include "pipe/p_shader_tokens.h"
+ 
