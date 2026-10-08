@@ -2,7 +2,9 @@
  * SPDX-License-Identifier: MIT
  *
  * OGPU stream v1.1: the bytes every OpenGPU back end receives (DESIGN.md
- * section 5). v1.1 adds A8 coverage masks for anti-aliased text and clip
+ * section 5). v1.2 is being specified in docs/opengpu-stream-v1.2-proposals.md;
+ * OGPU_STREAM_MINOR remains 1 until the v1.2 CPU-core/golden-test landing gate
+ * is complete. v1.1 adds A8 coverage masks for anti-aliased text and clip
  * paths (OpenGfx): the A8 format, MASK, and COMPOSITE's MASK, ADD and IN
  * flags. A v1.0 back end answers OGPU_NONE to OGPU_Query(OGPU_OP_MASK, ...),
  * so a program asks before it uses any of them. The 68k's own CPU back end, ACRTG.gpu on the Cradle and
