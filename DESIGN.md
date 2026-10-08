@@ -255,6 +255,41 @@ other OpenRTG-specific hooks remain owned by OpenRTG. Since opengpu.library
 0.12 registers its provider there; with an older opengpu.library it still
 opens `opengfx.library` (by now a stub that forwards to opengpu.library).
 
+**Every drawing call under OpenGfx (8 October 2026, opengpu.library 0.8,
+openrtg.library 0.13).** The user's decision ("yes, under OpenGfx"): OpenGfx
+owns every `graphics.library` drawing and text patch, not only the first
+eight. OpenGfx 1.4 patches fourteen more, and OpenRTG provides them through
+the longer provider record (`struct OGFXProviderAll`, `include/opengpu/gfx.h`)
+instead of patching them itself. Screens, modes, bitmaps, palettes and
+sprites are not drawing: they stay OpenRTG's. With an OpenGfx older than 1.4,
+OpenRTG patches the fourteen itself as before; with no OpenGfx, all of them.
+
+### Who owns each call
+
+| Call | LVO | Owner (patches it) | Behind it |
+| --- | --- | --- | --- |
+| Text | -60 | OpenGfx | OpenLook's look, then OpenRTG (provider) |
+| TextLength, TextExtent, TextFit | -54, -690, -696 | OpenGfx | graphics.library (OpenFont's metrics later) |
+| RectFill | -306 | OpenGfx | OpenLook's look, then OpenRTG |
+| BltBitMap, BltTemplate, ScrollRaster | -30, -36, -396 | OpenGfx | OpenRTG |
+| BltPattern, SetRast, Draw, PolyDraw | -312, -234, -246, -336 | OpenGfx (0.8) | OpenRTG |
+| WritePixel, ReadPixel | -324, -318 | OpenGfx (0.8) | OpenRTG |
+| BltBitMapRastPort, BltMaskBitMapRastPort, ClipBlit | -606, -636, -552 | OpenGfx (0.8) | OpenRTG |
+| WriteChunkyPixels, WritePixelArray8, WritePixelLine8 | -1056, -786, -774 | OpenGfx (0.8) | OpenRTG |
+| ReadPixelLine8, ReadPixelArray8 | -768, -780 | OpenGfx (0.8) | OpenRTG |
+| AllocBitMap, FreeBitMap, GetBitMapAttr | -918, -924, -960 | OpenRTG | (bitmaps, not drawing) |
+| MakeVPort, MrgCop, LoadView | -216, -210, -222 | OpenRTG | (the display) |
+| LoadRGB32, SetRGB32, LoadRGB4, SetRGB4 | -882, -852, -192, -288 | OpenRTG | (palettes) |
+| MoveSprite, ChangeExtSpriteA | -426, -1026 | OpenRTG | (sprites) |
+| NextDisplayInfo, FindDisplayInfo, GetDisplayInfoData, ModeNotAvailable, BestModeIDA | -732, -726, -756, -798, -1050 | OpenRTG (displaydb.c) | (the display database) |
+| intuition: OpenScreenTagList, CloseScreen, MakeScreen, RemakeDisplay, RethinkDisplay | -612, -66, -378, -384, -390 | OpenRTG | (screens) |
+
+On Picasso96 (no OpenRTG) OpenGfx's 22 patches sit in front of Picasso96's
+own (rtg.library patches some of the same calls, among them BltPattern, the
+pixel calls and the chunky and *8 calls): OpenGfx has no provider there and
+passes each call on, so Picasso96 draws as before. OpenLook 0.6 asks OpenGfx
+to put its patches in.
+
 
 - **Display database:** NextDisplayInfo, FindDisplayInfo, GetDisplayInfoData,
   ModeNotAvailable, BestModeIDA and GetVPModeID answer for the RTG ModeIDs as
@@ -308,9 +343,11 @@ opens `opengfx.library` (by now a stub that forwards to opengpu.library).
   `Text`, `RectFill`, `BltBitMap`, `BltTemplate` and
   `ScrollRaster`; the three text-measurement entries stay NULL until
   OpenFont-backed metrics are ready, so OpenGfx chains them to
-  graphics.library. OpenRTG keeps its other RTG-specific graphics hooks
-  (`BltPattern`, `Draw`, pixel arrays, display database, bitmap/screen
-  management and board drivers).
+  graphics.library. From opengpu.library 0.8 OpenGfx owns the other
+  fourteen drawing calls too (`BltPattern`, `Draw`, the pixel calls and
+  arrays, `ClipBlit` and the rest; "Who owns each call" above) and OpenRTG
+  provides them; OpenRTG keeps the display database, bitmap and screen
+  management, palettes, sprites and the board drivers.
   When OpenGfx is not installed, OpenRTG retains its standalone patch path so
   the library remains usable independently. OpenGfx lives in opengpu.library
   from 0.6 (`library/ogfx`, "One library" below).

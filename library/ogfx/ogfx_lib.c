@@ -9,7 +9,10 @@
  *
  * OpenGfx owns every graphics.library drawing and text patch: Text,
  * TextLength, TextExtent, TextFit, RectFill, BltBitMap, BltTemplate and
- * ScrollRaster. OpenFont patches nothing: it supplies glyphs, shaping and
+ * ScrollRaster, and from 0.8 BltPattern, SetRast, Draw, PolyDraw,
+ * WritePixel, ReadPixel, BltBitMapRastPort, BltMaskBitMapRastPort, ClipBlit,
+ * WriteChunkyPixels, WritePixelArray8, WritePixelLine8, ReadPixelLine8 and
+ * ReadPixelArray8 (22 in all). OpenFont patches nothing: it supplies glyphs, shaping and
  * metrics. OpenRTG and other RTG systems register a provider for these calls
  * instead of installing competing vectors. A call no provider and no leaf
  * takes goes to graphics.library's own code.
@@ -55,6 +58,21 @@ static const WORD lvo_of[OGFX_P_COUNT] = {
     -30,    /* BltBitMap */
     -36,    /* BltTemplate */
     -396,   /* ScrollRaster */
+    /* 0.8: every other drawing call (gfx.h) */
+    -312,   /* BltPattern */
+    -234,   /* SetRast */
+    -246,   /* Draw */
+    -336,   /* PolyDraw */
+    -324,   /* WritePixel */
+    -318,   /* ReadPixel */
+    -606,   /* BltBitMapRastPort */
+    -636,   /* BltMaskBitMapRastPort */
+    -552,   /* ClipBlit */
+    -1056,  /* WriteChunkyPixels */
+    -786,   /* WritePixelArray8 */
+    -774,   /* WritePixelLine8 */
+    -768,   /* ReadPixelLine8 */
+    -780,   /* ReadPixelArray8 */
 };
 
 static const char gfx_name[] = "graphics.library";
@@ -489,10 +507,10 @@ OGFX_CALL void do_rectfill(struct ogfx_state *st, struct GfxBase *gfx, struct Ra
 
     /* Providers own foreign bitmap semantics (for example OpenRTG) and
      * remain active when native OpenGfx acceleration is disabled. */
-    if (st->have_provider && st->provider.rectfill) {
+    if (st->have_provider && st->provider.v1.rectfill) {
         struct OGFXRectFillRequest r;
         r.rp = rp; r.x0 = x0; r.y0 = y0; r.x1 = x1; r.y1 = y1;
-        if (st->provider.rectfill(st->provider.userdata, &r))
+        if (st->provider.v1.rectfill(st->provider.v1.userdata, &r))
             return;
     }
 
@@ -513,10 +531,10 @@ OGFX_CALL LONG do_text(struct ogfx_state *st, struct GfxBase *gfx, struct RastPo
             return result;
     }
 
-    if (st->have_provider && st->provider.text) {
+    if (st->have_provider && st->provider.v1.text) {
         struct OGFXTextRequest r;
         r.rp = rp; r.text = text; r.length = length; r.result = 0;
-        if (st->provider.text(st->provider.userdata, &r))
+        if (st->provider.v1.text(st->provider.v1.userdata, &r))
             return r.result;
     }
 
@@ -532,13 +550,13 @@ OGFX_CALL LONG do_bltbitmap(struct ogfx_state *st, struct GfxBase *gfx,
     sx = (WORD)sx; sy = (WORD)sy; dx = (WORD)dx; dy = (WORD)dy;
     width = (WORD)width; height = (WORD)height; minterm = (UBYTE)minterm; mask = (UBYTE)mask;
 
-    if (st->have_provider && st->provider.bltbitmap) {
+    if (st->have_provider && st->provider.v1.bltbitmap) {
         struct OGFXBltBitMapRequest r;
         r.src = src; r.sx = sx; r.sy = sy;
         r.dst = dst; r.dx = dx; r.dy = dy;
         r.width = width; r.height = height;
         r.minterm = minterm; r.mask = mask; r.temp = temp; r.result = 0;
-        if (st->provider.bltbitmap(st->provider.userdata, &r))
+        if (st->provider.v1.bltbitmap(st->provider.v1.userdata, &r))
             return r.result;
     }
 
@@ -558,11 +576,11 @@ OGFX_CALL void do_scroll(struct ogfx_state *st, struct GfxBase *gfx, struct Rast
 {
     dx = (WORD)dx; dy = (WORD)dy; x0 = (WORD)x0; y0 = (WORD)y0; x1 = (WORD)x1; y1 = (WORD)y1;
 
-    if (st->have_provider && st->provider.scrollraster) {
+    if (st->have_provider && st->provider.v1.scrollraster) {
         struct OGFXScrollRasterRequest r;
         r.rp = rp; r.dx = dx; r.dy = dy;
         r.x0 = x0; r.y0 = y0; r.x1 = x1; r.y1 = y1;
-        if (st->provider.scrollraster(st->provider.userdata, &r))
+        if (st->provider.v1.scrollraster(st->provider.v1.userdata, &r))
             return;
     }
 
@@ -580,10 +598,10 @@ OGFX_CALL WORD do_textlength(struct ogfx_state *st, struct GfxBase *gfx, struct 
 {
     length = (UWORD)length;
 
-    if (st->have_provider && st->provider.textlength) {
+    if (st->have_provider && st->provider.v1.textlength) {
         struct OGFXTextLengthRequest r;
         r.rp = rp; r.text = text; r.length = length; r.result = 0;
-        if (st->provider.textlength(st->provider.userdata, &r))
+        if (st->provider.v1.textlength(st->provider.v1.userdata, &r))
             return (WORD)r.result;
     }
 
@@ -595,10 +613,10 @@ OGFX_CALL void do_textextent(struct ogfx_state *st, struct GfxBase *gfx, struct 
 {
     length = (UWORD)length;
 
-    if (st->have_provider && st->provider.textextent) {
+    if (st->have_provider && st->provider.v1.textextent) {
         struct OGFXTextExtentRequest r;
         r.rp = rp; r.text = text; r.length = length; r.extent = extent;
-        if (st->provider.textextent(st->provider.userdata, &r))
+        if (st->provider.v1.textextent(st->provider.v1.userdata, &r))
             return;
     }
 
@@ -613,12 +631,12 @@ OGFX_CALL ULONG do_textfit(struct ogfx_state *st, struct GfxBase *gfx, struct Ra
     length = (UWORD)length; direction = (WORD)direction;
     bit_width = (UWORD)bit_width; bit_height = (UWORD)bit_height;
 
-    if (st->have_provider && st->provider.textfit) {
+    if (st->have_provider && st->provider.v1.textfit) {
         struct OGFXTextFitRequest r;
         r.rp = rp; r.text = text; r.length = length; r.extent = extent;
         r.constraining = constraining; r.direction = direction;
         r.bit_width = bit_width; r.bit_height = bit_height; r.result = 0;
-        if (st->provider.textfit(st->provider.userdata, &r))
+        if (st->provider.v1.textfit(st->provider.v1.userdata, &r))
             return r.result;
     }
 
@@ -633,15 +651,155 @@ OGFX_CALL void do_blttemplate(struct ogfx_state *st, struct GfxBase *gfx, PLANEP
     sx = (WORD)sx; modulo = (WORD)modulo; dx = (WORD)dx; dy = (WORD)dy;
     width = (WORD)width; height = (WORD)height;
 
-    if (st->have_provider && st->provider.blttemplate) {
+    if (st->have_provider && st->provider.v1.blttemplate) {
         struct OGFXBltTemplateRequest r;
         r.source = source; r.sx = sx; r.source_modulo = modulo;
         r.rp = rp; r.dx = dx; r.dy = dy; r.width = width; r.height = height;
-        if (st->provider.blttemplate(st->provider.userdata, &r))
+        if (st->provider.v1.blttemplate(st->provider.v1.userdata, &r))
             return;
     }
 
     ((blttemplate_fn)original(st, gfx, OGFX_P_BLTTEMPLATE))(source, sx, modulo, rp, dx, dy, width, height, gfx);
+}
+
+/* ---- 0.8: the fourteen other drawing calls -----------------------------------
+ * The provider (OpenRTG) first, with the arguments as graphics.library reads
+ * them, then graphics.library's own code with the registers as they came.
+ * OpenGfx has no native path for these yet. */
+typedef void (*bltpattern_fn)(REG(a1, struct RastPort *), REG(a0, PLANEPTR), REG(d0, LONG), REG(d1, LONG),
+                              REG(d2, LONG), REG(d3, LONG), REG(d4, LONG), REG(a6, struct GfxBase *));
+typedef void (*setrast_fn)(REG(a1, struct RastPort *), REG(d0, ULONG), REG(a6, struct GfxBase *));
+typedef void (*draw_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(a6, struct GfxBase *));
+typedef void (*polydraw_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(a0, WORD *), REG(a6, struct GfxBase *));
+typedef LONG (*pixel_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(a6, struct GfxBase *));
+typedef void (*bltbmrp_fn)(REG(a0, struct BitMap *), REG(d0, LONG), REG(d1, LONG), REG(a1, struct RastPort *),
+                           REG(d2, LONG), REG(d3, LONG), REG(d4, LONG), REG(d5, LONG), REG(d6, ULONG),
+                           REG(a6, struct GfxBase *));
+typedef void (*bltmaskbmrp_fn)(REG(a0, struct BitMap *), REG(d0, LONG), REG(d1, LONG), REG(a1, struct RastPort *),
+                               REG(d2, LONG), REG(d3, LONG), REG(d4, LONG), REG(d5, LONG), REG(d6, ULONG),
+                               REG(a2, PLANEPTR), REG(a6, struct GfxBase *));
+typedef void (*clipblit_fn)(REG(a0, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(a1, struct RastPort *),
+                            REG(d2, LONG), REG(d3, LONG), REG(d4, LONG), REG(d5, LONG), REG(d6, ULONG),
+                            REG(a6, struct GfxBase *));
+typedef void (*wcp_fn)(REG(a0, struct RastPort *), REG(d0, ULONG), REG(d1, ULONG), REG(d2, ULONG), REG(d3, ULONG),
+                       REG(a2, UBYTE *), REG(d4, LONG), REG(a6, struct GfxBase *));
+typedef LONG (*array8_fn)(REG(a0, struct RastPort *), REG(d0, ULONG), REG(d1, ULONG), REG(d2, ULONG), REG(d3, ULONG),
+                          REG(a2, UBYTE *), REG(a1, struct RastPort *), REG(a6, struct GfxBase *));
+typedef LONG (*line8_fn)(REG(a0, struct RastPort *), REG(d0, ULONG), REG(d1, ULONG), REG(d2, ULONG),
+                         REG(a2, UBYTE *), REG(a1, struct RastPort *), REG(a6, struct GfxBase *));
+
+#define PROVIDES(call) (st->have_provider && st->provider.call)
+
+OGFX_CALL void do_bltpattern(struct ogfx_state *st, struct GfxBase *gfx, struct RastPort *rp, PLANEPTR mask,
+                             LONG x0, LONG y0, LONG x1, LONG y1, LONG bpr)
+{
+    if (PROVIDES(bltpattern)) {
+        struct OGFXBltPatternRequest r;
+        r.rp = rp; r.mask = mask; r.x0 = (WORD)x0; r.y0 = (WORD)y0; r.x1 = (WORD)x1; r.y1 = (WORD)y1;
+        r.mask_bpr = (WORD)bpr;
+        if (st->provider.bltpattern(st->provider.v1.userdata, &r)) return;
+    }
+    ((bltpattern_fn)original(st, gfx, OGFX_P_BLTPATTERN))(rp, mask, x0, y0, x1, y1, bpr, gfx);
+}
+
+OGFX_CALL void do_setrast(struct ogfx_state *st, struct GfxBase *gfx, struct RastPort *rp, ULONG pen)
+{
+    if (PROVIDES(setrast)) {
+        struct OGFXSetRastRequest r;
+        r.rp = rp; r.pen = (UBYTE)pen;
+        if (st->provider.setrast(st->provider.v1.userdata, &r)) return;
+    }
+    ((setrast_fn)original(st, gfx, OGFX_P_SETRAST))(rp, pen, gfx);
+}
+
+OGFX_CALL void do_draw(struct ogfx_state *st, struct GfxBase *gfx, struct RastPort *rp, LONG x, LONG y)
+{
+    if (PROVIDES(draw)) {
+        struct OGFXDrawRequest r;
+        r.rp = rp; r.x = (WORD)x; r.y = (WORD)y;
+        if (st->provider.draw(st->provider.v1.userdata, &r)) return;
+    }
+    ((draw_fn)original(st, gfx, OGFX_P_DRAW))(rp, x, y, gfx);
+}
+
+OGFX_CALL void do_polydraw(struct ogfx_state *st, struct GfxBase *gfx, struct RastPort *rp, LONG n, WORD *xy)
+{
+    if (PROVIDES(polydraw)) {
+        struct OGFXPolyDrawRequest r;
+        r.rp = rp; r.count = (WORD)n; r.array = xy;
+        if (st->provider.polydraw(st->provider.v1.userdata, &r)) return;
+    }
+    ((polydraw_fn)original(st, gfx, OGFX_P_POLYDRAW))(rp, n, xy, gfx);
+}
+
+OGFX_CALL LONG do_pixel(struct ogfx_state *st, struct GfxBase *gfx, int p, struct RastPort *rp, LONG x, LONG y)
+{
+    LONG (*fn)(APTR, struct OGFXPixelRequest *) = p == OGFX_P_WRITEPIXEL ? st->provider.writepixel : st->provider.readpixel;
+    if (st->have_provider && fn) {
+        struct OGFXPixelRequest r;
+        r.rp = rp; r.x = (WORD)x; r.y = (WORD)y; r.result = 0;
+        if (fn(st->provider.v1.userdata, &r)) return r.result;
+    }
+    return ((pixel_fn)original(st, gfx, p))(rp, x, y, gfx);
+}
+
+OGFX_CALL void do_bltbmrp(struct ogfx_state *st, struct GfxBase *gfx, int p, struct BitMap *src, LONG sx, LONG sy,
+                          struct RastPort *rp, LONG dx, LONG dy, LONG w, LONG h, ULONG minterm, PLANEPTR mask)
+{
+    LONG (*fn)(APTR, struct OGFXBltBitMapRastPortRequest *) =
+        p == OGFX_P_BLTBMRP ? st->provider.bltbitmaprastport : st->provider.bltmaskbitmaprastport;
+    if (st->have_provider && fn) {
+        struct OGFXBltBitMapRastPortRequest r;
+        r.src = src; r.sx = (WORD)sx; r.sy = (WORD)sy; r.rp = rp; r.dx = (WORD)dx; r.dy = (WORD)dy;
+        r.width = (WORD)w; r.height = (WORD)h; r.minterm = (UBYTE)minterm; r.mask = mask;
+        if (fn(st->provider.v1.userdata, &r)) return;
+    }
+    if (p == OGFX_P_BLTBMRP)
+        ((bltbmrp_fn)original(st, gfx, p))(src, sx, sy, rp, dx, dy, w, h, minterm, gfx);
+    else
+        ((bltmaskbmrp_fn)original(st, gfx, p))(src, sx, sy, rp, dx, dy, w, h, minterm, mask, gfx);
+}
+
+OGFX_CALL void do_clipblit(struct ogfx_state *st, struct GfxBase *gfx, struct RastPort *srp, LONG sx, LONG sy,
+                           struct RastPort *rp, LONG dx, LONG dy, LONG w, LONG h, ULONG minterm)
+{
+    if (PROVIDES(clipblit)) {
+        struct OGFXClipBlitRequest r;
+        r.src_rp = srp; r.sx = (WORD)sx; r.sy = (WORD)sy; r.rp = rp; r.dx = (WORD)dx; r.dy = (WORD)dy;
+        r.width = (WORD)w; r.height = (WORD)h; r.minterm = (UBYTE)minterm;
+        if (st->provider.clipblit(st->provider.v1.userdata, &r)) return;
+    }
+    ((clipblit_fn)original(st, gfx, OGFX_P_CLIPBLIT))(srp, sx, sy, rp, dx, dy, w, h, minterm, gfx);
+}
+
+/* The pixel-array calls: p says which (OGFX_P_WCP to OGFX_P_RPA8). */
+OGFX_CALL LONG do_array(struct ogfx_state *st, struct GfxBase *gfx, int p, struct RastPort *rp,
+                        ULONG x0, ULONG y0, ULONG x1, ULONG y1, UBYTE *array, LONG bpr, struct RastPort *tmp)
+{
+    LONG (*fn)(APTR, struct OGFXPixelArrayRequest *) =
+        p == OGFX_P_WCP ? st->provider.writechunkypixels : p == OGFX_P_WPA8 ? st->provider.writepixelarray8 :
+        p == OGFX_P_WPL8 ? st->provider.writepixelline8 : p == OGFX_P_RPL8 ? st->provider.readpixelline8 :
+        st->provider.readpixelarray8;
+    int line = p == OGFX_P_WPL8 || p == OGFX_P_RPL8;
+    if (st->have_provider && fn) {
+        struct OGFXPixelArrayRequest r;
+        r.rp = rp; r.array = array; r.bytes_per_row = p == OGFX_P_WCP ? bpr : 0; r.temp_rp = tmp; r.result = 0;
+        if (line) {                    /* x1 holds the width (D2) */
+            r.width = (UWORD)x1;
+            r.x0 = (UWORD)x0; r.y0 = (UWORD)y0; r.x1 = r.x0 + (LONG)r.width - 1; r.y1 = r.y0;
+        } else {
+            r.width = 0;
+            r.x0 = (UWORD)x0; r.y0 = (UWORD)y0; r.x1 = (UWORD)x1; r.y1 = (UWORD)y1;
+        }
+        if (fn(st->provider.v1.userdata, &r)) return r.result;
+    }
+    if (p == OGFX_P_WCP) {
+        ((wcp_fn)original(st, gfx, p))(rp, x0, y0, x1, y1, array, bpr, gfx);
+        return 0;
+    }
+    if (line)
+        return ((line8_fn)original(st, gfx, p))(rp, x0, y0, x1, array, tmp, gfx);
+    return ((array8_fn)original(st, gfx, p))(rp, x0, y0, x1, y1, array, tmp, gfx);
 }
 
 /* ---- the patches: thin entries, called through tramp[] with the state in A4 ---- */
@@ -704,10 +862,101 @@ static void blttemplate_patch(REG(a0, PLANEPTR source), REG(d0, LONG sx), REG(d1
     do_blttemplate(st, gfx, source, sx, modulo, rp, dx, dy, width, height);
 }
 
+static void bltpattern_patch(REG(a1, struct RastPort *rp), REG(a0, PLANEPTR mask), REG(d0, LONG x0), REG(d1, LONG y0),
+                             REG(d2, LONG x1), REG(d3, LONG y1), REG(d4, LONG bpr),
+                             REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    do_bltpattern(st, gfx, rp, mask, x0, y0, x1, y1, bpr);
+}
+
+static void setrast_patch(REG(a1, struct RastPort *rp), REG(d0, ULONG pen),
+                          REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    do_setrast(st, gfx, rp, pen);
+}
+
+static void draw_patch(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y),
+                       REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    do_draw(st, gfx, rp, x, y);
+}
+
+static void polydraw_patch(REG(a1, struct RastPort *rp), REG(d0, LONG n), REG(a0, WORD *xy),
+                           REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    do_polydraw(st, gfx, rp, n, xy);
+}
+
+static LONG writepixel_patch(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y),
+                             REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_pixel(st, gfx, OGFX_P_WRITEPIXEL, rp, x, y);
+}
+
+static LONG readpixel_patch(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y),
+                            REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_pixel(st, gfx, OGFX_P_READPIXEL, rp, x, y);
+}
+
+static void bltbmrp_patch(REG(a0, struct BitMap *src), REG(d0, LONG sx), REG(d1, LONG sy), REG(a1, struct RastPort *rp),
+                          REG(d2, LONG dx), REG(d3, LONG dy), REG(d4, LONG w), REG(d5, LONG h), REG(d6, ULONG m),
+                          REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    do_bltbmrp(st, gfx, OGFX_P_BLTBMRP, src, sx, sy, rp, dx, dy, w, h, m, NULL);
+}
+
+static void bltmaskbmrp_patch(REG(a0, struct BitMap *src), REG(d0, LONG sx), REG(d1, LONG sy), REG(a1, struct RastPort *rp),
+                              REG(d2, LONG dx), REG(d3, LONG dy), REG(d4, LONG w), REG(d5, LONG h), REG(d6, ULONG m),
+                              REG(a2, PLANEPTR mask), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    do_bltbmrp(st, gfx, OGFX_P_BLTMASKBMRP, src, sx, sy, rp, dx, dy, w, h, m, mask);
+}
+
+static void clipblit_patch(REG(a0, struct RastPort *srp), REG(d0, LONG sx), REG(d1, LONG sy), REG(a1, struct RastPort *rp),
+                           REG(d2, LONG dx), REG(d3, LONG dy), REG(d4, LONG w), REG(d5, LONG h), REG(d6, ULONG m),
+                           REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    do_clipblit(st, gfx, srp, sx, sy, rp, dx, dy, w, h, m);
+}
+
+static void wcp_patch(REG(a0, struct RastPort *rp), REG(d0, ULONG x0), REG(d1, ULONG y0), REG(d2, ULONG x1), REG(d3, ULONG y1),
+                      REG(a2, UBYTE *a), REG(d4, LONG bpr), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    (void)do_array(st, gfx, OGFX_P_WCP, rp, x0, y0, x1, y1, a, bpr, NULL);
+}
+
+static LONG wpa8_patch(REG(a0, struct RastPort *rp), REG(d0, ULONG x0), REG(d1, ULONG y0), REG(d2, ULONG x1), REG(d3, ULONG y1),
+                       REG(a2, UBYTE *a), REG(a1, struct RastPort *tmp), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_array(st, gfx, OGFX_P_WPA8, rp, x0, y0, x1, y1, a, 0, tmp);
+}
+
+static LONG rpa8_patch(REG(a0, struct RastPort *rp), REG(d0, ULONG x0), REG(d1, ULONG y0), REG(d2, ULONG x1), REG(d3, ULONG y1),
+                       REG(a2, UBYTE *a), REG(a1, struct RastPort *tmp), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_array(st, gfx, OGFX_P_RPA8, rp, x0, y0, x1, y1, a, 0, tmp);
+}
+
+static LONG wpl8_patch(REG(a0, struct RastPort *rp), REG(d0, ULONG x0), REG(d1, ULONG y0), REG(d2, ULONG w),
+                       REG(a2, UBYTE *a), REG(a1, struct RastPort *tmp), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_array(st, gfx, OGFX_P_WPL8, rp, x0, y0, w, 0, a, 0, tmp);
+}
+
+static LONG rpl8_patch(REG(a0, struct RastPort *rp), REG(d0, ULONG x0), REG(d1, ULONG y0), REG(d2, ULONG w),
+                       REG(a2, UBYTE *a), REG(a1, struct RastPort *tmp), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_array(st, gfx, OGFX_P_RPL8, rp, x0, y0, w, 0, a, 0, tmp);
+}
+
 /* In OGFX_P_ order. */
 static const APTR patch_entry[OGFX_P_COUNT] = {
     (APTR)text_patch, (APTR)textlength_patch, (APTR)textextent_patch, (APTR)textfit_patch,
     (APTR)rectfill_patch, (APTR)bltbitmap_patch, (APTR)blttemplate_patch, (APTR)scroll_patch,
+    (APTR)bltpattern_patch, (APTR)setrast_patch, (APTR)draw_patch, (APTR)polydraw_patch,
+    (APTR)writepixel_patch, (APTR)readpixel_patch, (APTR)bltbmrp_patch, (APTR)bltmaskbmrp_patch,
+    (APTR)clipblit_patch, (APTR)wcp_patch, (APTR)wpa8_patch, (APTR)wpl8_patch, (APTR)rpl8_patch, (APTR)rpa8_patch,
 };
 
 /* ---- set-up ------------------------------------------------------------------- */
@@ -807,10 +1056,11 @@ LONG OGFX_RegisterProvider(REG(a0, struct OGFXProviderV1 *provider), REG(a6, str
     if (!provider || provider->abi != OGFX_PROVIDER_ABI_V1 ||
         provider->size < OGFX_PROVIDER_V1_0_SIZE || !provider->owner)
         return 0;
-    size = provider->size < sizeof(struct OGFXProviderV1) ? provider->size : sizeof(struct OGFXProviderV1);
+    /* a v1 provider's record, or a 1.4 one's (struct OGFXProviderAll) */
+    size = provider->size < sizeof(struct OGFXProviderAll) ? provider->size : sizeof(struct OGFXProviderAll);
 
     Forbid();
-    {   /* a 1.0 provider's record is shorter: what it has no room for stays NULL */
+    {   /* a 1.0 or v1 provider's record is shorter: what it has no room for stays NULL */
         UBYTE *to = (UBYTE *)&st->provider;
         const UBYTE *from = (const UBYTE *)provider;
         for (i = 0; i < sizeof(st->provider); ++i)
@@ -827,7 +1077,7 @@ LONG OGFX_UnregisterProvider(REG(a0, APTR owner), REG(a6, struct Library *base))
     struct ExecBase *SysBase = st->sys;
     LONG removed = 0;
     Forbid();
-    if (st->have_provider && owner && st->provider.owner == owner) {
+    if (st->have_provider && owner && st->provider.v1.owner == owner) {
         UBYTE *p = (UBYTE *)&st->provider;
         ULONG i;
         for (i = 0; i < sizeof(st->provider); ++i) p[i] = 0;
