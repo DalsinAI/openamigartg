@@ -24,6 +24,8 @@
 #include <proto/exec.h>
 #include <proto/graphics.h>
 
+#include <opengpu/stream.h>
+
 #include "screens.h"
 #include "pixels.h"
 
@@ -168,11 +170,50 @@ struct pix_ctx {
 static LONG src_x(const struct pix_ctx *c, LONG rx) { return c->px->x + (c->dw == c->px->width ? rx : rx * c->px->width / c->dw); }
 static LONG src_y(const struct pix_ctx *c, LONG ry) { return c->px->y + (c->dh == c->px->height ? ry : ry * c->px->height / c->dh); }
 
+/* The OpenGPU format a source format is, where PIXELS draws exactly what
+ * write_piece does (0: it doesn't): 1:1 only; pens raw on 8-bit; the
+ * bitmap's own pixels; pens and colour tables as INDEX8 on 16 and 32-bit
+ * (*table: the pens' colours or the caller's, 0x00RRGGBB, so alpha 0 as
+ * ortg_encode gives); ARGB colours on 16-bit (RGB565 keeps the top bits, as
+ * ortg_encode does). 32-bit OpenRTG pixels carry alpha 0, and PIXELS would
+ * keep an ARGB source's alpha, so ARGB there stays on the CPU. */
+static int ogpu_source(const struct pix_ctx *c, const struct ortg_bitmap *bm, const void **table)
+{
+    ULONG fmt = c->px->format;
+    *table = NULL;
+    if (c->dw != c->px->width || c->dh != c->px->height) return 0;
+    if (bm->bpp == 1) {
+        if (c->mask != 0xFF) return 0;
+        return fmt == ORTG_PIX_PEN || fmt == ORTG_PIX_RAW ? OGPU_FMT_CLUT8 : 0;
+    }
+    if (fmt == ORTG_PIX_RAW) return bm->bpp == 2 ? OGPU_FMT_RGB565 : OGPU_FMT_ARGB32;
+    if (fmt == ORTG_PIX_PEN) { *table = ortg_pen_rgb[bm->pal_index]; return OGPU_FMT_INDEX8; }
+    if (fmt == ORTG_PIX_INDEX && c->px->ctable) {
+        /* the CPU code drops a colour's top byte; on 32-bit PIXELS would keep it */
+        if (bm->bpp == 4) for (int i = 0; i < 256; i++) if (c->px->ctable[i] >> 24) return 0;
+        *table = c->px->ctable;
+        return OGPU_FMT_INDEX8;
+    }
+    if (bm->bpp == 2 && (fmt == ORTG_PIX_ARGB || fmt == ORTG_PIX_0RGB)) return OGPU_FMT_ARGB32;
+    return 0;
+}
+
 static void write_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct pix_ctx *c = v;
     ULONG fmt = c->px->format;
+    int of;
+    const void *table;
     if (bm->bpp != 1 && !c->mask) return;
+    if ((of = ogpu_source(c, bm, &table)) != 0) {
+        LONG bpp = of == OGPU_FMT_ARGB32 ? 4 : of == OGPU_FMT_RGB565 ? 2 : 1;
+        const UBYTE *src = (const UBYTE *)c->px->data + (c->px->y + y0 - dy - c->at_y) * c->px->modulo + (c->px->x + x0 - dx - c->at_x) * bpp;
+        if (ortg_ogpu_pixels(bm, x0, y0, x1, y1, src, (ULONG)c->px->modulo, of, table)) {
+            ortg_stat(ORTG_STAT_PIXELS, 1, (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1));
+            return;
+        }
+    }
+    ortg_stat(ORTG_STAT_PIXELS, 0, (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1));
     for (LONG y = y0; y <= y1; y++) {
         const UBYTE *row = (const UBYTE *)c->px->data + src_y(c, y - dy - c->at_y) * c->px->modulo;
         UBYTE *d = bm->mem + y * bm->stride;
@@ -195,6 +236,21 @@ static void read_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
 {
     struct pix_ctx *c = v;
     ULONG fmt = c->px->format;
+    if (fmt == ORTG_PIX_RAW) {      /* the bitmap's own pixels: a COPY into memory */
+        UBYTE *dst = (UBYTE *)c->px->data + (c->px->y + y0 - dy - c->at_y) * c->px->modulo + (c->px->x + x0 - dx - c->at_x) * bm->bpp;
+        if (ortg_ogpu_read(bm, x0, y0, x1, y1, dst, (ULONG)c->px->modulo)) {
+            ortg_stat(ORTG_STAT_PIXELS_READ, 1, (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1));
+            return;
+        }
+    } else if ((fmt == ORTG_PIX_ARGB || fmt == ORTG_PIX_0RGB) && bm->bpp != 1) {
+        /* colours with alpha 255, as dst_store_rgb writes them */
+        UBYTE *dst = (UBYTE *)c->px->data + (c->px->y + y0 - dy - c->at_y) * c->px->modulo + (c->px->x + x0 - dx - c->at_x) * 4;
+        if (ortg_ogpu_read_argb(bm, x0, y0, x1, y1, dst, (ULONG)c->px->modulo)) {
+            ortg_stat(ORTG_STAT_PIXELS_READ, 1, (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1));
+            return;
+        }
+    }
+    ortg_stat(ORTG_STAT_PIXELS_READ, 0, (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1));
     for (LONG y = y0; y <= y1; y++) {
         UBYTE *row = (UBYTE *)c->px->data + (c->px->y + y - dy - c->at_y) * c->px->modulo;
         const UBYTE *s = bm->mem + y * bm->stride;
@@ -214,6 +270,13 @@ static void read_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
 static void fill_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct pix_ctx *c = v;
+    ULONG n = (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1);
+    if ((bm->bpp == 1 ? c->mask == 0xFF : c->mask != 0)
+        && ortg_ogpu_fill(bm, x0, y0, x1, y1, bm->bpp == 1 ? c->value : ortg_encode(bm, c->argb))) {
+        ortg_stat(ORTG_STAT_PIXELS_FILL, 1, n);
+        return;
+    }
+    ortg_stat(ORTG_STAT_PIXELS_FILL, 0, n);
     if (bm->bpp != 1) {
         ULONG v = ortg_encode(bm, c->argb);
         if (!c->mask) return;
@@ -230,6 +293,12 @@ static void fill_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
 static void invert_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct pix_ctx *c = v;
+    ULONG n = (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1);
+    if (c->mask && ortg_ogpu_invert(bm, x0, y0, x1, y1, bm->bpp == 1 ? c->mask : bm->bpp == 2 ? 0xFFFF : 0xFFFFFF)) {
+        ortg_stat(ORTG_STAT_PIXELS_INVERT, 1, n);
+        return;
+    }
+    ortg_stat(ORTG_STAT_PIXELS_INVERT, 0, n);
     if (bm->bpp != 1) {
         ULONG m = bm->bpp == 2 ? 0xFFFF : 0xFFFFFF;
         if (!c->mask) return;
@@ -324,6 +393,94 @@ LONG ortg_invert_pixels(struct RastPort *rp, LONG x, LONG y, LONG w, LONG h)
         SetDrMd(rp, old_mode);
     }
     return w * h;
+}
+
+/* ---- alpha (0.11) ----------------------------------------------------------------------- */
+
+/* x * y / 255, rounded: OpenGPU's own (ogpu_core.c), so both paths give the same bytes. */
+static ULONG m255(ULONG x, ULONG y) { ULONG t = x * y + 128; return (t + (t >> 8)) >> 8; }
+
+struct alpha_ctx { const struct OpenRTGPixels *px; LONG at_x, at_y; ULONG alpha; UBYTE mask; };
+
+/* ARGB over the bitmap by its alpha times the global alpha: OpenGPU's
+ * COMPOSITE (SRCALPHA, OVER) on 16 and 32-bit, or the same sums here. An
+ * 8-bit bitmap has no blending: a pixel at least half opaque is drawn as
+ * its nearest pen, as before 0.11. */
+static void alpha_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
+{
+    struct alpha_ctx *c = v;
+    const struct OpenRTGPixels *px = c->px;
+    const UBYTE *src = (const UBYTE *)px->data + (px->y + y0 - dy - c->at_y) * px->modulo + (px->x + x0 - dx - c->at_x) * 4;
+    ULONG n = (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1);
+    if (bm->bpp != 1 && !c->mask) return;
+    if (bm->bpp != 1 && ortg_ogpu_alpha(bm, x0, y0, x1, y1, src, (ULONG)px->modulo, c->alpha)) {
+        ortg_stat(ORTG_STAT_ALPHA, 1, n);
+        return;
+    }
+    ortg_stat(ORTG_STAT_ALPHA, 0, n);
+    for (LONG y = y0; y <= y1; y++, src += px->modulo) {
+        const UBYTE *p = src;
+        UBYTE *d8 = bm->mem + y * bm->stride;
+        for (LONG x = x0; x <= x1; x++, p += 4) {
+            ULONG ea, ia, r, g, b, a, dv, dc;
+            if (bm->bpp == 1) {
+                if (p[0] >= 0x80) {
+                    UBYTE pen = pen_of((ULONG)p[1] << 16 | (ULONG)p[2] << 8 | p[3]);
+                    d8[x] = c->mask == 0xFF ? pen : (UBYTE)((d8[x] & ~c->mask) | (pen & c->mask));
+                }
+                continue;
+            }
+            ea = m255(p[0], c->alpha);
+            if (!ea) continue;
+            if (ea == 255) { r = p[1]; g = p[2]; b = p[3]; a = 255; }
+            else {
+                ia = 255 - ea;
+                dv = ortg_get(bm, x, y);
+                dc = ortg_decode(bm, dv);
+                r = m255(p[1], ea) + m255((dc >> 16) & 255, ia);
+                g = m255(p[2], ea) + m255((dc >> 8) & 255, ia);
+                b = m255(p[3], ea) + m255(dc & 255, ia);
+                a = ea + m255(bm->bpp == 4 ? (dv >> 24) & 255 : 255, ia);
+                if (r > 255) r = 255;
+                if (g > 255) g = 255;
+                if (b > 255) b = 255;
+                if (a > 255) a = 255;
+            }
+            if (bm->bpp == 2) ortg_put(bm, x, y, ortg_encode(bm, r << 16 | g << 8 | b));
+            else ortg_put(bm, x, y, a << 24 | r << 16 | g << 8 | b);
+        }
+    }
+}
+
+LONG ortg_write_pixels_alpha(struct RastPort *rp, LONG x, LONG y, const struct OpenRTGPixels *px, ULONG alpha)
+{
+    struct alpha_ctx c;
+    if (!GfxBase || !rp || !px || !px->data || px->width <= 0 || px->height <= 0) return 0;
+    if (px->format != ORTG_PIX_ARGB) return ortg_write_pixels(rp, x, y, px);
+    c.px = px; c.at_x = x; c.at_y = y; c.alpha = alpha & 255; c.mask = rp->Mask;
+    begin(rp);
+    if (!ortg_pieces(rp, x, y, x + px->width - 1, y + px->height - 1, alpha_piece, &c)) {
+        /* a planar RastPort: the pixels at least half opaque, run by run */
+        ReleaseSemaphore(&lock);
+        for (LONG j = 0; j < px->height; j++) {
+            const UBYTE *row = (const UBYTE *)px->data + (px->y + j) * px->modulo + px->x * 4;
+            LONG i = 0;
+            while (i < px->width) {
+                LONG run;
+                struct OpenRTGPixels one = *px;
+                while (i < px->width && row[i * 4] < 0x80) i++;
+                for (run = 0; i + run < px->width && row[(i + run) * 4] >= 0x80; run++) ;
+                if (run) {
+                    one.x = px->x + i; one.y = px->y + j; one.width = run; one.height = 1; one.dest_width = one.dest_height = 0;
+                    ortg_write_pixels(rp, x + i, y + j, &one);
+                }
+                i += run;
+            }
+        }
+        return px->width * px->height;
+    }
+    ReleaseSemaphore(&lock);
+    return px->width * px->height;
 }
 
 BOOL ortg_bitmap_info(struct BitMap *bm, struct OpenRTGBitMapInfo *info)

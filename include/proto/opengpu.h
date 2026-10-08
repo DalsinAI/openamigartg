@@ -4,6 +4,7 @@
 #define _PROTO_OPENGPU_H
 #include <exec/types.h>
 #include <opengpu/opengpu.h>
+#include <opengpu/module.h>
 extern struct Library *OpenGPUBase;
 #include <inline/opengpu.h>
 #endif
