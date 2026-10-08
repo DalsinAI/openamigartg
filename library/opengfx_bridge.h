@@ -16,6 +16,7 @@
 #include <exec/libraries.h>
 #include <graphics/gfx.h>
 #include <graphics/rastport.h>
+#include <graphics/text.h>
 #include <inline/macros.h>
 
 #define ORTG_OPENGFXLIB_NAME "opengfx.library"
@@ -52,6 +53,38 @@ struct ortg_ogfx_scroll {
     LONG x0, y0, x1, y1;
 };
 
+struct ortg_ogfx_textlength {
+    struct RastPort *rp;
+    STRPTR text;
+    ULONG length;
+    LONG result;
+};
+
+struct ortg_ogfx_textextent {
+    struct RastPort *rp;
+    STRPTR text;
+    ULONG length;
+    struct TextExtent *extent;
+};
+
+struct ortg_ogfx_textfit {
+    struct RastPort *rp;
+    STRPTR text;
+    ULONG length;
+    struct TextExtent *extent;
+    struct TextExtent *constraining;
+    LONG direction;
+    ULONG bit_width, bit_height;
+    ULONG result;
+};
+
+struct ortg_ogfx_blttemplate {
+    PLANEPTR source;
+    LONG sx, source_modulo;
+    struct RastPort *rp;
+    LONG dx, dy, width, height;
+};
+
 struct ortg_ogfx_provider_v1 {
     ULONG size;
     ULONG abi;
@@ -61,6 +94,10 @@ struct ortg_ogfx_provider_v1 {
     LONG (*text)(APTR, struct ortg_ogfx_text *);
     LONG (*bltbitmap)(APTR, struct ortg_ogfx_bltbitmap *);
     LONG (*scrollraster)(APTR, struct ortg_ogfx_scroll *);
+    LONG (*textlength)(APTR, struct ortg_ogfx_textlength *);
+    LONG (*textextent)(APTR, struct ortg_ogfx_textextent *);
+    LONG (*textfit)(APTR, struct ortg_ogfx_textfit *);
+    LONG (*blttemplate)(APTR, struct ortg_ogfx_blttemplate *);
 };
 
 #define ORTG_OGFX_InstallPatches(base)     LP0(0x24, LONG, OGFX_InstallPatches, , base)
