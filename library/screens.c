@@ -277,6 +277,7 @@ static void pens_of(struct RastPort *rp, struct pens *p)
  * the byte; on 16 and 32-bit a pen is its colour, the mask only switches
  * drawing off (0) or on, and COMPLEMENT inverts the colour. */
 struct ink { ULONG a, b, x; UBYTE mode, mask; UBYTE bpp; };
+struct fill_ctx { struct pens p; UWORD *ptrn; int ptsz; int ptoff_y; };
 struct tmpl_ctx { struct pens p; const UBYTE *src; LONG src_x, mod; LONG at_x, at_y; };
 
 static void ink_of(const struct pens *p, const struct ortg_bitmap *o, struct ink *k)
@@ -509,8 +510,6 @@ struct ColorMap *ortg_colormap(struct RastPort *rp)
 /* ---- the operations ------------------------------------------------------------------ */
 
 /* A fill with the RastPort's pen, its area pattern and its mode. */
-struct fill_ctx { struct pens p; UWORD *ptrn; int ptsz; int ptoff_y; };
-
 static void fill_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct fill_ctx *f = c;
