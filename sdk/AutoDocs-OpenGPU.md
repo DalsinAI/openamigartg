@@ -16,6 +16,7 @@ OpenGPU is one library and the modules it loads:
 | GL.module | `LIBS:OpenGPU/GL.module` | Mesa 26.2.4's GL and GLES, and GLA |
 | minigl.library 29 | `LIBS:minigl.library` | MiniGL (OpenGL 1.1) on OpenGPU's 3D |
 | Warp3D.library | `LIBS:Warp3D.library` | Warp3D on OpenGPU's 3D |
+| tinygl.library 53 | `LIBS:tinygl.library` | a stand-in TinyGL programs open; their calls are in `libtinygl.a` and run on GL.module |
 
 A program links a small library from the kit and opens the rest at run
 time:
@@ -24,7 +25,9 @@ time:
 | --- | --- | --- |
 | SDL 2 | `-lSDL2` (and `-lGL` when it calls `SDL_GL_`) | opengpu.library, SDL2.module (and GL.module) |
 | SDL_image, SDL_mixer, SDL_ttf, SDL_net | `-lSDL2_image` and the others, before `-lSDL2` | as SDL 2 (SDL_net: bsdsocket.library) |
+| SDL 1.2 (a kit built with it) | `-lSDL -lSDL2` (`sdl-config --libs`) | as SDL 2 |
 | OpenGL, GLES, GLA | `-lGL` | opengpu.library, GL.module |
+| TinyGL | `-ltinygl -lGL` (`pkg-config tinygl`) | opengpu.library, GL.module, tinygl.library |
 | MiniGL | `-lminigl` (stubs) or `-lmgl` (GLUT-style helpers) | minigl.library |
 | Warp3D | the `proto/Warp3D.h` calls | Warp3D.library |
 | opengpu.library | the `proto/opengpu.h` calls | opengpu.library |
@@ -154,6 +157,16 @@ GL:
 - `SDL_GL_GetProcAddress` returns `libGL.a`'s own entries, so calls through
   what it gives set A4 too.
 
+### SDL 1.2
+
+A kit built with SDL 1.2 (`make_sdk.py --sdl12`) has `include/SDL/`,
+`libSDL.a`, `bin/sdl-config` and `sdl.pc`. SDL 1.2 there is sdl12-compat
+(Zlib): every SDL 1.2 call becomes SDL 2 calls, so SDL 1.2 programs draw,
+play and read input through SDL2.module, with the same opengpu renderer,
+AHI and joystick code as SDL 2 programs. `sdl-config` works as
+`sdl2-config` does (`--cflags`, `--libs`, `--gl`, `SDL2_CPU`,
+`SDL2_RUNTIME`). `examples/sdl12/bounce.c` is an SDL 1.2 program.
+
 ## 6. OpenGL, GLES and GLA
 
 GL.module is Mesa's GL state tracker on one of two drivers:
@@ -188,6 +201,33 @@ without SDL.
 
 `examples/gla/glatriangle.c` uses all of these in a Workbench window.
 
+### TinyGL
+
+TinyGL's interface (`include/proto/tinygl.h`, `include/tgl/`) on GL.module.
+A program opens `tinygl.library`, gets its context from `GLInit()`, starts
+GL with one of the `GLAInitializeContext` calls and shows each frame with
+`GLASwapBuffers`. Its GL calls are Mesa's own, from `<GL/gl.h>`. The calls:
+
+| Call | What it does |
+| --- | --- |
+| `GLInit()` | a new context, with no target yet |
+| `GLAInitializeContextWindowed(c, window)` | GL inside the window's borders; 1 when it worked |
+| `GLAInitializeContextScreen(c, screen)` | GL on the whole screen |
+| `GLAInitializeContextBitMap(c, bitmap)` | GL into a bitmap |
+| `GLAInitializeContext(c, tags)` | the same, by `TGL_CONTEXT_SCREEN`, `_WINDOW`, `_BITMAP`, `_STENCIL` |
+| `GLAReinitializeContextWindowed(c, window)` | follows a resized window, keeping the GL state |
+| `GLASwapBuffers(c)` | shows the frame; also follows a window's size |
+| `GLASetSync(c, on)` | waits for the vertical blank before each frame |
+| `GLADestroyContext...(c)` | stops GL on the target |
+| `GLClose(c)` | stops GL and frees the context |
+| `GLAGetProcAddress(c, name)` | a GL call by name (the Team's addition) |
+
+The `glA...` forms (`glASwapBuffers()` and the rest) pass the program's
+`__tglContext`. `tgl/glu.h` has `gluPerspective`, `gluLookAt`,
+`gluOrtho2D`, `gluBuild2DMipmaps` and `gluErrorString`.
+`examples/tinygl/tglspin.c` is a TinyGL program. openamigartg's
+`library/tinygl/README.md` says what isn't there yet.
+
 ## 7. Warp3D, MiniGL and opengpu.library
 
 - **Warp3D** (`include/Warp3D/`, `proto/Warp3D.h`): Warp3D's API, drawn by
@@ -219,6 +259,7 @@ Set with `SetEnv` (or `SDL_SetHint` from the program):
 | `SDL_OPENGPU_STATS=1` | logs how many commands OpenGPU and the CPU drew, when a renderer closes |
 | `SDL_OPENGPU_GL=cpu` | SDL's GL on softpipe even where virgl is there |
 | `SDL_AUDIODRIVER=paula` | Paula instead of AHI (`dummy` for none) |
+| `TinyGL/Driver=CPU` | TinyGL on softpipe even where virgl is there (`OpenGPU`: the GPU or fail; `Auto`, the default) |
 
 ## 9. Versions
 
