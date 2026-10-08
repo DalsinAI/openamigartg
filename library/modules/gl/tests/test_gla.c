@@ -239,7 +239,7 @@ static const struct scene scenes[] = {
 unsigned long __stack = 1024 * 1024;
 #endif
 
-/* Where we got to, flushed at once, so a crash still shows it. */
+/* How far the test got, flushed at once, so a crash still shows it. */
 static void step(const char *what)
 {
     printf("gla: %s\n", what);

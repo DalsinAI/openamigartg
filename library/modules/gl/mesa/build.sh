@@ -29,7 +29,7 @@ if [ ! -f "$WORK/$FILE" ] || ! echo "$SHA  $WORK/$FILE" | sha256sum -c --status;
     done
     echo "$SHA  $WORK/$FILE" | sha256sum -c --status || { echo "mesa: $FILE missing or its SHA-256 differs"; exit 1; }
 fi
-# Our changes to Mesa are small patches in mesa/patches, applied to a fresh
+# The Team's changes to Mesa are small patches in mesa/patches, applied to a fresh
 # tree; a changed set of patches extracts the tree again.
 PSUM=$(cat "$TOP"/mesa/patches/*.diff 2>/dev/null | sha256sum | cut -c1-16)
 if [ "$(cat "$SRC/.gla-patched" 2>/dev/null)" != "$PSUM" ]; then
