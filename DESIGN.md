@@ -289,6 +289,7 @@ calls that touch RTG bitmaps, passing everything else to the original code.
   Text, ScrollRaster: on RTG bitmaps they become OpenGPU commands (fill, copy,
   template, line, invert, planar-to-chunky) or CPU code on the chunky bitmap;
   on planar bitmaps they go to the original graphics.library.
+- **Patch ownership (8 October 2026):** OpenGfx is the sole owner of the four Open-stack `graphics.library` vectors `Text`, `RectFill`, `BltBitMap` and `ScrollRaster`. OpenRTG hands those four vectors to OpenGfx and must not install competing patches once the OpenGfx handoff is active. OpenFont installs no OS patches; OpenGfx's `Text` path asks OpenFont for shaping, metrics and glyph data. OpenRTG continues to own its other RTG/display/bitmap hooks. The current `library/screens.c` still installs the four legacy OpenRTG patches until the handoff implementation lands.
 - **The pointer:** each monitor's front screen gets the board's hardware
   sprite (acrtg-v2), which Cradle shows as the PC's cursor.
 - **Boards:** a small driver interface (find, init, mode, pan, fill, copy,
