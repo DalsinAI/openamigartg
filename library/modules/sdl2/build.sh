@@ -110,4 +110,9 @@ case " $TARGETS " in
     make -f "$HERE/satellites/Makefile" -j"$(nproc)" OUT="$OUT" WORK="$WORK" ${CPU:+CPU="$CPU"} satellites
     ;;
 esac
+# 7. GCC 16's FPCR clash (fpcr_check.py) must not be in anything built.
+STOVE=${STOVE:-$HOME/AmigaChrome/stoves/os32-gcc16/prefix}
+set --
+for f in "$OUT/SDL2.module" "$OUT"/libSDL2*.a; do [ -f "$f" ] && set -- "$@" "$f"; done
+[ $# -eq 0 ] || python3 "$HERE/fpcr_check.py" "$STOVE/bin/m68k-amigaos-objdump" "$@"
 echo "SDL 2 built in $OUT"

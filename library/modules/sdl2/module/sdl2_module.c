@@ -98,7 +98,7 @@ static struct SDL2ModuleTable SDL2Module_table = {
     SDL2Module_Close,
 };
 
-struct SDL2ModuleTable *SDL2Module_Entry(struct SDL2ModuleArgs *args)
+struct SDL2ModuleTable *SDL2Module_Entry(SDL2ModuleArgs *args)
 {
     if (!args || args->version > SDL2_MODULE_VERSION) {
         return NULL;

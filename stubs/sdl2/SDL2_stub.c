@@ -33,8 +33,8 @@
   unchanged and link -lSDL2 as on any other system.
 
   Each program gets its own copy of the module (the layout's step 1), so
-  SDL's globals are its own. opengpu.library's OGPU_ModuleOpen will load it
-  once it has that call; until then the stub LoadSegs the module itself.
+  SDL's globals are its own. opengpu.library (0.5 and later) loads it with
+  OGPU_ModuleOpen; on an older one the stub LoadSegs the module itself.
 */
 
 #include "SDL.h"
@@ -46,6 +46,15 @@
 #include <stdlib.h>
 
 #include "sdl2_module.h"
+
+/* opengpu.library's calls through the stub's own base, so a program's
+   OpenGPUBase is left alone. */
+#define OPENGPU_BASE_NAME SDL2Stub_OpenGPUBase
+#include <exec/libraries.h>
+#include <dos/dos.h>
+#include <inline/opengpu.h>
+static struct Library *SDL2Stub_OpenGPUBase = NULL;
+static APTR SDL2Stub_handle = NULL;
 
 #define SDL_DYNAPI_VERSION 1
 
@@ -79,7 +88,7 @@ static void SDL2Stub_Fail(const char *why)
 
 static void SDL2Stub_Init(void)
 {
-    struct SDL2ModuleArgs args;
+    SDL2ModuleArgs args;
     SDL2ModuleEntry entry;
 
     /* The first SDL call comes from the program's main task (SDL_Init or
@@ -87,16 +96,28 @@ static void SDL2Stub_Init(void)
     if (jump_table_ready) {
         return;
     }
-    SDL2Stub_seg = LoadSeg((CONST_STRPTR)SDL2_MODULE_FILE);
-    if (!SDL2Stub_seg) {
-        SDL2Stub_Fail("this program needs " SDL2_MODULE_FILE " (OpenGPU), which isn't installed.");
+    SDL2Stub_OpenGPUBase = OpenLibrary((CONST_STRPTR) "opengpu.library", 0);
+#ifdef OPENGPU_MODULE_H
+    if (SDL2Stub_OpenGPUBase && (SDL2Stub_OpenGPUBase->lib_Version > 0 ||
+                                 SDL2Stub_OpenGPUBase->lib_Revision >= OGPU_MODULE_LIB_REVISION)) {
+        SDL2Stub_handle = OGPU_ModuleOpen((CONST_STRPTR)SDL2_MODULE_NAME, SDL2_MODULE_VERSION, (APTR *)&SDL2Stub_module);
+        if (!SDL2Stub_handle && IoErr() == ERROR_OBJECT_NOT_FOUND) {
+            SDL2Stub_Fail("this program needs " SDL2_MODULE_FILE " (OpenGPU), which isn't installed.");
+        }
+    } else
+#endif
+    {
+        SDL2Stub_seg = LoadSeg((CONST_STRPTR)SDL2_MODULE_FILE);
+        if (!SDL2Stub_seg) {
+            SDL2Stub_Fail("this program needs " SDL2_MODULE_FILE " (OpenGPU), which isn't installed.");
+        }
+        entry = (SDL2ModuleEntry)((UBYTE *)BADDR(SDL2Stub_seg) + 4);
+        args.SysBase = SysBase;
+        args.DOSBase = (struct Library *)DOSBase;
+        args.OpenGPUBase = SDL2Stub_OpenGPUBase;
+        args.version = SDL2_MODULE_VERSION;
+        SDL2Stub_module = entry(&args);
     }
-    entry = (SDL2ModuleEntry)((UBYTE *)BADDR(SDL2Stub_seg) + 4);
-    args.SysBase = SysBase;
-    args.DOSBase = (struct Library *)DOSBase;
-    args.OpenGPUBase = NULL;
-    args.version = SDL2_MODULE_VERSION;
-    SDL2Stub_module = entry(&args);
     if (!SDL2Stub_module || SDL2Stub_module->dynapi_entry(SDL_DYNAPI_VERSION, &jump_table, sizeof(jump_table)) < 0) {
         SDL2Stub_Fail(SDL2_MODULE_FILE " is older than this program, or couldn't start. Install a newer OpenGPU.");
     }
@@ -109,9 +130,19 @@ static void __attribute__((destructor)) SDL2Stub_Close(void)
         SDL2Stub_module->close();
         SDL2Stub_module = NULL;
     }
+#ifdef OPENGPU_MODULE_H
+    if (SDL2Stub_handle) {
+        OGPU_ModuleClose(SDL2Stub_handle);
+        SDL2Stub_handle = NULL;
+    }
+#endif
     if (SDL2Stub_seg) {
         UnLoadSeg(SDL2Stub_seg);
         SDL2Stub_seg = 0;
+    }
+    if (SDL2Stub_OpenGPUBase) {
+        CloseLibrary(SDL2Stub_OpenGPUBase);
+        SDL2Stub_OpenGPUBase = NULL;
     }
     jump_table_ready = 0;
 }

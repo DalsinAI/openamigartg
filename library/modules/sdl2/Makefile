@@ -163,7 +163,7 @@ $(OUT)/SDL2.module: $(CORE_DIR)/module_start.o $(CORE_DIR)/sdl2_module.o $(WORK)
 	    $(WORK)/libSDL2core.a -lm -lamiga
 	@echo "built $@ ($$(wc -c < $@) bytes)"
 
-$(STUB_DIR)/SDL2_stub.o: $(ROOT)/stubs/sdl2/SDL2_stub.c $(ROOT)/stubs/sdl2/sdl2_module.h
+$(STUB_DIR)/SDL2_stub.o: $(ROOT)/stubs/sdl2/SDL2_stub.c $(ROOT)/stubs/sdl2/sdl2_module.h $(INLINE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_BASE) -I$(SDL)/src/dynapi -c $< -o $@
 $(OUT)/libSDL2.a: $(STUB_DIR)/SDL2_stub.o

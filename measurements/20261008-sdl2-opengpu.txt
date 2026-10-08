@@ -88,3 +88,26 @@ The satellites (tests/sdl2/satcheck.m)
   net    pass  TCP to aminet.net:80: HTTP/1.1 200 OK
   net    FAIL  UDP to 127.0.0.1 on the same socket: sent, nothing came back
                (OpenSocket's loopback; not found yet)
+
+Again on opengpu.library 0.5 and openrtg.library 0.11 (#31 on #27)
+-------------------------------------------------------------------
+openrtg.library 0.11 places the ring itself, so the lab tool wasn't used.
+The stub loaded SDL2.module with OGPU_ModuleOpen.
+  testsprite2        93.5-95.1 fps   (224673 commands by OpenGPU, 0 by the CPU)
+  testrendercopyex   49.3 fps        (2958 by OpenGPU, 0 by the CPU)
+  sdlcheck.m         all pass
+
+The grey JPEG was GCC 16, not the AC090
+---------------------------------------
+tiny_jpeg built at -O2 wrote the same flat grey picture on the current
+runtime, the new JIT (amigachrome #293), the new JIT with JIT_NOOPS020=1 and
+the interpreter alone (JIT_INTERP=1). In tjei_encode_and_write_MCU,
+GCC 16's -m68040 float-to-int saves FPCR in d0, the register that already
+held the zig-zag index, then stores through it:
+    move.b (a3)+,d0            the index
+    fmovem.l fpcr,d0           FPCR saved over it
+    ...
+    fmove.l fp0,(a5,d0.l*4)    every coefficient to du[0]
+-m68020 -m68881 and -m68060 use fintrz and don't clash. fpcr_check.py finds
+it in a built file; SDL2.module has none, the satellites had five (Timidity),
+now built at -O0 with IMG_jpg.c.
