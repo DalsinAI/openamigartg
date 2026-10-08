@@ -110,8 +110,11 @@ m68k-amigaos-gcc -O2 gl.c -o GLProgram $(pkg-config --cflags --libs gl)
   `SDL2::SDL2`, `SDL2::SDL2main` (empty), `SDL2::SDL2test`,
   `SDL2_INCLUDE_DIRS` and `SDL2_LIBRARIES`; `find_package(SDL2_mixer)` and
   the others give `SDL2_mixer::SDL2_mixer` and so on.
-- **The stack.** GL runs on the program's stack. A GL program asks libnix
-  for a big one: `unsigned long __stack = 1024 * 1024;`.
+- **The stack.** GL needs a big stack, and libGL.a gives it one: when the
+  program's stack is under 256 KB (a Shell's default is 4 KB), its GL calls
+  run on a 1 MB stack of libGL.a's own. Nothing is needed in the program.
+  (`unsigned long __stack` alone does nothing: libnix's stack swap isn't
+  linked unless something asks for it.)
 
 ## 5. SDL 2
 
