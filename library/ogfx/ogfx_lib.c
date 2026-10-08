@@ -14,6 +14,9 @@
  * instead of installing competing vectors. A call no provider and no leaf
  * takes goes to graphics.library's own code.
  *
+ * A look (OpenLook, opengpu.library 0.7) is asked first on RectFill and
+ * Text, so the system's look is drawn here instead of by a second patch.
+ *
  * Programs reach the same code two ways: through graphics.library, once
  * OGFX_InstallPatches has pointed its eight vectors here, or through
  * opengpu.library's own LVOs (include/opengpu/gfx.h).
@@ -425,6 +428,50 @@ static LONG try_planar_rect(struct ogfx_state *st, struct GfxBase *GfxBase,
     return 1;
 }
 
+/* ---- the look (gfx.h): asked first on RectFill and Text ---------------------
+ * look_busy counts the calls inside the look, so its owner knows when its
+ * code is free to go after OGFX_UnregisterLook. A one-instruction add and
+ * subtract on memory, which a task switch can't split. The count goes up
+ * before the look is read: a caller that saw the look in is counted. */
+static inline void look_enter(struct ogfx_state *st)
+{
+    __asm__ volatile ("addq.w #1,%0" : "+m" (st->look_busy) : : "cc");
+}
+
+static inline void look_leave(struct ogfx_state *st)
+{
+    __asm__ volatile ("subq.w #1,%0" : "+m" (st->look_busy) : : "cc");
+}
+
+static LONG look_rectfill(struct ogfx_state *st, struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1)
+{
+    LONG done = 0;
+    LONG (*fn)(APTR, struct OGFXRectFillRequest *);
+    look_enter(st);
+    if (st->have_look && (fn = st->look.rectfill) != NULL) {
+        struct OGFXRectFillRequest r;
+        r.rp = rp; r.x0 = x0; r.y0 = y0; r.x1 = x1; r.y1 = y1;
+        done = fn(st->look.userdata, &r);
+    }
+    look_leave(st);
+    return done;
+}
+
+static LONG look_text(struct ogfx_state *st, struct RastPort *rp, STRPTR text, ULONG length, LONG *result)
+{
+    LONG done = 0;
+    LONG (*fn)(APTR, struct OGFXTextRequest *);
+    look_enter(st);
+    if (st->have_look && (fn = st->look.text) != NULL) {
+        struct OGFXTextRequest r;
+        r.rp = rp; r.text = text; r.length = length; r.result = 0;
+        if ((done = fn(st->look.userdata, &r)) != 0)
+            *result = r.result;
+    }
+    look_leave(st);
+    return done;
+}
+
 /* ---- the eight calls: provider, then the native path, then graphics.library ----
  * Each reads its 16-bit arguments as graphics.library does, from the
  * registers' low words, before a provider or leaf sees them. Each is built
@@ -435,6 +482,10 @@ OGFX_CALL void do_rectfill(struct ogfx_state *st, struct GfxBase *gfx, struct Ra
                         LONG x0, LONG y0, LONG x1, LONG y1)
 {
     x0 = (WORD)x0; y0 = (WORD)y0; x1 = (WORD)x1; y1 = (WORD)y1;
+
+    /* The look first: a window frame it draws is drawn whatever the bitmap. */
+    if (st->have_look && look_rectfill(st, rp, x0, y0, x1, y1))
+        return;
 
     /* Providers own foreign bitmap semantics (for example OpenRTG) and
      * remain active when native OpenGfx acceleration is disabled. */
@@ -455,6 +506,12 @@ OGFX_CALL LONG do_text(struct ogfx_state *st, struct GfxBase *gfx, struct RastPo
                     STRPTR text, ULONG length)
 {
     length = (UWORD)length;
+
+    if (st->have_look) {
+        LONG result;
+        if (look_text(st, rp, text, length, &result))
+            return result;
+    }
 
     if (st->have_provider && st->provider.text) {
         struct OGFXTextRequest r;
@@ -737,6 +794,8 @@ ULONG OGFX_Status(REG(a6, struct Library *base))
     if (st->enabled) status |= OGFX_STATUS_ENABLED;
     if (st->have_provider) status |= OGFX_STATUS_PROVIDER;
     if (st->amigachrome) status |= OGFX_STATUS_AMIGACHROME;
+    if (st->have_look) status |= OGFX_STATUS_LOOK;
+    if (st->look_busy) status |= OGFX_STATUS_LOOK_BUSY;
     return status;
 }
 
@@ -773,6 +832,45 @@ LONG OGFX_UnregisterProvider(REG(a0, APTR owner), REG(a6, struct Library *base))
         ULONG i;
         for (i = 0; i < sizeof(st->provider); ++i) p[i] = 0;
         st->have_provider = 0;
+        removed = 1;
+    }
+    Permit();
+    return removed;
+}
+
+/* The look (0.7, gfx.h). Taking it out leaves the record as it was, so a
+ * call already inside it still has its function and userdata; a new look
+ * waits until those calls are done. */
+LONG OGFX_RegisterLook(REG(a0, struct OGFXLookV1 *look), REG(a6, struct Library *base))
+{
+    struct ogfx_state *st = state_of(base);
+    struct ExecBase *SysBase = st->sys;
+    LONG ok = 0;
+    if (!look || look->abi != OGFX_LOOK_ABI_V1 || look->size < sizeof(struct OGFXLookV1) || !look->owner)
+        return 0;
+    Forbid();
+    if (!st->have_look && !st->look_busy) {
+        st->look.size = sizeof(struct OGFXLookV1);
+        st->look.abi = OGFX_LOOK_ABI_V1;
+        st->look.owner = look->owner;
+        st->look.userdata = look->userdata;
+        st->look.rectfill = look->rectfill;
+        st->look.text = look->text;
+        st->have_look = 1;
+        ok = 1;
+    }
+    Permit();
+    return ok;
+}
+
+LONG OGFX_UnregisterLook(REG(a0, APTR owner), REG(a6, struct Library *base))
+{
+    struct ogfx_state *st = state_of(base);
+    struct ExecBase *SysBase = st->sys;
+    LONG removed = 0;
+    Forbid();
+    if (st->have_look && owner && st->look.owner == owner) {
+        st->have_look = 0;
         removed = 1;
     }
     Permit();

@@ -1,4 +1,4 @@
-==id $Id: opengpu_lib.sfd 0.6 (8.10.2026) $
+==id $Id: opengpu_lib.sfd 0.7 (8.10.2026) $
 * "opengpu.library"
 ==base _OpenGPUBase
 ==basetype struct Library *
@@ -31,4 +31,7 @@ VOID OGFX_RectFill(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1)(a1,d
 LONG OGFX_BltBitMap(struct BitMap *src, LONG sx, LONG sy, struct BitMap *dst, LONG dx, LONG dy, LONG width, LONG height, ULONG minterm, ULONG mask, PLANEPTR temp)(a0,d0,d1,a1,d2,d3,d4,d5,d6,d7,a2)
 VOID OGFX_BltTemplate(PLANEPTR source, LONG sx, LONG modulo, struct RastPort *rp, LONG dx, LONG dy, LONG width, LONG height)(a0,d0,d1,a1,d2,d3,d4,d5)
 VOID OGFX_ScrollRaster(struct RastPort *rp, LONG dx, LONG dy, LONG x0, LONG y0, LONG x1, LONG y1)(a1,d0,d1,d2,d3,d4,d5)
+* 0.7: OpenGfx's look hook (opengpu/gfx.h)
+LONG OGFX_RegisterLook(struct OGFXLookV1 *look)(a0)
+LONG OGFX_UnregisterLook(APTR owner)(a0)
 ==end

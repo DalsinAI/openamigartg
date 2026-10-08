@@ -586,6 +586,22 @@ work moves onto OpenGPU: the leaves' rectangles become FILL, COPY and
 TEMPLATE batches, its composites COMPOSITE and MASK, so the same drawing
 reaches the ring on the Cradle and the CPU core elsewhere.
 
+**OpenGfx's look hook (opengpu.library 0.7, 8 October 2026).** OpenLook
+(OpenGadTools) drew window frames by patching RectFill and Text itself, so
+on the OpenRTG part those two calls had two patches: OpenLook's on top of
+OpenGfx's. OpenGfx now owns them alone. A program that draws the system's
+look on them registers a look instead (`OGFX_RegisterLook`, LVO 150;
+`OGFX_UnregisterLook`, 156; `struct OGFXLookV1` in `include/opengpu/gfx.h`).
+OpenGfx asks the look first on every RectFill and Text, before the provider
+and its own paths; the look returns non-zero when it has drawn the call. One
+look at a time. Calls inside the look are counted, and `OGFX_Status()` shows
+`OGFX_STATUS_LOOK` and `OGFX_STATUS_LOOK_BUSY`, so the look's owner can wait
+for them before its code goes. The ABI is additive: the 0.6 LVOs, the
+provider record and the status bits are unchanged, and OpenGfx's interface
+is 1.3. With no look registered the two calls cost one byte test more.
+OpenLook 0.6 registers its look and asks for OpenGfx's patches where nothing
+has put them in (Picasso96 without the OpenRTG part).
+
 #### 1. One library, heavy parts loaded on demand
 
 - Programs open only opengpu.library and use one include tree.
@@ -615,7 +631,8 @@ reaches the ring on the Cradle and the CPU core elsewhere.
 | 54 | OGPU_ModuleOpen |
 | 60 | OGPU_ModuleClose |
 | 66 to 96 | OpenGfx's calls, in opengfx.library's order: OGFX_Version, InstallPatches, SetEnabled, Status, RegisterProvider, UnregisterProvider (0.6) |
-| 102 to 144 | graphics.library's eight, through OpenGfx: OGFX_Text, TextLength, TextExtent, TextFit, RectFill, BltBitMap, BltTemplate, ScrollRaster (0.6); then 2D calls as they come |
+| 102 to 144 | graphics.library's eight, through OpenGfx: OGFX_Text, TextLength, TextExtent, TextFit, RectFill, BltBitMap, BltTemplate, ScrollRaster (0.6) |
+| 150, 156 | OpenGfx's look hook: OGFX_RegisterLook, OGFX_UnregisterLook (0.7); then 2D calls as they come |
 
 Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x0035 and the rest) and pass them to `OGPU_Submit`.
 
