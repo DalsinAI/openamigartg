@@ -135,6 +135,9 @@ fi
 cc=$prefix/bin/m68k-amigaos-gcc
 [ -x "$cc" ] || cc=${CC:-m68k-amigaos-gcc}
 cpu=${SDL2_CPU:-"@CPU@"}
+# libnix. A build that picks it with -mcrt=nix20 instead (ACKitchen's stoves
+# do) says SDL2_RUNTIME=-mcrt=nix20: GCC must not get both.
+runtime=${SDL2_RUNTIME:-"-noixemul"}
 extra=
 case $("$cc" -dumpversion 2>/dev/null) in
     1[0-9]*) extra=" -fno-tree-loop-distribute-patterns" ;;
@@ -150,8 +153,8 @@ while [ $# -gt 0 ]; do
     --prefix=*|--exec-prefix=*) ;;
     --prefix|--exec-prefix) out="$out $prefix" ;;
     --version) out="$out @VERSION@" ;;
-    --cflags) out="$out -I$includedir/SDL2 -noixemul $cpu$extra" ;;
-    --libs|--static-libs) out="$out -noixemul $cpu -L$libdir -lSDL2 -lGL -lm" ;;
+    --cflags) out="$out -I$includedir/SDL2 $runtime $cpu$extra" ;;
+    --libs|--static-libs) out="$out $runtime $cpu -L$libdir -lSDL2 -lGL -lm" ;;
     *) usage 1 1>&2 ;;
     esac
     shift
