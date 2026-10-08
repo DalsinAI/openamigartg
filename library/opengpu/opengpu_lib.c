@@ -1,28 +1,37 @@
 /* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * opengpu.library 0.2 (G1 with stream v1.1, DESIGN.md section 5): the library and its
- * built-in CPU back end, which runs ogpu_core.c on the Amiga's own 68k.
- * Batches are carried out as they are submitted, so a fence is done by the
- * time OGPU_Submit returns; OGPU_Wait gives the batch's first error. The
- * Cradle's and the PiStorm's back ends (G2, G3) will queue instead, behind
- * the same calls. Built bare by library/build.sh.
+ * opengpu.library 0.3 (G2 with stream v1.1, DESIGN.md section 5): the library, its
+ * built-in CPU back end, which runs ogpu_core.c on the Amiga's own 68k, and
+ * the drivers in LIBS:OpenGPU/ (include/opengpu/driver.h). The first time a
+ * DOS process asks anything, the library opens the drivers there and keeps
+ * the first that finds its hardware (ACRTG.gpu: the Cradle's command ring).
+ * From then on every batch goes to that driver, and the CPU takes over for
+ * good if the driver says its hardware has gone. Without a driver, batches
+ * are carried out on the CPU as they are submitted, so a fence is done by
+ * the time OGPU_Submit returns. OGPU_Wait gives a batch's first error.
+ * Built bare by library/build.sh.
  */
 #include <exec/types.h>
 #include <exec/resident.h>
 #include <dos/dos.h>
+#include <dos/dosextens.h>
 #include <exec/libraries.h>
 #include <exec/execbase.h>
 #include <exec/semaphores.h>
 #include <proto/exec.h>
+#include <proto/dos.h>
 
 #include "ogpu_core.h"
 #include "../../include/opengpu/opengpu.h"
+#include "../../include/opengpu/driver.h"
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 2
+#define LIB_REVISION 3
 #define RESULTS 16                              /* the last batches' results, by fence */
+#define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
+#define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
 
 struct OpenGPUBase {
     struct Library lib;
@@ -30,19 +39,29 @@ struct OpenGPUBase {
     struct SignalSemaphore lock;                /* fences and results */
     ULONG fence;                                /* the last one given */
     LONG result[RESULTS];
+    unsigned long dfence[RESULTS];              /* the driver's fence for that batch, or ON_CPU */
+    struct SignalSemaphore drv_lock;            /* the driver: loading it, and each call into it */
+    int drv_tried;                              /* LIBS:OpenGPU/ looked at */
+    struct Library *drv_lib;                    /* the driver's library, kept open */
+    struct OGPUDriver *drv;                     /* its table, or NULL: the CPU does everything */
 };
 
 struct ExecBase *SysBase;
+struct DosLibrary *DOSBase;
 
 /* Run as a program, the library does nothing. This must stay the first code
  * in the file: build.sh keeps source order (-fno-toplevel-reorder). */
 int start(void) { return -1; }
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.2 (6.10.2026) OpenGPU, Dalsin Limited\r\n";
+static const char lib_id[] = "opengpu.library 0.3 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.2 (6.10.2026) OpenGPU, Dalsin Limited";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.3 (8.10.2026) OpenGPU, Dalsin Limited";
 static const char cpu_name[] = "CPU";
+static const char dos_name[] = "dos.library";
+static const char drv_dir[] = "LIBS:OpenGPU";
+/* Tried first, in this order; any other *.gpu there after them. */
+static const char *const drv_first[] = { "ACRTG.gpu", "PiStorm.gpu", "AGA.gpu", NULL };
 
 static struct Library *lib_init(REG(d0, struct OpenGPUBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenGPUBase *base));
@@ -53,6 +72,7 @@ static ULONG OGPU_Query(REG(d0, ULONG op), REG(d1, ULONG format), REG(a6, struct
 static STRPTR OGPU_BackEndName(REG(d0, ULONG index), REG(a6, struct OpenGPUBase *base));
 static LONG OGPU_Submit(REG(a0, APTR stream), REG(d0, ULONG words), REG(a1, ULONG *fence), REG(a6, struct OpenGPUBase *base));
 static LONG OGPU_Wait(REG(d0, ULONG fence), REG(a6, struct OpenGPUBase *base));
+static void drivers_close(struct OpenGPUBase *base);
 
 static const APTR lib_vectors[] = {
     (APTR)lib_open, (APTR)lib_close, (APTR)lib_expunge, (APTR)lib_null,
@@ -74,6 +94,7 @@ static struct Library *lib_init(REG(d0, struct OpenGPUBase *base), REG(a0, BPTR 
     base->seglist = seglist;
     base->lib.lib_Revision = LIB_REVISION;
     InitSemaphore(&base->lock);
+    InitSemaphore(&base->drv_lock);
     return &base->lib;
 }
 static struct Library *lib_open(REG(a6, struct OpenGPUBase *base))
@@ -93,6 +114,7 @@ static BPTR lib_expunge(REG(a6, struct OpenGPUBase *base))
 {
     if (base->lib.lib_OpenCnt) { base->lib.lib_Flags |= LIBF_DELEXP; return 0; }
     BPTR seglist = base->seglist;
+    drivers_close(base);
     Remove(&base->lib.lib_Node);
     FreeMem((UBYTE *)base - base->lib.lib_NegSize, base->lib.lib_NegSize + base->lib.lib_PosSize);
     return seglist;
@@ -108,46 +130,196 @@ static ogpu_u8 *cpu_map(void *user, ogpu_u32 address, ogpu_u32 length)
     return (ogpu_u8 *)address;
 }
 
-/* ---- OpenGPU's calls ------------------------------------------------------------- */
-
-static ULONG OGPU_Query(REG(d0, ULONG op), REG(d1, ULONG format), REG(a6, struct OpenGPUBase *base))
-{
-    (void)base;
-    return (ULONG)ogpu_core_supports((int)op, (int)format) | (OGPU_BACKEND_CPU << 8);
-}
-
-static STRPTR OGPU_BackEndName(REG(d0, ULONG index), REG(a6, struct OpenGPUBase *base))
-{
-    (void)base;
-    return index == OGPU_BACKEND_CPU ? (STRPTR)cpu_name : NULL;
-}
-
-static LONG OGPU_Submit(REG(a0, APTR stream), REG(d0, ULONG words), REG(a1, ULONG *fence), REG(a6, struct OpenGPUBase *base))
+/* A batch on the 68k: done when this returns. */
+static LONG cpu_run(APTR stream, ULONG words)
 {
     struct ogpu_core core;      /* on the caller's stack, so callers never wait on each other */
-    ULONG f;
     ogpu_core_init(&core);
     core.map = cpu_map;
     core.fence = 0;
     core.ext = 0;               /* the CPU back end carries no GPU APIs: OGPU_OP_VIRGL is BADOP */
     core.user = 0;
     ogpu_core_run(&core, (const ogpu_u8 *)stream, (long)words);
+    return core.last_error;
+}
+
+/* ---- the drivers in LIBS:OpenGPU/ ------------------------------------------------ */
+
+/* A driver's first call: its table, or NULL. */
+static struct OGPUDriver *driver_get(struct Library *lib)
+{
+    register struct OGPUDriver *table __asm("d0");
+    register struct Library *a6 __asm("a6") = lib;
+    __asm volatile ("jsr -30(%%a6)" : "=r"(table) : "r"(a6) : "d1", "a0", "a1", "cc", "memory");
+    return table;
+}
+
+static int name_is_gpu(const char *n)
+{
+    int len = 0;
+    while (n[len]) len++;
+    return len > 4 && n[len - 4] == '.' && (n[len - 3] | 32) == 'g' && (n[len - 2] | 32) == 'p' && (n[len - 1] | 32) == 'u';
+}
+
+static int same_name(const char *a, const char *b)
+{
+    while (*a && (*a | 32) == (*b | 32)) { a++; b++; }
+    return *a == 0 && *b == 0;
+}
+
+/* Open LIBS:OpenGPU/name; 1 when it is the driver now in use. */
+static int driver_try(struct OpenGPUBase *base, const char *name)
+{
+    char path[64];
+    int i = 0, j = 0;
+    struct Library *lib;
+    struct OGPUDriver *d;
+    while (drv_dir[j]) path[i++] = drv_dir[j++];
+    path[i++] = '/';
+    for (j = 0; name[j] && i < (int)sizeof path - 1; ) path[i++] = name[j++];
+    path[i] = 0;
+    if (!(lib = OpenLibrary((CONST_STRPTR)path, 0))) return 0;
+    d = driver_get(lib);
+    if (!d || d->version < OGPU_DRIVER_VERSION || !d->supports || !d->submit || !d->wait) {
+        CloseLibrary(lib);
+        return 0;
+    }
+    base->drv_lib = lib;
+    base->drv = d;
+    return 1;
+}
+
+/* The first time a process asks: look in LIBS:OpenGPU/. A plain task (an
+ * input handler, a device's task) can't load from disk, so until a process
+ * has asked, everything runs on the CPU. */
+static void drivers_load(struct OpenGPUBase *base)
+{
+    struct Task *me;
+    static char names[MAX_DRIVERS][32];         /* under drv_lock */
+    int n = 0, i, k;
+    BPTR lock;
+    struct FileInfoBlock *fib;
+    if (base->drv_tried) return;
+    me = FindTask(NULL);
+    if (me->tc_Node.ln_Type != NT_PROCESS) return;
+    ObtainSemaphore(&base->drv_lock);
+    if (base->drv_tried) { ReleaseSemaphore(&base->drv_lock); return; }
+    if (!DOSBase) DOSBase = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)dos_name, 36);
+    if (DOSBase && (fib = AllocDosObject(DOS_FIB, NULL)) != NULL) {
+        struct Process *pr = (struct Process *)me;
+        APTR win = pr->pr_WindowPtr;
+        pr->pr_WindowPtr = (APTR)-1;            /* no "Please insert volume" requester */
+        if ((lock = Lock((CONST_STRPTR)drv_dir, ACCESS_READ)) != 0) {
+            if (Examine(lock, fib) && fib->fib_DirEntryType > 0) {
+                while (n < MAX_DRIVERS && ExNext(lock, fib)) {
+                    if (fib->fib_DirEntryType >= 0 || !name_is_gpu((const char *)fib->fib_FileName)) continue;
+                    for (k = 0; k < 31 && fib->fib_FileName[k]; k++) names[n][k] = fib->fib_FileName[k];
+                    names[n][k] = 0;
+                    n++;
+                }
+            }
+            UnLock(lock);
+        }
+        pr->pr_WindowPtr = win;
+        FreeDosObject(DOS_FIB, fib);
+        /* The known drivers in their order, then the rest as found. */
+        for (k = 0; drv_first[k] && !base->drv; k++)
+            for (i = 0; i < n; i++)
+                if (names[i][0] && same_name(names[i], drv_first[k])) {
+                    names[i][0] = 0;
+                    driver_try(base, drv_first[k]);
+                    break;
+                }
+        for (i = 0; i < n && !base->drv; i++)
+            if (names[i][0]) driver_try(base, names[i]);
+    }
+    base->drv_tried = 1;
+    ReleaseSemaphore(&base->drv_lock);
+}
+
+static void drivers_close(struct OpenGPUBase *base)
+{
+    if (base->drv_lib) CloseLibrary(base->drv_lib);
+    base->drv_lib = NULL;
+    base->drv = NULL;
+    if (DOSBase) CloseLibrary((struct Library *)DOSBase);
+    DOSBase = NULL;
+}
+
+/* ---- OpenGPU's calls ------------------------------------------------------------- */
+
+static ULONG OGPU_Query(REG(d0, ULONG op), REG(d1, ULONG format), REG(a6, struct OpenGPUBase *base))
+{
+    int answer = -1;
+    drivers_load(base);
+    if (base->drv) {
+        ObtainSemaphore(&base->drv_lock);
+        /* Every batch goes to the driver, so its answer is the one that holds. */
+        if (base->drv) answer = base->drv->supports((int)op, (int)format, 0);
+        ReleaseSemaphore(&base->drv_lock);
+    }
+    if (answer >= 0) return (ULONG)answer | (1UL << 8);
+    return (ULONG)ogpu_core_supports((int)op, (int)format) | (OGPU_BACKEND_CPU << 8);
+}
+
+static STRPTR OGPU_BackEndName(REG(d0, ULONG index), REG(a6, struct OpenGPUBase *base))
+{
+    drivers_load(base);
+    if (index == OGPU_BACKEND_CPU) return (STRPTR)cpu_name;
+    if (index == 1 && base->drv) return (STRPTR)base->drv->name;
+    return NULL;
+}
+
+static LONG OGPU_Submit(REG(a0, APTR stream), REG(d0, ULONG words), REG(a1, ULONG *fence), REG(a6, struct OpenGPUBase *base))
+{
+    LONG r = OGPU_OK;
+    ULONG f;
+    unsigned long df = ON_CPU;
+    int on_driver = 0;
+    drivers_load(base);
+    if (base->drv) {
+        ObtainSemaphore(&base->drv_lock);
+        if (base->drv) {
+            on_driver = 1;
+            r = base->drv->submit(stream, words, &df);
+            if (r == OGPU_ERR_DEVICE) {
+                /* The hardware has gone: this batch and every later one on the CPU. */
+                base->drv = NULL;
+                on_driver = 0;
+                df = ON_CPU;
+            }
+        }
+        ReleaseSemaphore(&base->drv_lock);
+    }
+    if (!on_driver) r = cpu_run(stream, words);
     ObtainSemaphore(&base->lock);
     f = ++base->fence;
     if (!f) f = ++base->fence;                  /* 0 is never a fence */
-    base->result[f % RESULTS] = core.last_error;
+    base->result[f % RESULTS] = r;
+    base->dfence[f % RESULTS] = df;
     ReleaseSemaphore(&base->lock);
     if (fence) *fence = f;
-    return core.last_error;
+    return r;
 }
 
 static LONG OGPU_Wait(REG(d0, ULONG fence), REG(a6, struct OpenGPUBase *base))
 {
     LONG r = OGPU_OK;
+    unsigned long df = ON_CPU;
     ObtainSemaphore(&base->lock);
-    /* Batches run as they are submitted; only recent results are kept, and
-     * an older fence says so rather than claim the batch went well. */
-    if (fence && fence <= base->fence) r = base->fence - fence < RESULTS ? base->result[fence % RESULTS] : OGPU_ERR_EXPIRED;
+    /* Only recent results are kept, and an older fence says so rather than
+     * claim the batch went well. */
+    if (fence && fence <= base->fence) {
+        if (base->fence - fence < RESULTS) {
+            r = base->result[fence % RESULTS];
+            df = base->dfence[fence % RESULTS];
+        } else r = OGPU_ERR_EXPIRED;
+    }
     ReleaseSemaphore(&base->lock);
+    if (df != ON_CPU && r == OGPU_OK) {
+        ObtainSemaphore(&base->drv_lock);
+        if (base->drv) r = base->drv->wait(df);
+        ReleaseSemaphore(&base->drv_lock);
+    }
     return r;
 }
