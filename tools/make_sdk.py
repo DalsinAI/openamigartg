@@ -55,7 +55,11 @@ MESA_HEADERS = ("GL/gl.h", "GL/glext.h", "GL/glcorearb.h",
                 "GLES2/gl2.h", "GLES2/gl2ext.h", "GLES2/gl2platform.h",
                 "GLES3/gl3.h", "GLES3/gl31.h", "GLES3/gl32.h", "GLES3/gl3platform.h",
                 "KHR/khrplatform.h")
-LIBS = ("libSDL2.a", "libSDL2_test.a", "libSDL2_image.a", "libSDL2_mixer.a", "libSDL2_ttf.a",
+# libSDL2_image.a and libSDL2_mixer.a are the stubs of SDL2_image.module and
+# SDL2_mixer.module (LIBS:OpenGPU/, the runtime); the _static ones are the
+# same libraries inside the program.
+LIBS = ("libSDL2.a", "libSDL2_test.a", "libSDL2_image.a", "libSDL2_mixer.a",
+        "libSDL2_image_static.a", "libSDL2_mixer_static.a", "libSDL2_ttf.a",
         "libSDL2_net.a", "libminigl.a", "libmgl.a", "libtinygl.a")
 # SDL 1.2: sdl12-compat (Zlib) on OpenGPU's SDL 2, when --sdl12 gives it.
 SDL12_VERSION = "1.2.78"
@@ -450,7 +454,7 @@ def make_kit(args) -> Path:
         copy(work / f"{name}-{ver}" / "LICENSE.txt", L / f"{name}.txt")
         notices.append((f"{name} {ver}: {name.replace('SDL2_', 'SDL_')}.h, lib{name}.a", f"Zlib ({name}.txt)"))
     img = work / f"SDL2_image-{SAT_VERSIONS['SDL2_image']}" / "src"
-    bundled = ["Inside libSDL2_image.a, from SDL2_image's own source.\n",
+    bundled = ["Inside SDL2_image.module and libSDL2_image_static.a, from SDL2_image's own source.\n",
                "== stb_image (public domain or MIT)\n", tail_from(img / "stb_image.h", "This software is available under 2 licenses"),
                "\n== nanosvg and nanosvgrast (Zlib; parts from Anti-Grain Geometry)\n", comment_head(img / "nanosvg.h"),
                "\n", comment_head(img / "nanosvgrast.h"),
@@ -458,19 +462,19 @@ def make_kit(args) -> Path:
                "\n== miniz (public domain, the Unlicense)\n", tail_from(img / "miniz.h", "This is free and unencumbered software"),
                "\n== tiny_jpeg (public domain)\n", comment_head(img / "tiny_jpeg.h")]
     (L / "SDL2_image-bundled.txt").write_text("".join(bundled), encoding="latin-1")
-    notices.append(("stb_image, nanosvg, QOI, miniz, tiny_jpeg inside libSDL2_image.a", "public domain, Zlib, MIT (SDL2_image-bundled.txt)"))
+    notices.append(("stb_image, nanosvg, QOI, miniz, tiny_jpeg inside SDL2_image.module and libSDL2_image_static.a", "public domain, Zlib, MIT (SDL2_image-bundled.txt)"))
     mix = work / f"SDL2_mixer-{SAT_VERSIONS['SDL2_mixer']}" / "src" / "codecs"
-    bundled = ["Inside libSDL2_mixer.a, from SDL2_mixer's own source.\n",
+    bundled = ["Inside SDL2_mixer.module and libSDL2_mixer_static.a, from SDL2_mixer's own source.\n",
                "== stb_vorbis (public domain or MIT)\n", tail_from(mix / "stb_vorbis" / "stb_vorbis.h", "This software is available under 2 licenses"),
                "\n== minimp3 (CC0)\n", (mix / "minimp3" / "LICENSE").read_text(encoding="latin-1"),
                "\n== dr_flac (public domain or MIT-0)\n", (mix / "dr_libs" / "LICENSE").read_text(encoding="latin-1")]
     (L / "SDL2_mixer-bundled.txt").write_text("".join(bundled), encoding="latin-1")
     copy(mix / "timidity" / "COPYING", L / "Timidity.txt")
     (L / "Timidity-source.txt").write_text(
-        "libSDL2_mixer.a contains Timidity (MIDI), from SDL2_mixer 2.8.2's src/codecs/timidity,\n"
+        "SDL2_mixer.module and libSDL2_mixer_static.a contain Timidity (MIDI), from SDL2_mixer 2.8.2's src/codecs/timidity,\n"
         "unchanged by the Team, under the Artistic License in Timidity.txt. Its source is in\n"
         "SDL2_mixer 2.8.2: https://github.com/libsdl-org/SDL_mixer/releases/tag/release-2.8.2\n")
-    notices.append(("stb_vorbis, minimp3, dr_flac, Timidity inside libSDL2_mixer.a",
+    notices.append(("stb_vorbis, minimp3, dr_flac, Timidity inside SDL2_mixer.module and libSDL2_mixer_static.a",
                     "public domain, CC0, MIT-0, Artistic (SDL2_mixer-bundled.txt, Timidity.txt)"))
     ft = work / "freetype-2.14.3" / "docs"
     copy(ft / "FTL.TXT", L / "FreeType-FTL.txt")
@@ -478,7 +482,7 @@ def make_kit(args) -> Path:
     xmp = (work / "libxmp-4.7.3" / "README").read_text(encoding="latin-1")
     i = xmp.find("LICENSE")
     (L / "libxmp.txt").write_text(xmp[i:] if i >= 0 else xmp, encoding="latin-1")
-    notices.append(("libxmp 4.7.3 inside libSDL2_mixer.a", "MIT (libxmp.txt)"))
+    notices.append(("libxmp 4.7.3 inside SDL2_mixer.module and libSDL2_mixer_static.a", "MIT (libxmp.txt)"))
     lic = mesa / "docs" / "license.rst"
     copy(lic, L / "Mesa.txt")
     notices.append(("Mesa 26.2.4: GL/gl.h", "MIT (Mesa.txt)"))

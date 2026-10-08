@@ -18,7 +18,10 @@ the GCC 16 stove:
 | `libSDL2.a` | The link library programs use (`stubs/sdl2`). |
 | `include/SDL2/` | SDL's headers, and the satellites', for programs. |
 | `libSDL2_static.a` | All of SDL inside the program, with no module. |
-| `libSDL2_image.a`, `libSDL2_mixer.a`, `libSDL2_ttf.a`, `libSDL2_net.a` | The satellite libraries. |
+| `SDL2_image.module`, `SDL2_mixer.module` | SDL2_image and SDL2_mixer, shared and resident like SDL2.module. Go in `LIBS:OpenGPU/`. |
+| `libSDL2_image.a`, `libSDL2_mixer.a` | Their link stubs (`stubs/sdl2/sat_stub.h`). |
+| `libSDL2_image_static.a`, `libSDL2_mixer_static.a` | The same two inside the program, for `libSDL2_static.a`. |
+| `libSDL2_ttf.a`, `libSDL2_net.a` | SDL2_ttf and SDL2_net, link libraries. |
 | `tests/sdl2/` | The tests (`tests/sdl2` in the repository). |
 
 Build a program the usual way:
@@ -238,6 +241,39 @@ isn't there or the window's format isn't one OpenGPU draws.
 `tests/sdl2/rendercompare` draws the same scenes with both renderers and
 compares them.
 
+## SDL2_image and SDL2_mixer: modules, decoding on the cores
+
+The design is amigachrome's `docs/design/Design-OpenGPU-SDL2-Satellites.md`.
+In short:
+
+- `SDL2_image.module` and `SDL2_mixer.module` are shared modules like
+  SDL2.module (`stubs/sdl2/sat_module.h`). A program links `-lSDL2_image`
+  or `-lSDL2_mixer` (a stub) and `-lSDL2`; the module calls SDL through the
+  program's own SDL jump table, with SDL2.module's A4 for each call
+  (`satellites/module/sat_sdl.c`). SDL's audio callback into SDL2_mixer
+  comes through `ogpu_sat_callin3` (`sat_entry.S`), which sets the
+  module's A4. libSDL2.a closes the satellites before SDL
+  (`SDL2Stub_AtClose`).
+- Their ABI is `satellites/abi/SDL_image_procs.h` and `SDL_mixer_procs.h`:
+  the order of the stubs' tables, append-only. `gen_sat_procs.py` makes
+  and checks them against the headers.
+- SDL2_image decodes down a ladder (`satellites/module/ogpu_image.c`): the
+  x86 or ARM64 cores through `media.decode/1` for JPEG, PNG (not paletted),
+  WebP, AVIF, HEIC, JPEG XL and TIFF; SDL2_image's own decoders for the rest
+  (and for all when there is no services card or Cradle); the service
+  again for what SDL2_image doesn't know; then datatypes. `SDL_IMAGE_DECODER`
+  `cpu` keeps to SDL2_image's own.
+- SDL2_mixer decodes Ogg Vorbis, MP3, FLAC and tracker modules through
+  `media.decode/1` first (`satellites/module/ogpu_mixer.c`, four music
+  interfaces before SDL2_mixer's own), two seconds ahead of what plays, and
+  mixes into SDL's audio device. `SDL_MIXER_DECODER` `cpu` keeps to its own.
+- `satellites/module/sat_service.c` is openservice.device for both: any
+  task may start, wait for and close a request (SDL2_mixer waits in SDL's
+  audio thread).
+- `tests/sdl2/satladder.c` (with `make-satmedia.sh`'s pictures and sounds)
+  says which rung decoded what, how long it took, and how far the pixels
+  are from the original.
+
 ## How the source is put together
 
 Nothing third-party is committed. `build.sh`:
@@ -258,7 +294,9 @@ Nothing third-party is committed. `build.sh`:
    lowlevel.library, the clipboard, OpenGPU's helpers) and
    `include/SDL_config_amigaos.h`;
 5. builds the satellites from their pinned tarballs (`satellites/`), with
-   `patches/freetype` applied to FreeType (two null checks).
+   `patches/freetype` applied to FreeType (two null checks), and
+   `patches/sdl2_image` and `patches/sdl2_mixer` (the decoding ladders, and
+   SDL2_mixer's audio callback in a module).
 
 | Library | Licence | Notes |
 | --- | --- | --- |

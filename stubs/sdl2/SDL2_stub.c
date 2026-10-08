@@ -65,6 +65,13 @@ APTR SDL2Stub_a4 = NULL;
 const struct SDL2GLBridge *SDL2Stub_gl = NULL;
 static BPTR SDL2Stub_seg = 0;
 static struct SDL2ModuleTable *SDL2Stub_module = NULL;
+static struct SDL2StubCloseHook *SDL2Stub_hooks = NULL;
+
+void SDL2Stub_AtClose(struct SDL2StubCloseHook *hook)
+{
+    hook->next = SDL2Stub_hooks;
+    SDL2Stub_hooks = hook;
+}
 
 static void SDL2Stub_Fail(const char *why)
 {
@@ -138,6 +145,12 @@ void SDL2Stub_Init(void)
 
 static void __attribute__((destructor)) SDL2Stub_Close(void)
 {
+    /* The satellites first (SDL2_mixer closes its audio device in SDL). */
+    while (SDL2Stub_hooks) {
+        struct SDL2StubCloseHook *h = SDL2Stub_hooks;
+        SDL2Stub_hooks = h->next;
+        h->close();
+    }
     if (SDL2Stub_module) {
         SDL2STUB_A4();
         SDL2Stub_module->close();

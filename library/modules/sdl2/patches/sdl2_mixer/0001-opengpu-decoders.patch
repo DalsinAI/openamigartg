@@ -1,0 +1,65 @@
+--- a/src/music.c
++++ b/src/music.c
+@@ -158,8 +158,32 @@
+ 
+ 
+ /* Interfaces for the various music interfaces, ordered by priority */
++#ifdef OGPU_MIXER_SERVICE
++/* Altered for OpenGPU by Dalsin Limited, 2026: Ogg Vorbis, MP3, FLAC and
++   tracker modules go to media.decode/1 on the x86 or ARM64 cores first
++   (ogpu_mixer.c); SDL2_mixer's own decoders follow, for when no services
++   card or Cradle offers it. */
++extern Mix_MusicInterface Mix_MusicInterface_OGPU_OGG;
++extern Mix_MusicInterface Mix_MusicInterface_OGPU_MP3;
++extern Mix_MusicInterface Mix_MusicInterface_OGPU_FLAC;
++extern Mix_MusicInterface Mix_MusicInterface_OGPU_MOD;
++#endif
++
++#ifdef OGPU_SAT_MODULE
++/* In SDL2_mixer.module the list must be in the data, where each program's
++   copy points at its own interfaces (each has its loaded and opened flags):
++   static, GCC keeps it with the code. */
++Mix_MusicInterface *s_music_interfaces[] =
++#else
+ static Mix_MusicInterface *s_music_interfaces[] =
++#endif
+ {
++#ifdef OGPU_MIXER_SERVICE
++    &Mix_MusicInterface_OGPU_OGG,
++    &Mix_MusicInterface_OGPU_MP3,
++    &Mix_MusicInterface_OGPU_FLAC,
++    &Mix_MusicInterface_OGPU_MOD,
++#endif
+ #ifdef MUSIC_CMD
+     &Mix_MusicInterface_CMD,
+ #endif
+--- a/src/mixer.c
++++ b/src/mixer.c
+@@ -104,6 +104,10 @@
+ 
+ /* Support for user defined music functions */
+ static Mix_MixCallback mix_music = music_mixer;
++#ifdef OGPU_SAT_MODULE
++#include "sat_rt.h"
++static struct SatCallin mix_callin;
++#endif
+ static void *music_data = NULL;
+ 
+ /* rcg06042009 report available decoders at runtime. */
+@@ -494,8 +498,16 @@
+     desired.format = format;
+     desired.channels = nchannels;
+     desired.samples = chunksize;
++#ifdef OGPU_SAT_MODULE
++    /* Altered for OpenGPU by Dalsin Limited, 2026: in SDL2_mixer.module SDL
++       calls back through an entry that sets this module's A4 first
++       (library/modules/sdl2/satellites/module/sat_rt.h). */
++    desired.callback = (SDL_AudioCallback)ogpu_sat_callin3;
++    desired.userdata = ogpu_sat_callin(&mix_callin, (void *)mix_channels, NULL);
++#else
+     desired.callback = mix_channels;
+     desired.userdata = NULL;
++#endif
+ 
+     /* Accept nearly any audio format */
+     if ((audio_device = SDL_OpenAudioDevice(device, 0, &desired, &mixer, allowed_changes)) == 0) {

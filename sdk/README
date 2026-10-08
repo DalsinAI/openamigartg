@@ -7,9 +7,10 @@ opengpu.library itself, for AmigaOS 3.2 on a 68040 or
 68060 with an FPU, with bebbo's m68k-amigaos-gcc (GCC 6.5 or GCC 16).
 
 Programs built with it run on OpenGPU's runtime, which OpenUp installs:
-opengpu.library, and LIBS:OpenGPU/SDL2.module and GL.module. The kit has no
-runtime files of its own. SDL_GL_* needs SDL2.module 3 (OpenGPU 0.6 and
-later); an older SDL2.module runs the same programs without OpenGL.
+opengpu.library, and LIBS:OpenGPU/SDL2.module, SDL2_image.module,
+SDL2_mixer.module and GL.module. The kit has no runtime files of its own.
+SDL_GL_* needs SDL2.module 3 (OpenGPU 0.6 and later); an older SDL2.module
+runs the same programs without OpenGL.
 
 
 What is in it
@@ -34,7 +35,13 @@ What is in it
   lib/libSDL2main.a       empty: SDL needs no main of its own here; it is
                           there for build systems that link -lSDL2main
   lib/libSDL2_test.a      SDL's test framework (for SDL's own test programs)
-  lib/libSDL2_image.a libSDL2_mixer.a libSDL2_ttf.a libSDL2_net.a
+  lib/libSDL2_image.a libSDL2_mixer.a
+                          SDL_image and SDL_mixer (the program's half:
+                          SDL2_image.module and SDL2_mixer.module do the work,
+                          decoding on the x86 or ARM64 cores where they can)
+  lib/libSDL2_image_static.a libSDL2_mixer_static.a
+                          the same, inside the program (with libSDL2_static.a)
+  lib/libSDL2_ttf.a libSDL2_net.a
   lib/libGL.a             OpenGL, GLES and GLA (GL.module does the work)
   lib/libminigl.a libmgl.a
                           MiniGL (minigl.library), and its GLUT-style helpers
