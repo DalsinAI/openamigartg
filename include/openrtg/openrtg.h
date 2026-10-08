@@ -56,4 +56,39 @@ struct OpenRTGBitMapInfo {
     unsigned char  pad;
 };
 
+/* ORTG_DrawStats (0.11): how OpenRTG drew on its bitmaps, by kind of
+ * drawing, since it started or was last reset. Each kind has four counts:
+ * pieces OpenGPU drew, pieces the CPU drew, and the pixels of each. A piece
+ * is one visible rectangle of one call (a call through a window partly
+ * covered draws several). OpenGPU draws a piece when its command does
+ * exactly what OpenRTG's CPU code does; everything else stays on the CPU. */
+/* ORTG_DrawStats' flags. */
+#define ORTG_DRAW_RESET         1   /* the counts back to 0 */
+#define ORTG_DRAW_CPU_ONLY      2   /* from now on, draw everything with the CPU code (to compare) */
+#define ORTG_DRAW_OPENGPU       4   /* ... and through OpenGPU again, where it is exact (the default) */
+#define ORTG_STAT_FILL          0   /* RectFill, Text's background, underlines */
+#define ORTG_STAT_INVERT        1   /* COMPLEMENT fills */
+#define ORTG_STAT_PATTERN       2   /* area patterns */
+#define ORTG_STAT_TEMPLATE      3   /* BltTemplate, Text's glyphs, BltPattern's masks */
+#define ORTG_STAT_COPY          4   /* plain blits, ClipBlit, ScrollRaster's move */
+#define ORTG_STAT_BLIT          5   /* chunky blits with a minterm other than a copy, or a plane mask */
+#define ORTG_STAT_SCROLL        6   /* ScrollRaster's uncovered area */
+#define ORTG_STAT_SETRAST       7   /* SetRast */
+#define ORTG_STAT_LINE          8   /* Draw, PolyDraw */
+#define ORTG_STAT_PIXEL         9   /* WritePixel, ReadPixel */
+#define ORTG_STAT_CHUNKY        10  /* WriteChunkyPixels, WritePixelArray8, WritePixelLine8 */
+#define ORTG_STAT_CHUNKY_READ   11  /* ReadPixelArray8, ReadPixelLine8 */
+#define ORTG_STAT_PIXELS        12  /* ORTG_WritePixels: CyberGraphX's and Picasso96API's pixel arrays */
+#define ORTG_STAT_PIXELS_READ   13  /* ORTG_ReadPixels */
+#define ORTG_STAT_PIXELS_FILL   14  /* ORTG_FillPixels */
+#define ORTG_STAT_PIXELS_INVERT 15  /* ORTG_InvertPixels */
+#define ORTG_STAT_ALPHA         16  /* ORTG_WritePixelsAlpha */
+#define ORTG_STAT_BLIT_PLANAR   17  /* blits from or to a planar bitmap */
+#define ORTG_STAT_BLIT_CONVERT  18  /* copies between OpenRTG bitmaps of two formats */
+#define ORTG_STAT_BLIT_MASKED   19  /* blits through a mask (BltMaskBitMapRastPort) */
+#define ORTG_STAT_COUNT         20
+#define ORTG_STAT_NAMES { "fill", "invert", "pattern", "template", "copy", "blit", "scroll", "setrast", "line", \
+    "pixel", "chunky", "chunky read", "pixels", "pixels read", "pixels fill", "pixels invert", "alpha", \
+    "blit planar", "blit convert", "blit masked" }
+
 #endif

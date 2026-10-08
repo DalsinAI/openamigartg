@@ -5,13 +5,17 @@
  * command, beside a plain C loop over the same memory, so a slow command
  * shows as the core's fault and not the machine's. The same batches go
  * through opengpu.library too (its driver, when there is one).
- *   OpenGPUBench [CHIP|FAST|ANY]      (where the pictures live; ANY by default) */
+ *   OpenGPUBench [CHIP|FAST|ANY|VRAM]  (where the pictures live; ANY by default;
+ *                                       VRAM: over the Workbench screen's own pixels, on OpenRTG) */
 #include <exec/types.h>
 #include <exec/memory.h>
 #include <devices/timer.h>
 #include <proto/exec.h>
 #include <proto/timer.h>
 #include <proto/opengpu.h>
+#include <proto/intuition.h>
+#include <proto/openrtg.h>
+#include <intuition/screens.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -19,7 +23,8 @@
 #include "../include/opengpu/opengpu.h"
 #include "../include/opengpu/build.h"
 
-struct Library *OpenGPUBase;
+struct Library *OpenGPUBase, *OpenRTGBase;
+struct IntuitionBase *IntuitionBase;
 struct Device *TimerBase;
 static struct timerequest treq;
 
@@ -96,9 +101,22 @@ int main(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "FAST")) req = MEMF_FAST;
     if (OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_ECLOCK, &treq.tr_node, 0)) { printf("no timer\n"); return 20; }
     TimerBase = treq.tr_node.io_Device;
-    if (!(arena = AllocVec(0x80000, req | MEMF_CLEAR))) { printf("no memory\n"); return 20; }
+    if (argc > 1 && !strcmp(argv[1], "VRAM")) {
+        struct OpenRTGBitMapInfo bi;
+        struct Screen *wb;
+        IntuitionBase = (struct IntuitionBase *)OpenLibrary((CONST_STRPTR)"intuition.library", 39);
+        OpenRTGBase = OpenLibrary((CONST_STRPTR)OPENRTG_NAME, 0);
+        wb = IntuitionBase ? LockPubScreen(NULL) : NULL;
+        if (!wb || !OpenRTGBase || !ORTG_BitMapInfo(wb->RastPort.BitMap, &bi) || bi.bytes_per_row * bi.height < 0x80000) {
+            printf("VRAM: no OpenRTG Workbench screen big enough\n");
+            return 20;
+        }
+        arena = bi.memory;
+        UnlockPubScreen(NULL, wb);
+    } else if (!(arena = AllocVec(0x80000, req | MEMF_CLEAR))) { printf("no memory\n"); return 20; }
     OpenGPUBase = OpenLibrary((CONST_STRPTR)OPENGPU_NAME, 0);
-    printf("pictures at %08lx (%s RAM)\n", (unsigned long)arena, TypeOfMem(arena) & MEMF_CHIP ? "Chip" : "Fast");
+    printf("pictures at %08lx (%s)\n", (unsigned long)arena, OpenRTGBase ? "the Workbench screen's video RAM" : TypeOfMem(arena) & MEMF_CHIP ? "Chip RAM" : "Fast RAM");
+    begin(OGPU_FMT_ARGB32); ogpu_fill(&B, 0, 0, 1, 1, 0); row("FILL 1x1: the cost of a batch", 1, 200);
     if (OpenGPUBase) printf("library back end: %s\n", (char *)OGPU_BackEndName(OGPU_BACKEND(OGPU_Query(OGPU_OP_FILL, OGPU_FMT_ARGB32))));
     for (i = 0; i < 64 * 48; i++) ((ULONG *)(arena + SRC_AT))[i] = 0x80000000UL | (ULONG)(i * 2654435761UL & 0xFFFFFF);
 
@@ -133,7 +151,7 @@ int main(int argc, char **argv)
     row("YUV I420 64x48 (v1.2)", 64 * 48, n);
 
     if (OpenGPUBase) CloseLibrary(OpenGPUBase);
-    FreeVec(arena);
+    if (!OpenRTGBase) FreeVec(arena);
     CloseDevice(&treq.tr_node);
     return 0;
 }

@@ -18,3 +18,7 @@ echo "$OUT/OpenGPUCheck ($(wc -c < "$OUT/OpenGPUCheck") bytes)"
 "$CC" -m68040 -m68881 -mnobitfield -O2 -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenGPUBench" "$HERE/ogpu_bench.c" \
     "$HERE/../library/opengpu/ogpu_core.c" "$HERE/../library/opengpu/ogpu_build.c" -lm
 echo "$OUT/OpenGPUBench ($(wc -c < "$OUT/OpenGPUBench") bytes)"
+"$CC" -m68040 -m68881 -O2 -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/GfxBench" "$HERE/gfx_bench.c" -lm
+echo "$OUT/GfxBench ($(wc -c < "$OUT/GfxBench") bytes)"
+"$CC" -m68040 -m68881 -O2 -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenRTGExact" "$HERE/ortg_exact.c"
+echo "$OUT/OpenRTGExact ($(wc -c < "$OUT/OpenRTGExact") bytes)"

@@ -88,6 +88,17 @@ int ortg_pieces(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, ortg_pi
 struct ColorMap *ortg_colormap(struct RastPort *rp);
 extern volatile ULONG ortg_palette_gen;
 
+/* For pixels.c: OpenGPU drawing a piece exactly as the CPU code would (1),
+ * or nothing (0); and the draw statistics (ORTG_DrawStats). */
+int ortg_ogpu_fill(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, ULONG value);
+int ortg_ogpu_invert(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, ULONG mask);
+int ortg_ogpu_pixels(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, const void *src, ULONG src_bpr, int format, const void *table);
+int ortg_ogpu_read(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, void *dst, ULONG dst_bpr);
+int ortg_ogpu_read_argb(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, void *dst, ULONG dst_bpr);
+int ortg_ogpu_alpha(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, const void *src, ULONG src_bpr, ULONG alpha);
+void ortg_stat(int kind, int gpu, ULONG pixels);
+ULONG ortg_draw_stats(ULONG *counts, ULONG kinds, ULONG flags);
+
 /* OpenRTG's screens on: the patches go in (once). boards[n]: monitor n's board. */
 int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **tables, APTR *boards);
 
