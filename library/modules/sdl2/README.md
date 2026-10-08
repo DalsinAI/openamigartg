@@ -33,17 +33,35 @@ Build a program the usual way:
   which fills the table with the module's functions. The table's layout is
   SDL's `SDL_dynapi_procs.h`, so a program built today runs on any later
   module.
-- Each program gets its own copy of the module (the layout's step 1, in
-  `hari-scripts/opengpu-one-library-layout.md` section 6). SDL's globals
-  are then the program's own.
+- The module is shared (residency step 2, DESIGN.md section 5): it is built
+  `-fbaserel32`, so opengpu.library loads its code once for every program
+  and each program's open gets its own copy of SDL's globals. Every stub
+  function sets A4 to the program's copy for the call and puts the
+  program's A4 back (`OGPU_A4`, `include/opengpu/module.h`).
+- SDL's calls into the program (the audio callback, timers, a thread's
+  function, event filters and watchers) run with the program's A4, and the
+  threads SDL starts begin with the A4 of the program that started them
+  (`src/SDL_os3callout.h`, `patches/sdl2/0005`, `patches/amigaos3/0005`).
+  Other callbacks (the log output function, hint callbacks, an RWops of the
+  program's) arrive with the module's A4, which only matters to a program
+  built `-fbaserel` itself; it marks them `__saveds`, as Amiga callbacks
+  always need.
+- `make SHARED=0` builds a copy for each program instead (step 1).
 - The module's interface is `include/opengpu/module.h`'s (`stubs/sdl2/sdl2_module.h`
   adds SDL's table): the first code takes SysBase, DOSBase, OpenGPUBase and
   a version, and returns a table. On opengpu.library 0.5 and later the stub
   loads it with `OGPU_ModuleOpen`; on older ones it LoadSegs it itself.
-- The module has no program startup. `module/module_start.s` and
-  `module/sdl2_module.c` run libnix's init list (memory, standard I/O on the
-  calling program's Input and Output, the libraries libnix opens) and its
-  exit list when the program ends.
+- The module has no program startup. `library/modules/common`
+  (`module_start.S`, `module_rt.c`) runs libnix's init list (memory,
+  standard I/O on the calling program's Input and Output, the libraries
+  libnix opens, the constructors) and its exit list when the program ends,
+  and gives `getenv` through GetVar.
+- `tools/baserel_check.py` checks every build reaches SDL's data only
+  through A4; `baserel.allow` lists the reviewed exceptions (tables of the
+  back ends' bootstraps and render drivers, two constant tables), which only
+  ever read the data's first values.
+- Kalms' c2p (`patches/amigaos3/0005`) takes its sizes in registers, so the
+  code keeps no data of its own.
 
 ## The Amiga back ends
 
@@ -127,12 +145,14 @@ they are altered.
 `measurements/20261008-sdl2-opengpu.txt`: SDL's testsprite2 and
 testrendercopyex on the CPU and on OpenGPU, with `tests/sdl2/bench`.
 
+Residency step 2 (8 October 2026, `measurements/20261008-residency-step2.txt`):
+a first open of SDL2.module takes 1,057 KB and a further one 171 KB; a call
+through libSDL2.a costs 0.021 µs against 0.015 before (SDL_GetCPUCount on
+the AC090); testsprite2 runs at 504 to 539 fps, as before (525 to 553).
+
 ## Next
 
 - `SDL_GL_*` on GL.module, when it is there.
-- Step 2 of residency: SDL2.module built `-fbaserel32`, code loaded once and
-  data per program. SDL's threads start in `SDL_systhread.c` with
-  CreateNewProc; they will need the creating program's A4 handed on.
 - Remove the stub's own LoadSeg once every install has opengpu.library 0.5.
 - The GCC 16 stove's FPCR clash (`fpcr_check.py`): three satellite files are
   built at -O0 until the stove is fixed, and the build checks everything.

@@ -1,0 +1,21 @@
+# GL.module's absolute references into its data, reviewed (tools/baserel_check.py).
+# They reach the data as loaded, which no program's copy is. One regular
+# expression a line, for the check's report line; "write:" lines allow
+# writes. Reviewed 8 October 2026, Mesa 26.2.4.
+#
+# glsl's builtin_types.cpp: the gl_*_fields tables (the fields of GLSL's
+# built-in uniform structs) are "static const", so GCC reaches them by their
+# absolute address everywhere, but glsl_struct_field has a constructor, so
+# they are filled in by the file's static constructor, which runs in every
+# program's open. The values are the same each time (text addresses of the
+# names, built-in glsl_types in the code, small numbers), so every program
+# reads one shared table that each start writes again with the same values,
+# and it lives as long as the module is loaded.
+write: ^write of \.bss\._ZL\d+gl_\w+_fields\+0x[0-9a-f]+ of libglsl\.a\(builtin_types\.cpp\.o\), from the code at .*\(\.text\S* of libglsl\.a\(builtin_types\.cpp\.o\)\)$
+^address of \.bss\._ZL\d+gl_\w+_fields\+0x[0-9a-f]+ of libglsl\.a\(builtin_types\.cpp\.o\), from the code at .*\(\.text\S* of libglsl\.a\(builtin_types\.cpp\.o\)\)$
+# glsl's ir_print_visitor.cpp: visit(ir_variable)'s static const tables of
+# names (mode, interpolation, precision), only read.
+^address of \.data\+0x0 of libglsl\.a\(ir_print_visitor\.cpp\.o\), from the code at __ZN16ir_print_visitor5visitEP11ir_variable\+
+# nir_opt_undef.c: the shader_blake3s[] local array's first values, copied
+# onto the stack.
+^address of \.data\+0x0 of libnir\.a\(nir_opt_undef\.c\.o\), from the code at _nir_opt_undef\+

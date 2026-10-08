@@ -1,0 +1,143 @@
+--- a/src/thread/amigaos3/SDL_systhread.c
++++ b/src/thread/amigaos3/SDL_systhread.c
+@@ -33,6 +33,7 @@
+ #endif
+ 
+ #include "../../audio/amigaos3/SDL_os3debug.h"
++#include "../../SDL_os3callout.h"
+ 
+ /* Per-thread context stored in SDL_Thread->handle area.
+  * The child reads parent_task and parent_signal to notify on exit. */
+@@ -45,8 +46,11 @@
+ /* Entry point wrapper for new processes.
+    CreateNewProc NP_Entry calls this. We retrieve the SDL_Thread*
+    from the parent-stored tc_UserData, then call the user function,
+-   then signal the parent before exiting. */
+-static void OS3_ThreadEntry(void)
++   then signal the parent before exiting.
++   In SDL2.module (built -fbaserel32) the new process starts with the A4
++   of the program's copy of SDL, which the parent puts in its tc_TrapData
++   (SDL_os3callout.h): OS3_ThreadEntry sets it and runs OS3_ThreadMain. */
++static void OS3_ThreadMain(void)
+ {
+     struct Task *me = FindTask(NULL);
+     SDL_Thread *thread = (SDL_Thread *)me->tc_UserData;
+@@ -84,6 +88,8 @@
+     }
+ }
+ 
++static OGPU_MODULE_THREAD_ENTRY(OS3_ThreadEntry, OS3_ThreadMain)
++
+ int SDL_SYS_CreateThread(SDL_Thread *thread)
+ {
+     struct Process *proc;
+@@ -142,6 +148,7 @@
+     /* Store SDL_Thread pointer in the new task's tc_UserData
+        so OS3_ThreadEntry can retrieve it. */
+     proc->pr_Task.tc_UserData = (APTR)thread;
++    ogpu_module_thread_a4(&proc->pr_Task);
+ 
+     DLOG("CreateThread: proc=%p name=%s sigbit=%d parent=%p",
+          (void *)proc, name, (int)sigbit, (void *)td->parent_task);
+--- a/src/video/amigaos3/SDL_os3aga.c
++++ b/src/video/amigaos3/SDL_os3aga.c
+@@ -26,10 +26,13 @@
+ extern void c2p1x1_8_c5_gen_init(
+     int chunkyx __asm("d0"),
+     int chunkyy __asm("d1"),
+-    int scroffsy __asm("d3"));
++    int scroffsy __asm("d3"),
++    ULONG *sizes __asm("a0"));
+ extern void c2p1x1_8_c5_gen(
+     void *c2pscreen __asm("a0"),
+-    void *bitplanes __asm("a1"));
++    void *bitplanes __asm("a1"),
++    ULONG pixels __asm("d0"),
++    ULONG scroffs __asm("d1"));
+ #endif
+ 
+ void OS3_AGA_SetPalette(struct Screen *screen, SDL_Palette *pal)
+@@ -73,11 +76,12 @@
+ #define OS3_C2P_BPLSIZE 10240UL
+ 
+ static int c2p_width = 0, c2p_height = 0;
++static ULONG c2p_sizes[2];  /* the screen offset and pixel count _init gives */
+ 
+ void OS3_AGA_C2PInit(int width, int height)
+ {
+ #ifndef WARPUP
+-    c2p1x1_8_c5_gen_init(width, height, 0);
++    c2p1x1_8_c5_gen_init(width, height, 0, c2p_sizes);
+     c2p_width = width;
+     c2p_height = height;
+ #endif
+@@ -119,7 +123,7 @@
+         if (width != c2p_width || height != c2p_height) {
+             OS3_AGA_C2PInit(width, height);
+         }
+-        c2p1x1_8_c5_gen((void *)chunky, (void *)bm->Planes[0]);
++        c2p1x1_8_c5_gen((void *)chunky, (void *)bm->Planes[0], c2p_sizes[1], c2p_sizes[0]);
+         return;
+     }
+ #endif
+--- a/src/video/amigaos3/c2p1x1_8_c5_gen.s
++++ b/src/video/amigaos3/c2p1x1_8_c5_gen.s
+@@ -7,6 +7,12 @@
+ ; "Anyone can do as they please with the code, feel free to use it
+ ;  for non-commercial as well as commercial purposes."
+ ;
++; Changed for OpenGPU's SDL2.module by Dalsin Limited, 2026: the screen
++; offset and the pixel count come in d1 and d0 on each call, not from
++; variables _init kept, so the code holds no data of its own and programs
++; sharing the module's code (one copy for every program) can't upset each
++; other's sizes. _init computes them for the caller.
++;
+ ; BPLSIZE must be defined at assembly time (-DBPLSIZE=nnnn).
+ ; For 320x256 PAL screen: BPLSIZE = 320*256/8 = 10240
+ ;
+@@ -20,6 +26,7 @@
+ ; d0.w	chunkyx [chunky-pixels]
+ ; d1.w	chunkyy [chunky-pixels]
+ ; d3.w	scroffsy [screen-pixels]
++; a0	where the two longs go: the screen offset, then the pixel count
+ 
+ 	XDEF	_c2p1x1_8_c5_gen_init
+ 	XDEF	c2p1x1_8_c5_gen_init
+@@ -29,14 +36,15 @@
+ 	andi.l	#$ffff,d0
+ 	mulu.w	d0,d3
+ 	lsr.l	#3,d3
+-	move.l	d3,c2p1x1_8_c5_gen_scroffs
++	move.l	d3,(a0)+
+ 	mulu.w	d0,d1
+-	move.l	d1,c2p1x1_8_c5_gen_pixels
++	move.l	d1,(a0)
+ 	movem.l	(sp)+,d2-d3
+ 	rts
+ 
+ ; a0	c2pscreen (chunky source)
+ ; a1	bitplanes (planar destination, first plane)
++; d0	pixel count, d1 screen offset (from _init)
+ 
+ 	XDEF	_c2p1x1_8_c5_gen
+ 	XDEF	c2p1x1_8_c5_gen
+@@ -48,9 +56,9 @@
+ 	move.l	#$55555555,a6
+ 
+ 	add.w	#BPLSIZE,a1
+-	add.l	c2p1x1_8_c5_gen_scroffs,a1
++	add.l	d1,a1
+ 
+-	move.l	c2p1x1_8_c5_gen_pixels,a2
++	move.l	d0,a2
+ 	add.l	a0,a2
+ 	cmp.l	a0,a2
+ 	beq	.none
+@@ -398,7 +406,3 @@
+ 	movem.l	(sp)+,d2-d7/a2-a6
+ 	rts
+ 
+-	section	bss,bss
+-
+-c2p1x1_8_c5_gen_scroffs	ds.l	1
+-c2p1x1_8_c5_gen_pixels	ds.l	1

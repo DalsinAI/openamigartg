@@ -6,7 +6,10 @@
 # in its files.
 #
 #   module   SDL2.module: SDL 2 with the Amiga back ends, SDL's dynamic API
-#            on, loaded per program (LIBS:OpenGPU/SDL2.module)
+#            on (LIBS:OpenGPU/SDL2.module). Built -fbaserel32 (SHARED=1, the
+#            default): its code is loaded once for every program, and each
+#            program gets its own copy of SDL's data (include/opengpu/
+#            module.h, residency step 2). SHARED=0: a copy for each program.
 #   stub     libSDL2.a: the link library programs use (stubs/sdl2)
 #   static   libSDL2_static.a: all of SDL in the program, no module
 #            (and libSDL2_test.a, SDL's test framework)
@@ -27,6 +30,11 @@ CPU     ?= -m68040 -m68881
 OPT     ?= -O2 -fomit-frame-pointer -mno-bitfield
 SDK_INC ?= $(WORK)/sdk-include
 OGPU_SRC := $(ROOT)/library/opengpu
+COMMON  := $(ROOT)/library/modules/common
+SHARED  ?= 1
+# The module's objects: every global through A4 when shared.
+MODULE_CFLAGS := $(if $(filter 1,$(SHARED)),-fbaserel32) -I$(COMMON)
+MODULE_LDFLAGS := $(if $(filter 1,$(SHARED)),-fbaserel32 -resident32)
 OGPU_BUILD3D := $(wildcard $(OGPU_SRC)/ogpu_build3d.c)
 
 CFLAGS_BASE = -std=gnu11 $(OPT) $(CPU) -noixemul -Wall -Wno-unused-parameter \
@@ -129,13 +137,13 @@ $(STATIC_DIR)/%.o: $(SDL)/src/%.c $(INLINE)
 	$(CC) $(CFLAGS_BASE) -c $< -o $@
 $(CORE_DIR)/%.o: $(SDL)/src/%.c $(INLINE)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS_BASE) -DSDL_OPEN_LIBRARY_BUILD=1 -c $< -o $@
+	$(CC) $(CFLAGS_BASE) $(MODULE_CFLAGS) -DSDL_OPEN_LIBRARY_BUILD=1 -c $< -o $@
 $(STATIC_DIR)/ogpu_%.o: $(OGPU_SRC)/ogpu_%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_BASE) -c $< -o $@
 $(CORE_DIR)/ogpu_%.o: $(OGPU_SRC)/ogpu_%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS_BASE) -c $< -o $@
+	$(CC) $(CFLAGS_BASE) $(MODULE_CFLAGS) -c $< -o $@
 $(STATIC_DIR)/c2p.o: $(SDL)/src/$(C2P_SRC)
 	@mkdir -p $(dir $@)
 	$(VASM) -Fhunk -m68020 -DBPLSIZE=10240 -quiet -o $@ $<
@@ -151,21 +159,27 @@ $(WORK)/libSDL2core.a: $(CORE_OBJS)
 	@rm -f $@; $(AR) rcs $@ $^; $(RANLIB) $@
 
 # The module: its start code first, then SDL; libnix without its program
-# startup (module/module_start.s stands in for it).
-$(CORE_DIR)/module_start.o: $(HERE)module/module_start.s
+# startup (library/modules/common stands in for it). A shared module must
+# reach its data only through A4 (tools/baserel_check.py).
+$(CORE_DIR)/module_start.o: $(COMMON)/module_start.S
 	@mkdir -p $(dir $@)
-	$(CC) $(CPU) -c $< -o $@
+	$(CC) $(CPU) $(MODULE_CFLAGS) -c $< -o $@
+$(CORE_DIR)/module_rt.o: $(COMMON)/module_rt.c $(COMMON)/module_rt.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_BASE) $(MODULE_CFLAGS) -c $< -o $@
 $(CORE_DIR)/sdl2_module.o: $(HERE)module/sdl2_module.c $(ROOT)/stubs/sdl2/sdl2_module.h
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS_BASE) -I$(ROOT)/stubs/sdl2 -c $< -o $@
-$(OUT)/SDL2.module: $(CORE_DIR)/module_start.o $(CORE_DIR)/sdl2_module.o $(WORK)/libSDL2core.a
-	$(CC) $(CPU) -noixemul -nostartfiles -o $@ $(CORE_DIR)/module_start.o $(CORE_DIR)/sdl2_module.o \
-	    $(WORK)/libSDL2core.a -lm -lamiga
+	$(CC) $(CFLAGS_BASE) $(MODULE_CFLAGS) -I$(ROOT)/stubs/sdl2 -c $< -o $@
+$(OUT)/SDL2.module: $(CORE_DIR)/module_start.o $(CORE_DIR)/module_rt.o $(CORE_DIR)/sdl2_module.o $(WORK)/libSDL2core.a
+	$(CC) $(CPU) $(MODULE_LDFLAGS) -noixemul -nostartfiles -Wl,-Map,$(WORK)/SDL2.module.map -o $@ \
+	    $(CORE_DIR)/module_start.o $(CORE_DIR)/module_rt.o $(CORE_DIR)/sdl2_module.o $(WORK)/libSDL2core.a -lm -lamiga
+	$(if $(filter 1,$(SHARED)),python3 $(ROOT)/tools/baserel_check.py $(STOVE)/bin/m68k-amigaos- $@ $(WORK)/SDL2.module.map --allow $(HERE)baserel.allow)
 	@echo "built $@ ($$(wc -c < $@) bytes)"
 
+# -ffixed-a4: the stub sets A4 around each call into the module (OGPU_A4).
 $(STUB_DIR)/SDL2_stub.o: $(ROOT)/stubs/sdl2/SDL2_stub.c $(ROOT)/stubs/sdl2/sdl2_module.h $(INLINE)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS_BASE) -I$(SDL)/src/dynapi -c $< -o $@
+	$(CC) $(CFLAGS_BASE) -ffixed-a4 -I$(SDL)/src/dynapi -c $< -o $@
 $(OUT)/libSDL2.a: $(STUB_DIR)/SDL2_stub.o
 	@rm -f $@; $(AR) rcs $@ $^; $(RANLIB) $@; echo "built $@"
 
