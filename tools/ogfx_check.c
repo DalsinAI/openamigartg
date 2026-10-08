@@ -23,6 +23,11 @@
  * switch is put back afterwards); without QUICK it also times full-screen
  * fills, copies and scrolls with OpenGfx on and off. VERBOSE names each
  * call before it is made.
+ * With opengpu.library 0.7 the check also tries the look hook (gfx.h): a
+ * look registered for the check's own RastPort is asked first on RectFill
+ * and Text, by the LVOs and through the patches, sees 16-bit arguments, ends
+ * the call when it draws, and stops being asked once taken out. It is
+ * skipped while another look (OpenLook) is in.
  * Returns 0 when everything matches, 10 when something doesn't, 20 when
  * opengpu.library has no OpenGfx. */
 #include <exec/types.h>
@@ -420,6 +425,113 @@ out:
     if (b) FreeBitMap(b);
 }
 
+/* ---- the look hook (0.7) --------------------------------------------------- */
+
+static struct RastPort look_rp;
+static int look_claim, look_rects, look_texts;
+static LONG look_x0, look_n;
+static const char look_owner[] = "OpenGfxCheck";
+
+static LONG look_rectfill(APTR userdata, struct OGFXRectFillRequest *r)
+{
+    if (r->rp != &look_rp || userdata != (APTR)look_owner) return 0;
+    look_rects++;
+    look_x0 = r->x0;
+    return look_claim;
+}
+
+static LONG look_text(APTR userdata, struct OGFXTextRequest *r)
+{
+    if (r->rp != &look_rp || userdata != (APTR)look_owner) return 0;
+    look_texts++;
+    look_n = (LONG)r->length;
+    r->result = 1234;
+    return look_claim;
+}
+
+static int look_lit(void)
+{
+    struct BitMap *bm = look_rp.BitMap;
+    int y, x;
+    WaitBlit();
+    for (y = 0; y < 16; y++)
+        for (x = 0; x < bm->BytesPerRow; x++)
+            if (at(bm, 0, y)[x]) return 1;
+    return 0;
+}
+
+static void look_clear(void)
+{
+    struct BitMap *bm = look_rp.BitMap;
+    int y;
+    WaitBlit();
+    for (y = 0; y < 16; y++) memset(at(bm, 0, y), 0, bm->BytesPerRow);
+}
+
+static int look_fail(const char *what) { printf("  look: %s\n", what); return 1; }
+
+/* 0 when the look hook behaves as gfx.h says, else the number of faults. */
+static int look_check(void)
+{
+    struct OGFXLookV1 look, other;
+    struct BitMap *bm;
+    int f = 0, way;
+    LONG r;
+    if (OGFX_Status() & OGFX_STATUS_LOOK) {
+        printf("look: skipped (another look is in: OpenLook)\n");
+        return 0;
+    }
+    if (!(bm = AllocBitMap(64, 16, 1, BMF_CLEAR, NULL))) { printf("look: no memory\n"); return 1; }
+    InitRastPort(&look_rp);
+    look_rp.BitMap = bm;
+    SetAPen(&look_rp, 1);
+    SetDrMd(&look_rp, JAM2);
+    memset(&look, 0, sizeof look);
+    look.size = sizeof look;
+    look.abi = OGFX_LOOK_ABI_V1;
+    look.owner = (APTR)look_owner;
+    look.userdata = (APTR)look_owner;
+    look.rectfill = look_rectfill;
+    look.text = look_text;
+    other = look;
+    other.owner = (APTR)&other;
+    if (!OGFX_RegisterLook(&look)) { FreeBitMap(bm); return look_fail("RegisterLook refused a free slot"); }
+    if (OGFX_RegisterLook(&other)) { f += look_fail("a second look went in"); (void)OGFX_UnregisterLook(&other); }
+    if (!(OGFX_Status() & OGFX_STATUS_LOOK)) f += look_fail("Status has no OGFX_STATUS_LOOK");
+    for (way = 0; way < (patched ? 2 : 1); way++) {
+        const char *how = way ? "through the patches" : "by the LVOs";
+        look_rects = look_texts = 0;
+        look_claim = 1;
+        look_clear();
+        if (way) RectFill(&look_rp, 3, 2, 20, 9); else OGFX_RectFill(&look_rp, 0x12340003, 2, 20, 9);
+        if (look_rects != 1 || look_x0 != 3) { printf("  look %s: RectFill asked %d times, x0 %ld\n", how, look_rects, (long)look_x0); f++; }
+        if (look_lit()) { printf("  look %s: a RectFill the look drew was drawn again\n", how); f++; }
+        Move(&look_rp, 2, 10);
+        r = way ? (Text(&look_rp, (STRPTR)"Look", 4), 1234) : OGFX_Text(&look_rp, (STRPTR)"Look", 4);
+        if (look_texts != 1 || look_n != 4 || r != 1234) { printf("  look %s: Text asked %d times, length %ld, result %ld\n", how, look_texts, (long)look_n, (long)r); f++; }
+        if (look_lit()) { printf("  look %s: a Text the look drew was drawn again\n", how); f++; }
+        look_claim = 0;
+        if (way) RectFill(&look_rp, 3, 2, 20, 9); else OGFX_RectFill(&look_rp, 3, 2, 20, 9);
+        if (look_rects != 2 || !look_lit()) { printf("  look %s: a RectFill the look declined: asked %d times, %s\n", how, look_rects, look_lit() ? "drawn" : "NOT drawn"); f++; }
+        look_clear();
+        Move(&look_rp, 2, 10);
+        if (way) Text(&look_rp, (STRPTR)"Look", 4); else (void)OGFX_Text(&look_rp, (STRPTR)"Look", 4);
+        if (look_texts != 2 || !look_lit()) { printf("  look %s: a Text the look declined: asked %d times, %s\n", how, look_texts, look_lit() ? "drawn" : "NOT drawn"); f++; }
+    }
+    if (OGFX_UnregisterLook((APTR)&other)) f += look_fail("UnregisterLook took the look out for another owner");
+    if (!OGFX_UnregisterLook((APTR)look_owner)) f += look_fail("UnregisterLook did not take the look out");
+    if (OGFX_Status() & (OGFX_STATUS_LOOK | OGFX_STATUS_LOOK_BUSY)) f += look_fail("Status still shows a look");
+    look_rects = 0;
+    look_claim = 1;
+    look_clear();
+    OGFX_RectFill(&look_rp, 3, 2, 20, 9);
+    if (look_rects || !look_lit()) f += look_fail("a look taken out was still asked");
+    FreeBitMap(bm);
+    printf("look: %s%s\n", f ? "WRONG" : "asked first, ends the call when it draws, taken out cleanly",
+           f ? "" : patched ? " (LVOs and patches)" : " (LVOs; no patches in)");
+    return f;
+}
+
 int main(int argc, char **argv)
 {
     int i, install = 0, quick = 0, nocheck = 0, set = -1, rc = 0;
@@ -482,6 +594,8 @@ int main(int argc, char **argv)
         }
         (void)OGFX_SetEnabled(was);
         FreeVec(tmpl);
+        if ((OpenGPUBase->lib_Version > 0 || OpenGPUBase->lib_Revision >= OPENGPU_OGFX_LOOK_REVISION) && look_check())
+            rc = 10;
     }
     CloseLibrary(OpenGPUBase);
     return rc;

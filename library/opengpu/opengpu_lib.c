@@ -18,6 +18,8 @@
  * 0.6: OpenGfx inside (library/ogfx, include/opengpu/gfx.h): opengfx.library's
  * calls are the LVOs from 66, and graphics.library's drawing and text patches
  * are thin entries into it.
+ * 0.7: OpenGfx's look hook (LVOs 150 and 156): OpenLook draws window frames
+ * through OpenGfx's RectFill and Text instead of patching them a second time.
  * Built bare by library/build.sh.
  */
 #include <exec/types.h>
@@ -44,7 +46,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 6
+#define LIB_REVISION 7
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -75,9 +77,9 @@ struct DosLibrary *DOSBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.6 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
+static const char lib_id[] = "opengpu.library 0.7 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.6 (8.10.2026) OpenGPU, Dalsin Limited";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.7 (8.10.2026) OpenGPU, Dalsin Limited";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";
@@ -106,6 +108,8 @@ static const APTR lib_vectors[] = {
     (APTR)OGFX_RegisterProvider, (APTR)OGFX_UnregisterProvider,
     (APTR)OGFX_Text, (APTR)OGFX_TextLength, (APTR)OGFX_TextExtent, (APTR)OGFX_TextFit,
     (APTR)OGFX_RectFill, (APTR)OGFX_BltBitMap, (APTR)OGFX_BltTemplate, (APTR)OGFX_ScrollRaster,
+    /* 0.7: OpenGfx's look hook, 150 and 156 */
+    (APTR)OGFX_RegisterLook, (APTR)OGFX_UnregisterLook,
     (APTR)-1,
 };
 static const struct { ULONG size; const APTR *vectors; APTR data; APTR init; } lib_inittable = {

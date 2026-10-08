@@ -48,6 +48,10 @@ The old library is kept in amigachrome-guest, archived in place (`libraries/open
 
 `library/screens.c` registers OpenRTG's provider with opengpu.library when it is 0.6 or later (it already had it open) and puts the patches in there. With an older opengpu.library it opens `opengfx.library` as before, and with neither it keeps its own patches. openrtg.library is 0.12.
 
+## Since the merge
+
+- **opengpu.library 0.7 (8 October 2026): the look hook.** `OGFX_RegisterLook` and `OGFX_UnregisterLook` (LVOs 150 and 156, `struct OGFXLookV1` in `include/opengpu/gfx.h`). A look is asked first on `RectFill` and `Text`, so OpenLook draws window frames here instead of patching the two calls on top of OpenGfx. The state's new fields come after the patch entries, so `old[]` stays where it was. `OGFX_Version` answers 1.3; `OGFX_Status` adds `OGFX_STATUS_LOOK` and `OGFX_STATUS_LOOK_BUSY`. OpenGfxCheck checks the hook when no other look is in.
+
 ## Compatibility
 
 - **`opengfx.library` 1.2, the stub** (amigachrome-guest `libraries/opengfx/stub`, 1.7 KB): opening it opens opengpu.library; each of its six calls jumps to the same LVO there. With no opengpu.library, or one older than 0.6, opening it fails, as when it is not installed, so programs fall back as they always have.

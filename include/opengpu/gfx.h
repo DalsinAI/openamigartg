@@ -16,8 +16,14 @@
  *    90 OGFX_RegisterProvider
  *    96 OGFX_UnregisterProvider
  *
+ * 0.7 adds the look hook, for a program that draws the system's look on
+ * these calls (OpenLook's window frames) without patching them itself:
+ *
+ *   150 OGFX_RegisterLook        156 OGFX_UnregisterLook
+ *
  * The drawing LVOs take graphics.library's arguments in graphics.library's
- * registers and run the same code as the patches: a registered provider
+ * registers and run the same code as the patches: for RectFill and Text a
+ * registered look first (0.7), then a registered provider
  * (OpenRTG), then OpenGfx's native planar paths, then graphics.library's
  * own code. OGFX_InstallPatches() points graphics.library's eight vectors at
  * that code, so every program reaches it. Opening the library changes no
@@ -29,7 +35,8 @@
  *
  * OpenGPU's revision says whether OpenGfx is there: opengpu.library is
  * version 0, so open it with version 0 and check lib_Revision >= 6
- * (OPENGPU_OGFX_REVISION), or ask OGFX_Version(). */
+ * (OPENGPU_OGFX_REVISION), or ask OGFX_Version(). The look hook needs
+ * lib_Revision >= 7 (OPENGPU_OGFX_LOOK_REVISION), or OGFX_Version() 1.3. */
 #ifndef OPENGPU_GFX_H
 #define OPENGPU_GFX_H
 
@@ -39,12 +46,13 @@
 #include <graphics/text.h>
 
 #define OPENGPU_OGFX_REVISION 6          /* opengpu.library 0.6: OpenGfx inside */
+#define OPENGPU_OGFX_LOOK_REVISION 7     /* opengpu.library 0.7: the look hook */
 
 /* OGFX_Version(): (version << 16) | revision of the OpenGfx interface.
  * 1.2 is opengfx.library 1.1's interface inside opengpu.library, with the
- * eight drawing LVOs added. */
+ * eight drawing LVOs added; 1.3 adds the look hook (opengpu.library 0.7). */
 #define OGFX_INTERFACE_VERSION  1
-#define OGFX_INTERFACE_REVISION 2
+#define OGFX_INTERFACE_REVISION 3
 
 /* The rest is opengfx.library 1.1's public header (libraries/opengfx.h), the
  * same names and layouts, so either header may come first. */
@@ -153,5 +161,51 @@ struct OGFXProviderV1 {
 #define OGFX_PROVIDER_V1_0_SIZE ((ULONG)&((struct OGFXProviderV1 *)0)->textlength)
 
 #endif /* LIBRARIES_OPENGFX_H */
+
+/* ---- the look hook (opengpu.library 0.7, OpenGfx interface 1.3) -------------
+
+   OpenGfx owns graphics.library's drawing and text patches, so a program
+   that draws the system's look on RectFill and Text (OpenLook: window frames,
+   title bars, the screen's bar, border scrollers) registers a look instead
+   of patching them. There is one look at a time.
+
+   - OpenGfx asks the look first, before a provider and before its own paths,
+     on every RectFill and Text, whichever way it came (the patch or the LVO).
+     The request holds the arguments as graphics.library reads them (16-bit
+     coordinates and counts, sign-extended).
+   - The look returns non-zero when it has drawn the call itself, and the call
+     ends there (for Text it sets request->result); zero, and the call goes on
+     as if there were no look. A NULL entry is "not mine".
+   - The look may draw with graphics.library, RectFill and Text included: those
+     calls come back through OpenGfx and to the look again, so it must decline
+     its own (OpenLook keeps a flag while it draws).
+   - It is called on the drawing task, any task, from C (the arguments on the
+     stack, the result in D0; D0, D1, A0 and A1 are the look's to change). It
+     must not wait for long: Intuition may hold its locks.
+   - The record is copied, so it may be on the stack; owner must stay a stable
+     non-NULL token until the look is taken out.
+   - OGFX_RegisterLook answers 0 when another look is in, or while calls into a
+     look taken out are still running; 1 when this look is in.
+   - OGFX_UnregisterLook takes the look out (1) and calls stop reaching it at
+     once. Calls already inside it run on: the owner waits until OGFX_Status()
+     clears OGFX_STATUS_LOOK_BUSY before its code goes.
+   - Registering a look changes no vector. A look reaches graphics.library's
+     calls once OGFX_InstallPatches() has put OpenGfx's patches in (OpenRTG
+     does; a look may ask for them itself). */
+
+#define OGFX_LOOK_ABI_V1 1
+
+#define OGFX_STATUS_LOOK      (1UL << 4)   /* a look is in */
+#define OGFX_STATUS_LOOK_BUSY (1UL << 5)   /* calls are inside a look, in or just taken out */
+
+struct OGFXLookV1 {
+    ULONG size;                        /* sizeof(struct OGFXLookV1) */
+    ULONG abi;                         /* OGFX_LOOK_ABI_V1 */
+    APTR owner;
+    APTR userdata;
+
+    LONG (*rectfill)(APTR userdata, struct OGFXRectFillRequest *request);
+    LONG (*text)(APTR userdata, struct OGFXTextRequest *request);
+};
 
 #endif

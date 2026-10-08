@@ -197,7 +197,10 @@ without SDL.
   `sfd/opengpu_lib.sfd`): `OGPU_Query` (what a back end does, per operation
   and pixel format), `OGPU_Submit` and `OGPU_Wait` (a command stream and its
   fence), `OGPU_BackEndName`, `OGPU_ModuleOpen` and `OGPU_ModuleClose`, and
-  OpenGfx's calls. The stream's commands are in `include/opengpu/stream.h`
+  OpenGfx's calls. From opengpu.library 0.7, `OGFX_RegisterLook` and
+  `OGFX_UnregisterLook` (`gfx.h`) let a program draw the system's look on
+  RectFill and Text (OpenLook's window frames) without patching them: OpenGfx
+  asks the look first. The stream's commands are in `include/opengpu/stream.h`
   and `stream3d.h`; `build.h` and `build3d.h` write them.
 - **SFD files** (`sfd/`) for opengpu.library, openrtg.library and
   Warp3D.library, for other compilers' stubs and pragmas.
