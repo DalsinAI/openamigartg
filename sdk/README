@@ -116,8 +116,11 @@ SECONDS n, to end by itself.
 Things to know
 --------------
 
-- GL runs on the program's stack. A GL program asks libnix for a big one:
-  unsigned long __stack = 1024 * 1024;  (the examples do).
+- GL needs a big stack, and libGL.a gives it one: when the program's stack
+  is under 256 KB (a Shell's default is 4 KB), its GL calls run on a 1 MB
+  stack of libGL.a's own. Nothing is needed in the program.
+  (unsigned long __stack alone does nothing: libnix's stack swap isn't
+  linked unless something asks for it.)
 - A program that calls any SDL_GL_ function links libGL.a too:
   `sdl2-config --libs --gl` gives -lSDL2 -lGL (pkg-config: sdl2 gl).
   `sdl2-config --libs` alone gives no -lGL, for programs that never call one.

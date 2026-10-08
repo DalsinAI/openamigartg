@@ -13,10 +13,23 @@
  *
  * GL.module's code is loaded once for every program, and each program gets
  * its own copy of Mesa's globals (the layout's residency step 2): every
- * entry sets A4 to this program's copy for the call (gl_stub_call). GL runs
- * on the program's stack: give main a big one (OpenDemos asks libnix for
- * 1 MB). This file is built with -ffixed-a4 (OGPU_A4). */
+ * entry sets A4 to this program's copy for the call (gl_stub_call).
+ *
+ * GL needs a big stack (Mesa's softpipe and its shader compiler go deep),
+ * and a program can't be relied on to have one: a shell's default is 4 KB,
+ * and libnix only gives main the stack `__stack` asks for when its stack
+ * swap is linked, which defining `__stack` alone doesn't do (and the GCC 16
+ * stove's libnix stack swap crashes, 80000004). GL on 4 KB wrote over
+ * whatever lay below the stack: crashes after the first frame (80000006),
+ * resets as programs ended, and softpipe hanging. So when the task that
+ * first calls GL has a stack smaller than GL_STACK_MIN, libGL.a gives it a
+ * GL stack of GL_STACK_SIZE, and every call of that task into GL (and
+ * loading and closing the module) runs there, through exec's StackSwap.
+ * A program with a big enough stack calls GL on its own, as before.
+ * This file is built with -ffixed-a4 (OGPU_A4). */
 #include <exec/types.h>
+#include <exec/memory.h>
+#include <exec/tasks.h>
 #include <dos/dos.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
@@ -38,11 +51,39 @@ extern const char *const gl_stub_names[];
 extern const ULONG gl_stub_count;
 extern void gl_stub_missing(void);
 
+ULONG gl_stub_fail;                             /* the module couldn't be loaded: exit(20) */
 static APTR handle;
 static BPTR seg;
 struct GLModuleTable *gl_stub_module;       /* loaded: gl_stub_call tests it */
 APTR gl_stub_a4;                            /* the module's A4 for this program */
 static void *(*module_get_proc_address)(const char *name);
+
+/* The GL stack (gl_stub_call's StackSwap; gl_stub_calls.s). */
+#define GL_STACK_MIN (256 * 1024)               /* a task stack this big runs GL itself */
+#define GL_STACK_SIZE (1024 * 1024)
+ULONG gl_stub_ready;                            /* gl_stub_prepare has run */
+struct StackSwapStruct *gl_stub_sss;            /* the GL stack, or NULL: GL on the program's */
+struct Task *gl_stub_task;                      /* the task it is for */
+ULONG gl_stub_depth;                            /* calls on the GL stack now (GL calling back into GL: 2) */
+struct ExecBase *gl_stub_sysbase;
+static struct StackSwapStruct gl_stack;
+static APTR gl_stack_mem;
+extern void gl_stub_run(void (*fn)(void));
+
+/* Before the first call into GL: a GL stack when this task's is small. */
+void gl_stub_prepare(void)
+{
+    struct Task *t = FindTask(NULL);
+    gl_stub_sysbase = SysBase;
+    gl_stub_ready = 1;
+    if ((ULONG)t->tc_SPUpper - (ULONG)t->tc_SPLower >= GL_STACK_MIN) return;
+    if (!(gl_stack_mem = AllocVec(GL_STACK_SIZE, MEMF_ANY))) return;   /* GL on the program's stack, as before */
+    gl_stack.stk_Lower = gl_stack_mem;
+    gl_stack.stk_Upper = (ULONG)gl_stack_mem + GL_STACK_SIZE;
+    gl_stack.stk_Pointer = (APTR)gl_stack.stk_Upper;
+    gl_stub_task = t;
+    gl_stub_sss = &gl_stack;
+}
 
 static void fail(const char *why)
 {
@@ -52,10 +93,12 @@ static void fail(const char *why)
         FPuts(out, (CONST_STRPTR)why);
         FPuts(out, (CONST_STRPTR) "\n");
     }
-    exit(20);
+    gl_stub_fail = 1;
 }
 
-/* Called by gl_stub_call, from the program's first GL call. */
+/* Called by gl_stub_call, from the program's first GL call, on the GL
+ * stack. A failure is only noted here (gl_stub_fail): the program ends in
+ * gl_stub_call once it is back on its own stack. */
 void gl_stub_load(void)
 {
     struct GLModuleTable *m = NULL;
@@ -65,8 +108,10 @@ void gl_stub_load(void)
     if (gl_stub_OpenGPUBase && (gl_stub_OpenGPUBase->lib_Version > 0 ||
                                 gl_stub_OpenGPUBase->lib_Revision >= OGPU_MODULE_LIB_REVISION)) {
         handle = OGPU_ModuleOpen((CONST_STRPTR)GL_MODULE_NAME, GL_MODULE_VERSION, (APTR *)&m);
-        if (!handle && IoErr() == ERROR_OBJECT_NOT_FOUND)
+        if (!handle && IoErr() == ERROR_OBJECT_NOT_FOUND) {
             fail("this program needs " GL_MODULE_FILE " (OpenGPU), which isn't installed.");
+            return;
+        }
     } else if ((seg = LoadSeg((CONST_STRPTR)GL_MODULE_FILE)) != 0) {
         struct OGPUModuleArgs args;
         args.SysBase = SysBase;
@@ -74,10 +119,14 @@ void gl_stub_load(void)
         args.OpenGPUBase = gl_stub_OpenGPUBase;
         args.version = GL_MODULE_VERSION;
         m = (struct GLModuleTable *)OGPU_MODULE_ENTRY(seg)(&args);
-    } else
+    } else {
         fail("this program needs " GL_MODULE_FILE " (OpenGPU), which isn't installed.");
-    if (!m)
+        return;
+    }
+    if (!m) {
         fail(GL_MODULE_FILE " is older than this program, or couldn't start (memory?).");
+        return;
+    }
     /* The module's calls back into this program run with this program's A4. */
     m->head.caller_a4 = ogpu_a4_get();
     gl_stub_a4 = m->head.a4;
@@ -102,7 +151,11 @@ void *gla_get_proc_address(const char *name)
 {
     ULONG lo = 0, hi = gl_stub_count;
     void *f;
-    if (!gl_stub_module) gl_stub_load();
+    if (!gl_stub_ready) gl_stub_prepare();
+    if (!gl_stub_module) {
+        gl_stub_run(gl_stub_load);
+        if (gl_stub_fail) exit(20);
+    }
     if (!module_get_proc_address || !name) return NULL;
     {
         OGPU_A4(gl_stub_a4);
@@ -127,7 +180,7 @@ static void module_close(void)
 
 static void __attribute__((destructor)) gl_stub_close(void)
 {
-    if (gl_stub_module) module_close();
+    if (gl_stub_module) gl_stub_run(module_close);
     gl_stub_module = NULL;
     if (handle) OGPU_ModuleClose(handle);
     handle = NULL;
@@ -135,4 +188,11 @@ static void __attribute__((destructor)) gl_stub_close(void)
     seg = 0;
     if (gl_stub_OpenGPUBase) CloseLibrary(gl_stub_OpenGPUBase);
     gl_stub_OpenGPUBase = NULL;
+    /* The GL stack, unless this is the end of a program that exit()ed from
+     * inside GL (a callback): then it is still the stack in use. */
+    if (gl_stack_mem && !gl_stub_depth) {
+        gl_stub_sss = NULL;
+        FreeVec(gl_stack_mem);
+        gl_stack_mem = NULL;
+    }
 }

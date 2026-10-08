@@ -15,8 +15,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* GL runs on the program's stack: libnix gives main one this big. */
-unsigned long __stack = 1024 * 1024;
+/* GL needs a big stack: libGL.a runs GL calls on one of its own when the
+ * program's is small (a Shell's default is 4 KB), so nothing is needed here. */
 
 static void cube(void)
 {

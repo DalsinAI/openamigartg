@@ -84,8 +84,12 @@ opengpu.library's `OGPU_ModuleOpen` (`include/opengpu/module.h`):
   the Shell when it ends, even `int main(void) { return 0; }`; `-resident32`
   ones (nlrcrt0) end as they should. From #40 until this was found,
   `LFLAGS` carried `-fbaserel32`, so OpenDemos hung as it exited.
-- GL runs on the program's stack: give `main` a big one (OpenDemos asks
-  libnix for 1 MB).
+- GL needs a big stack, and libGL.a gives it one. When the task that first
+  calls GL has a stack under 256 KB (a Shell's default is 4 KB), each of its
+  calls into GL runs on a 1 MB GL stack of libGL.a's own, through exec's
+  StackSwap (`stubs/gl/gl_stub.c`). `unsigned long __stack` doesn't help:
+  libnix honours it only when its stack swap is linked, which defining
+  `__stack` doesn't do, and the GCC 16 stove's libnix stack swap crashes.
 
 ## GCC 16's FPCR clash
 
