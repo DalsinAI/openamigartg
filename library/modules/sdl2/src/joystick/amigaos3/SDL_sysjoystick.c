@@ -1,17 +1,9 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 Dalsin Limited. OpenGPU, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * SDL2 joystick for AmigaOS 3.x through lowlevel.library (OS 3.1 and later):
- * the joystick or CD32 pad in each game port. Replaces libSDL2-amigaos3's
- * stub. Port 2 (lowlevel unit 1) is SDL joystick 0, since that is where
- * Amiga games expect the stick; port 1 (unit 0) is SDL joystick 1 when
- * lowlevel reports a joystick or game controller there.
- *
- * Each joystick has 2 axes (digital, so -32768, 0 or 32767), 1 hat and
- * 7 buttons: red, blue, then on a CD32 pad green, yellow, play, forward
- * and reverse. Without lowlevel.library there are no joysticks.
+ * SDL2 joystick backend for AmigaOS 3.x through openinput.library.
+ * OpenInput owns controller discovery/mapping; SDL is only a front end.
  */
-
 #include "../../SDL_internal.h"
 
 #if SDL_JOYSTICK_AMIGAOS3
@@ -22,64 +14,46 @@
 #include "../SDL_joystick_c.h"
 
 #include <exec/types.h>
-#include <libraries/lowlevel.h>
 #include <proto/exec.h>
-#include <proto/lowlevel.h>
+#include <proto/openinput.h>
+#include <libraries/openinput.h>
+#include <string.h>
 
-/* Opened here, not by the startup code, so a machine without it still runs. */
-struct Library *LowLevelBase = NULL;
-
-#define OS3_MAX_PORTS 2
-#define OS3_NAXES 2
-#define OS3_NHATS 1
-#define OS3_NBUTTONS 7
+#define OS3_MAX_PORTS 8
 
 typedef struct {
-    ULONG unit;                 /* lowlevel unit: 1 = port 2, 0 = port 1 */
+    ULONG id;
+    APTR handle;
     SDL_JoystickID instance_id;
-    const char *name;
+    struct OIControllerInfo info;
 } OS3_JoyPort;
 
+struct Library *OpenInputBase = NULL;
 static OS3_JoyPort os3_ports[OS3_MAX_PORTS];
 static int os3_nports = 0;
 
-static const ULONG os3_button_bits[OS3_NBUTTONS] = {
-    JPF_BUTTON_RED, JPF_BUTTON_BLUE, JPF_BUTTON_GREEN, JPF_BUTTON_YELLOW,
-    JPF_BUTTON_PLAY, JPF_BUTTON_FORWARD, JPF_BUTTON_REVERSE
-};
-
-/* Only a stick or pad lowlevel has seen: UNKNOWN is what a port with a
- * mouse in it can read as, and a mouse-only machine has one joystick. */
-static int OS3_PortHasStick(ULONG unit)
-{
-    ULONG type = ReadJoyPort(unit) & JP_TYPE_MASK;
-    return type == JP_TYPE_JOYSTK || type == JP_TYPE_GAMECTLR;
-}
-
 static int OS3_JoystickInit(void)
 {
-    int i;
+    struct OIControllerInfo infos[OS3_MAX_PORTS];
+    ULONG count, i;
 
     os3_nports = 0;
-    LowLevelBase = OpenLibrary((CONST_STRPTR)"lowlevel.library", 40);
-    if (!LowLevelBase) {
+    OpenInputBase = OpenLibrary((CONST_STRPTR)OPENINPUT_NAME, OPENINPUT_VERSION);
+    if (!OpenInputBase)
         return 0;
-    }
 
-    /* Port 2 is always offered: a stick plugged in later still works, as
-     * lowlevel reads the port afresh each time. */
-    os3_ports[os3_nports].unit = 1;
-    os3_ports[os3_nports].name = "Amiga joystick port 2";
-    os3_nports++;
-    if (OS3_PortHasStick(0)) {
-        os3_ports[os3_nports].unit = 0;
-        os3_ports[os3_nports].name = "Amiga joystick port 1";
+    count = OIN_ListControllers(infos, OS3_MAX_PORTS, sizeof(infos[0]));
+    if (count > OS3_MAX_PORTS)
+        count = OS3_MAX_PORTS;
+
+    for (i = 0; i < count; ++i) {
+        OS3_JoyPort *p = &os3_ports[os3_nports];
+        p->id = infos[i].oci_ID;
+        p->info = infos[i];
+        p->handle = NULL;
+        p->instance_id = SDL_GetNextJoystickInstanceID();
+        SDL_PrivateJoystickAdded(p->instance_id);
         os3_nports++;
-    }
-
-    for (i = 0; i < os3_nports; ++i) {
-        os3_ports[i].instance_id = SDL_GetNextJoystickInstanceID();
-        SDL_PrivateJoystickAdded(os3_ports[i].instance_id);
     }
     return 0;
 }
@@ -89,17 +63,24 @@ static void OS3_JoystickDetect(void) { }
 
 static const char *OS3_JoystickGetDeviceName(int index)
 {
-    return (index >= 0 && index < os3_nports) ? os3_ports[index].name : NULL;
+    return (index >= 0 && index < os3_nports) ? os3_ports[index].info.oci_Name : NULL;
 }
 
 static const char *OS3_JoystickGetDevicePath(int index) { return NULL; }
 static int OS3_JoystickGetDeviceSteamVirtualGamepadSlot(int index) { return -1; }
-static int OS3_JoystickGetDevicePlayerIndex(int index) { return index; }
-static void OS3_JoystickSetDevicePlayerIndex(int index, int player) { }
+static int OS3_JoystickGetDevicePlayerIndex(int index)
+{
+    return (index >= 0 && index < os3_nports) ? os3_ports[index].info.oci_Player : -1;
+}
+static void OS3_JoystickSetDevicePlayerIndex(int index, int player) { (void)index; (void)player; }
 
 static SDL_JoystickGUID OS3_JoystickGetDeviceGUID(int index)
 {
-    return SDL_CreateJoystickGUIDForName(OS3_JoystickGetDeviceName(index));
+    SDL_JoystickGUID guid;
+    SDL_zero(guid);
+    if (index >= 0 && index < os3_nports)
+        memcpy(guid.data, os3_ports[index].info.oci_GUID, sizeof(guid.data));
+    return guid;
 }
 
 static SDL_JoystickID OS3_JoystickGetDeviceInstanceID(int index)
@@ -109,71 +90,96 @@ static SDL_JoystickID OS3_JoystickGetDeviceInstanceID(int index)
 
 static int OS3_JoystickOpen(SDL_Joystick *joy, int index)
 {
-    if (index < 0 || index >= os3_nports) {
+    OS3_JoyPort *p;
+    if (index < 0 || index >= os3_nports)
         return SDL_SetError("No joystick at index %d", index);
-    }
-    joy->instance_id = os3_ports[index].instance_id;
-    joy->hwdata = (struct joystick_hwdata *)&os3_ports[index];
-    joy->naxes = OS3_NAXES;
-    joy->nhats = OS3_NHATS;
-    joy->nbuttons = OS3_NBUTTONS;
+
+    p = &os3_ports[index];
+    p->handle = OIN_OpenControllerA(p->id, NULL);
+    if (!p->handle)
+        return SDL_SetError("OpenInput could not open controller %lu", p->id);
+
+    joy->instance_id = p->instance_id;
+    joy->hwdata = (struct joystick_hwdata *)p;
+    joy->naxes = OIAXIS_COUNT;
+    joy->nhats = 1;
+    joy->nbuttons = OIB_COUNT;
     return 0;
 }
 
-static int OS3_JoystickRumble(SDL_Joystick *joy, Uint16 lo, Uint16 hi) { return SDL_Unsupported(); }
-static int OS3_JoystickRumbleTriggers(SDL_Joystick *joy, Uint16 lo, Uint16 hi) { return SDL_Unsupported(); }
-static Uint32 OS3_JoystickGetCapabilities(SDL_Joystick *joy) { return 0; }
-static int OS3_JoystickSetLED(SDL_Joystick *joy, Uint8 r, Uint8 g, Uint8 b) { return SDL_Unsupported(); }
-static int OS3_JoystickSendEffect(SDL_Joystick *joy, const void *data, int size) { return SDL_Unsupported(); }
-static int OS3_JoystickSetSensorsEnabled(SDL_Joystick *joy, SDL_bool enabled) { return SDL_Unsupported(); }
+static int OS3_JoystickRumble(SDL_Joystick *joy, Uint16 lo, Uint16 hi)
+{
+    OS3_JoyPort *p = (OS3_JoyPort *)joy->hwdata;
+    if (!p || !p->handle) return SDL_SetError("Controller is not open");
+    return OIN_Rumble(p->handle, lo, hi, 250) == OIERR_OK ? 0 : SDL_Unsupported();
+}
+static int OS3_JoystickRumbleTriggers(SDL_Joystick *joy, Uint16 lo, Uint16 hi) { (void)joy; (void)lo; (void)hi; return SDL_Unsupported(); }
+static Uint32 OS3_JoystickGetCapabilities(SDL_Joystick *joy)
+{
+    OS3_JoyPort *p = (OS3_JoyPort *)joy->hwdata;
+    return (p && (p->info.oci_Flags & OICF_RUMBLE)) ? SDL_JOYCAP_RUMBLE : 0;
+}
+static int OS3_JoystickSetLED(SDL_Joystick *joy, Uint8 r, Uint8 g, Uint8 b) { (void)joy; (void)r; (void)g; (void)b; return SDL_Unsupported(); }
+static int OS3_JoystickSendEffect(SDL_Joystick *joy, const void *data, int size) { (void)joy; (void)data; (void)size; return SDL_Unsupported(); }
+static int OS3_JoystickSetSensorsEnabled(SDL_Joystick *joy, SDL_bool enabled) { (void)joy; (void)enabled; return SDL_Unsupported(); }
 
 static void OS3_JoystickUpdate(SDL_Joystick *joy)
 {
-    const OS3_JoyPort *port = (const OS3_JoyPort *)joy->hwdata;
-    ULONG state;
-    Sint16 x = 0, y = 0;
-    Uint8 hat = SDL_HAT_CENTERED;
+    OS3_JoyPort *p = (OS3_JoyPort *)joy->hwdata;
+    struct OIState st;
     int i;
+    Uint8 hat = SDL_HAT_CENTERED;
 
-    if (!port || !LowLevelBase) {
+    if (!p || !p->handle)
         return;
-    }
-    state = ReadJoyPort(port->unit);
-    if ((state & JP_TYPE_MASK) == JP_TYPE_NOTAVAIL ||
-        (state & JP_TYPE_MASK) == JP_TYPE_MOUSE) {
-        state = 0;
-    }
+    if (OIN_ReadState(p->handle, &st, sizeof(st)) != OIERR_OK)
+        return;
 
-    if (state & JPF_JOY_LEFT)  { x = -32768; hat |= SDL_HAT_LEFT; }
-    if (state & JPF_JOY_RIGHT) { x = 32767;  hat |= SDL_HAT_RIGHT; }
-    if (state & JPF_JOY_UP)    { y = -32768; hat |= SDL_HAT_UP; }
-    if (state & JPF_JOY_DOWN)  { y = 32767;  hat |= SDL_HAT_DOWN; }
+    for (i = 0; i < OIAXIS_COUNT; ++i)
+        SDL_PrivateJoystickAxis(joy, i, st.ois_Axes[i]);
 
-    /* The core drops repeats, so every axis, hat and button is reported. */
-    SDL_PrivateJoystickAxis(joy, 0, x);
-    SDL_PrivateJoystickAxis(joy, 1, y);
+    if (st.ois_Buttons & OIBF(OIB_DPAD_UP)) hat |= SDL_HAT_UP;
+    if (st.ois_Buttons & OIBF(OIB_DPAD_RIGHT)) hat |= SDL_HAT_RIGHT;
+    if (st.ois_Buttons & OIBF(OIB_DPAD_DOWN)) hat |= SDL_HAT_DOWN;
+    if (st.ois_Buttons & OIBF(OIB_DPAD_LEFT)) hat |= SDL_HAT_LEFT;
     SDL_PrivateJoystickHat(joy, 0, hat);
-    for (i = 0; i < OS3_NBUTTONS; ++i) {
+
+    for (i = 0; i < OIB_COUNT; ++i)
         SDL_PrivateJoystickButton(joy, (Uint8)i,
-                                  (state & os3_button_bits[i]) ? SDL_PRESSED : SDL_RELEASED);
-    }
+            (st.ois_Buttons & OIBF(i)) ? SDL_PRESSED : SDL_RELEASED);
 }
 
 static void OS3_JoystickClose(SDL_Joystick *joy)
 {
+    OS3_JoyPort *p = (OS3_JoyPort *)joy->hwdata;
+    if (p && p->handle) {
+        OIN_CloseController(p->handle);
+        p->handle = NULL;
+    }
     joy->hwdata = NULL;
 }
 
 static void OS3_JoystickQuit(void)
 {
+    int i;
+    for (i = 0; i < os3_nports; ++i) {
+        if (os3_ports[i].handle) {
+            OIN_CloseController(os3_ports[i].handle);
+            os3_ports[i].handle = NULL;
+        }
+    }
     os3_nports = 0;
-    if (LowLevelBase) {
-        CloseLibrary(LowLevelBase);
-        LowLevelBase = NULL;
+    if (OpenInputBase) {
+        CloseLibrary(OpenInputBase);
+        OpenInputBase = NULL;
     }
 }
 
-static SDL_bool OS3_JoystickGetGamepadMapping(int index, SDL_GamepadMapping *out) { return SDL_FALSE; }
+static SDL_bool OS3_JoystickGetGamepadMapping(int index, SDL_GamepadMapping *out)
+{
+    (void)index; (void)out;
+    return SDL_FALSE;
+}
 
 SDL_JoystickDriver SDL_AMIGAOS3_JoystickDriver = {
     OS3_JoystickInit,
