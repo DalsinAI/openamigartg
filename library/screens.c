@@ -47,12 +47,15 @@
 
 #include "modes.h"
 #include "screens.h"
+#include "opengfx_bridge.h"
 
 #define REG(r, decl) register decl __asm(#r)
 
 struct GfxBase *GfxBase;
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase;
+static struct Library *OpenGfxBase;
+static int ogfx_handoff;
 
 /* ---- tracing to the serial port (ORTG_TRACE) ---- */
 
@@ -1489,6 +1492,86 @@ static BOOL closescreen_patch(REG(a0, struct Screen *s), REG(a6, struct Intuitio
     return ok;
 }
 
+/* ---- OpenGfx handoff ---------------------------------------------------------------------- */
+
+/* These callbacks preserve OpenRTG's current chunky-bitmap semantics while
+ * OpenGfx owns the four overlapping graphics.library vectors. A callback
+ * returns 0 for a bitmap/call that is not ours, so OpenGfx can use its own
+ * native path or chain to the original OS vector. */
+static LONG ogfx_rectfill_provider(APTR userdata, struct ortg_ogfx_rectfill *r)
+{
+    (void)userdata;
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    rectfill_patch(r->rp, (WORD)r->x0, (WORD)r->y0,
+                   (WORD)r->x1, (WORD)r->y1, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_text_provider(APTR userdata, struct ortg_ogfx_text *r)
+{
+    (void)userdata;
+    if (!r || !r->rp || !r->rp->Font || !ortg_is(r->rp->BitMap)) return 0;
+    r->result = text_patch(r->rp, r->text, (WORD)r->length, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_bltbitmap_provider(APTR userdata, struct ortg_ogfx_bltbitmap *r)
+{
+    (void)userdata;
+    if (!r || (!ortg_is(r->src) && !ortg_is(r->dst))) return 0;
+    r->result = bltbitmap_patch(r->src, (WORD)r->sx, (WORD)r->sy,
+                                r->dst, (WORD)r->dx, (WORD)r->dy,
+                                (WORD)r->width, (WORD)r->height,
+                                r->minterm, r->mask, r->temp, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_scroll_provider(APTR userdata, struct ortg_ogfx_scroll *r)
+{
+    (void)userdata;
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    scroll_patch(r->rp, (WORD)r->dx, (WORD)r->dy,
+                 (WORD)r->x0, (WORD)r->y0,
+                 (WORD)r->x1, (WORD)r->y1, GfxBase);
+    return 1;
+}
+
+static struct ortg_ogfx_provider_v1 ogfx_provider;
+
+static int try_opengfx_handoff(void)
+{
+    int registered = 0;
+
+    OpenGfxBase = OpenLibrary((CONST_STRPTR)ORTG_OPENGFXLIB_NAME,
+                              ORTG_OPENGFXLIB_VERSION);
+    if (!OpenGfxBase) return 0;
+
+    ogfx_provider.size = sizeof ogfx_provider;
+    ogfx_provider.abi = ORTG_OGFX_PROVIDER_ABI_V1;
+    ogfx_provider.owner = (APTR)&ogfx_provider;
+    ogfx_provider.userdata = NULL;
+    ogfx_provider.rectfill = ogfx_rectfill_provider;
+    ogfx_provider.text = ogfx_text_provider;
+    ogfx_provider.bltbitmap = ogfx_bltbitmap_provider;
+    ogfx_provider.scrollraster = ogfx_scroll_provider;
+
+    if (!ORTG_OGFX_RegisterProvider(OpenGfxBase, &ogfx_provider))
+        goto fail;
+    registered = 1;
+
+    if (!ORTG_OGFX_InstallPatches(OpenGfxBase))
+        goto fail;
+
+    return 1;
+
+fail:
+    if (registered)
+        (void)ORTG_OGFX_UnregisterProvider(OpenGfxBase, (APTR)&ogfx_provider);
+    CloseLibrary(OpenGfxBase);
+    OpenGfxBase = NULL;
+    return 0;
+}
+
 /* ---- switching on ------------------------------------------------------------------------ */
 
 static int on;
@@ -1501,21 +1584,27 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
     if (!(UtilityBase = OpenLibrary("utility.library", 39))) return 0;
     tables = t;
     for (int n = 1; n <= ORTG_MAX_MONITORS; n++) board[n] = boards[n];
+
+    /* New stack: OpenGfx owns Text/RectFill/BltBitMap/ScrollRaster. If it is
+     * not installed yet, retain the old OpenRTG patch path so standalone
+     * OpenRTG builds remain usable. */
+    ogfx_handoff = try_opengfx_handoff();
+
     Forbid();
-    old_rectfill = (rectfill_fn)SetFunction(gfx, -306, (APTR)rectfill_patch);
+    if (!ogfx_handoff) old_rectfill = (rectfill_fn)SetFunction(gfx, -306, (APTR)rectfill_patch);
     old_bltpattern = (bltpattern_fn)SetFunction(gfx, -312, (APTR)bltpattern_patch);
     old_setrast = (setrast_fn)SetFunction(gfx, -234, (APTR)setrast_patch);
     old_draw = (draw_fn)SetFunction(gfx, -246, (APTR)draw_patch);
     old_polydraw = (polydraw_fn)SetFunction(gfx, -336, (APTR)polydraw_patch);
     old_writepixel = (writepixel_fn)SetFunction(gfx, -324, (APTR)writepixel_patch);
     old_readpixel = (readpixel_fn)SetFunction(gfx, -318, (APTR)readpixel_patch);
-    old_text = (text_fn)SetFunction(gfx, -60, (APTR)text_patch);
+    if (!ogfx_handoff) old_text = (text_fn)SetFunction(gfx, -60, (APTR)text_patch);
     old_blttemplate = (blttemplate_fn)SetFunction(gfx, -36, (APTR)blttemplate_patch);
-    old_bltbitmap = (bltbitmap_fn)SetFunction(gfx, -30, (APTR)bltbitmap_patch);
+    if (!ogfx_handoff) old_bltbitmap = (bltbitmap_fn)SetFunction(gfx, -30, (APTR)bltbitmap_patch);
     old_bltbmrp = (bltbmrp_fn)SetFunction(gfx, -606, (APTR)bltbmrp_patch);
     old_bltmaskbmrp = (bltmaskbmrp_fn)SetFunction(gfx, -636, (APTR)bltmaskbmrp_patch);
     old_clipblit = (clipblit_fn)SetFunction(gfx, -552, (APTR)clipblit_patch);
-    old_scroll = (scroll_fn)SetFunction(gfx, -396, (APTR)scroll_patch);
+    if (!ogfx_handoff) old_scroll = (scroll_fn)SetFunction(gfx, -396, (APTR)scroll_patch);
     old_allocbm = (allocbm_fn)SetFunction(gfx, -918, (APTR)allocbm_patch);
     old_freebm = (freebm_fn)SetFunction(gfx, -924, (APTR)freebm_patch);
     old_bmattr = (bmattr_fn)SetFunction(gfx, -960, (APTR)bmattr_patch);
