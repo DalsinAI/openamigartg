@@ -1,0 +1,26 @@
+OGPU_ModuleOpen and OGPU_ModuleClose, opengpu.library 0.5, 8 October 2026
+=========================================================================
+
+Where: a scratch copy of the AmigaChrome Showcase instance (OS 3.2.3,
+AC090 68040, ACRTG with ACRTG.gpu 1.1), the runtime from amigachrome #292.
+Test.module was built with the GCC 16 stove, ModuleCheck with the GCC 6.5
+stove (the module ABI holds between the two).
+
+ModuleCheck (tests/modules), 16 of 16 checks passed:
+  Test.module opens; its calls work (2 + 40 = 42)
+  its constructor ran (libnix's __initcpp)
+  its printf writes to this program's output
+  it was given opengpu.library
+  its getenv reads a variable, sees it change, sees it go (GetVar)
+  a second open is a second copy; each copy has its own globals (1 2, 1)
+  a newer version than the module is refused (IoErr 212, ERROR_OBJECT_WRONG_TYPE)
+  a missing module is not found, by path or by name (IoErr 205)
+  20 opens and closes keep memory (0 bytes)
+  SDL2 opens (59 ms); SDL2's dynapi fills a table
+    (SDL2.module from openamigartg #29, LIBS:OpenGPU/SDL2.module)
+
+SDL's own check through the call: the SDL 2 helper's stub (#29's
+stubs/sdl2/SDL2_stub.c) changed to load SDL2.module with OGPU_ModuleOpen
+on opengpu.library 0.5, and LoadSeg itself on older ones. sdlcheck.m
+linked against it: timer, thread, audio, clipboard, joystick, env, paths
+all pass.
