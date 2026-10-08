@@ -411,7 +411,8 @@ def archives(kit: Path) -> list[Path]:
         t.add(kit, arcname=kit.name)
     out.append(tgz)
     lha = kit.with_name(kit.name + ".lha")
-    tool = shutil.which("lha") or shutil.which("jlha")
+    # jlha makes archives; on some systems "lha" is lhasa, which only reads them
+    tool = shutil.which("jlha") or shutil.which("lha")
     if tool:
         subprocess.run([tool, "-aq", lha.name, kit.name], cwd=kit.parent, check=True)
         out.append(lha)
