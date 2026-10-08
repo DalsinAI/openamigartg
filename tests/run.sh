@@ -25,6 +25,16 @@ if [ -e /usr/include/vulkan/vulkan.h ] && { ldconfig -p 2>/dev/null | grep -q li
 else
     echo "no Vulkan headers or loader; the GPU run is skipped"
 fi
+# ACVirgl's host side against virglrenderer, when ACVIRGL_LIB names a libvirglrenderer.so.1
+# and VIRGL_SRC its source's src/ (for virgl_protocol.h): the release amigachrome's
+# scripts/build_virglrenderer.sh builds (1.3.0).
+if [ -n "${ACVIRGL_LIB:-}" ] && [ -f "${VIRGL_SRC:-/nonexistent}/virgl_protocol.h" ]; then
+    cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -I"$VIRGL_SRC" -o "$OUT/test_acvirgl" "$HERE/test_acvirgl.c" \
+        "$HERE/../host/virgl/acvirgl.c" -ldl
+    "$OUT/test_acvirgl"
+else
+    echo "no ACVIRGL_LIB and VIRGL_SRC; the virgl run is skipped"
+fi
 # The same tests big-endian on a 68040, when a Linux m68k compiler and qemu are installed.
 if command -v m68k-linux-gnu-gcc >/dev/null && command -v qemu-m68k >/dev/null; then
     m68k-linux-gnu-gcc -std=c99 -O2 -m68040 -static -Wall -Wextra -Werror \

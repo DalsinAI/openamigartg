@@ -1,0 +1,12 @@
+--- a/meson.build
++++ b/meson.build
+@@ -1702,7 +1702,8 @@
+ # This means that this check will succeed, but then compilation will later
+ # fail. MSVC doesn't have this function at all, so only check for it on
+ # non-windows platforms.
+-if host_machine.system() != 'windows'
++# GCC for AmigaOS has __builtin_posix_memalign, but libnix has no posix_memalign.
++if host_machine.system() not in ['windows', 'amigaos']
+   if cc.has_function('posix_memalign')
+     pre_args += '-DHAVE_POSIX_MEMALIGN'
+   endif
