@@ -75,7 +75,7 @@ or, with the OpenGPU developer kit (`tools/make_sdk.py`, `sdk/README`):
 | Renderer | `opengpu` first, then `software`. See below. |
 | Audio | AHI first (8 or 16-bit, mono or stereo, double buffered with `ahir_Link`, opened in SDL's audio thread), then Paula's audio.device. |
 | Threads, timers | Exec processes and semaphores. `SDL_Delay`, timed semaphore and condition waits use timer.device's UNIT_MICROHZ, so `SDL_Delay(1)` is a millisecond, not dos.library's 20 ms tick. |
-| Input | Keyboard and mouse from Intuition; relative mouse mode with IDCMP_DELTAMOVE; Ctrl-C quits. Joysticks and CD32 pads through lowlevel.library. |
+| Input | Keyboard and mouse from Intuition; relative mouse mode with IDCMP_DELTAMOVE; Ctrl-C quits. Joysticks and game controllers through OpenInput (openinput.library), or through lowlevel.library where OpenInput isn't installed: see below. |
 | Clipboard | clipboard.device unit 0, IFF FTXT, converted between UTF-8 and Latin-1. On AmigaChrome, ACClip carries it to the PC. |
 | OpenGL | GL.module, through the program's own libGL.a (below). |
 | Haptic | SDL's dummy driver: `SDL_Init(SDL_INIT_HAPTIC)` succeeds with no devices, as games that ask for it expect. |
@@ -90,6 +90,101 @@ Settings, with `SetEnv` or `SDL_SetHint`:
 - `SDL_AUDIODRIVER=paula` picks Paula.
 - `SDL_OPENGPU_GL=cpu` draws SDL's GL with softpipe even where the PC's
   graphics chip is there.
+- `SDL_JOYSTICK_OPENINPUT=0` reads joysticks through lowlevel.library even
+  where OpenInput is installed.
+- `SDL_JOYSTICK_OPENINPUT_EXCLUSIVE=0` opens OpenInput's pads shared: a pad
+  that also drives an Amiga port keeps driving it while the program runs.
+
+### Joysticks and game controllers on OpenInput
+
+`src/joystick/amigaos3/SDL_sysjoystick.c` has two back ends, chosen when
+SDL's joystick subsystem starts.
+
+**OpenInput** (openinput.library 1.2 or later; `openamigainput`,
+Design-OpenInput.md). Version 1.1 is OpenInput's skeleton, which lists
+nothing, so SDL treats it as missing.
+
+- Every controller OpenInput lists is an SDL joystick, with its name, GUID,
+  vendor, product and player number from the library.
+- Hot-plug: OpenInput's notification gives `SDL_JOYDEVICEADDED` and
+  `REMOVED`, and for game controllers `SDL_CONTROLLERDEVICEADDED` and
+  `REMOVED`. Its messages go to a port that needs no signal, which SDL
+  looks at each time it pumps events.
+- A pad's SDL joystick is OpenInput's standard layout, which is SDL's
+  GameController layout: buttons 0 to 20 are `SDL_GameControllerButton`'s
+  (A, B, X, Y, Back, Guide, Start, the stick clicks, the shoulders, the
+  d-pad, Misc, four paddles, the touchpad), axes 0 to 5 are
+  `SDL_GameControllerAxis`'s with 16-bit sticks and analogue triggers, and
+  one hat repeats the d-pad. The triggers run -32768 (released) to 32767
+  (pulled) on the joystick, as on every SDL platform, and 0 to 32767 on the
+  game controller.
+- The driver gives SDL the mapping that says so, so `SDL_GameController`
+  works with no database and no setup.
+- Rumble: `SDL_JoystickRumble` and `SDL_GameControllerRumble` go to
+  `OIN_Rumble` on pads that have it (`OICF_RUMBLE`). SDL stops the motors
+  when the time it was given is up.
+- Exclusive use: SDL opens pads with `OIT_Exclusive`, so a pad that also
+  drives Amiga port 2 doesn't move the game's port joystick as well; the
+  port's feed comes back when SDL closes the pad. When another program
+  already has the pad to itself, SDL opens it shared rather than fail.
+- Wheels and flight sticks are opened in their raw layout (every button,
+  axis and hat as the device reports them), with no game controller
+  mapping of their own.
+
+**lowlevel.library**, when openinput.library isn't installed, is the
+skeleton, or `SDL_JOYSTICK_OPENINPUT=0` asks for it: as before, the stick
+or CD32 pad in each game port, with 2 digital axes, 1 hat and 7 buttons,
+and no game controller mapping. Port 2 is joystick 0, and port 1 joystick
+1 when lowlevel sees a stick there.
+
+**Mappings: how SDL's and OpenInput's work together.**
+
+- OpenInput maps every pad into the standard layout before SDL sees it,
+  from its built-in lines (Xbox, PlayStation, Switch, 8BitDo, CD32-style
+  pads), `ENVARC:OpenInput/mappings.txt` and OpenPrefs' Gamepads page; on
+  AmigaChrome the x86 or ARM64 cores do it. That is the place to map a pad
+  for every program.
+- A program can still bring its own: `SDL_GameControllerAddMapping`,
+  `SDL_GameControllerAddMappingsFromFile`, or the user's
+  `SDL_GAMECONTROLLERCONFIG` (and `SDL_GAMECONTROLLERCONFIG_FILE`). When
+  SDL has such a line for a pad's GUID when the pad is opened, the driver
+  opens that pad in its raw layout, and SDL applies the line to the raw
+  buttons, axes and hats, as on any other system. The raw numbers are the
+  ones OpenInput's own lines use, so a line made in OpenPrefs works the
+  same in an SDL program, and the other way round. A line only changes
+  that program; nothing goes back into OpenInput.
+- Add lines before opening the pad, as games do at start: a pad already
+  open keeps the layout it was opened with.
+- Lines in a file are loaded only when their `platform:` field matches
+  SDL: SDL 2 here says `AmigaOS 3` (`SDL_GetPlatform`, patch
+  `patches/sdl2/0007`). Lines without a `platform:` field are taken by
+  `SDL_GameControllerAddMapping` itself, as SDL always does.
+- `SDL_GameControllerMapping` on a pad SDL maps through OpenInput gives the
+  standard layout's line (`a:b0,b:b1,...`), not OpenInput's line for the
+  pad.
+
+`include/openinput/` holds a copy of OpenInput's frozen headers
+(`include/libraries/openinput.h` and `include/inline/openinput.h` from
+`openamigainput` at efc932c); the header only grows, so a newer library
+still answers this driver. The driver opens the library itself, with a
+base of its own name (`SDL_OS3_OpenInputBase`), so a program that uses
+openinput.library too has no clash.
+
+**Programs built with GCC 6.** Six SDL calls return a struct:
+`SDL_JoystickGetDeviceGUID`, `SDL_JoystickGetGUID`,
+`SDL_JoystickGetGUIDFromString`, `SDL_GUIDFromString` and
+`SDL_GameControllerGetBindForAxis` and `ForButton`. GCC 6 (the os32 stove)
+passes the address for a returned struct in A0, while the GCC 16 that
+builds SDL2.module and libSDL2.a takes it in A1, so a GCC 6 program got a
+garbage GUID and had 16 bytes written wherever A1 pointed. SDL's headers
+(`patches/sdl2/0008`) now send those six calls, in a program built with
+GCC 6, through helpers in libSDL2.a and libSDL2_static.a that take the
+address as an argument (`stubs/sdl2/SDL2_structret.c`). GCC 6 programs
+built before this need rebuilding to get right GUIDs.
+
+`tests/sdl2/padcheck` lists the joysticks and watches them (hot-plug,
+every controller button and axis, rumble), with no window; with OpenInput's
+test pad (vendor 0xDA15) every check runs.
 
 ### SDL_GL on GL.module
 
@@ -154,11 +249,14 @@ Nothing third-party is committed. `build.sh`:
    back ends it started (video, AGA c2p, Paula, threads, timer, filesystem);
 3. copies SDL's software renderer to `src/render/opengpu/`, then applies
    `patches/sdl2` (the platform in SDL's lists, three fixes, the
-   environment, the opengpu renderer as a change to that copy, and null
-   checks where SDL used a display or surface it had not got) and
+   environment, the opengpu renderer as a change to that copy, null
+   checks where SDL used a display or surface it had not got, the
+   platform name and a mapping question for OpenInput, and the struct
+   returns for GCC 6 programs) and
    `patches/amigaos3` (the Team's changes to libSDL2-amigaos3's back ends);
-4. adds `src/` (the Team's own files: AHI, the joystick, the clipboard,
-   OpenGPU's helpers) and `include/SDL_config_amigaos.h`;
+4. adds `src/` (the Team's own files: AHI, the joystick on OpenInput or
+   lowlevel.library, the clipboard, OpenGPU's helpers) and
+   `include/SDL_config_amigaos.h`;
 5. builds the satellites from their pinned tarballs (`satellites/`), with
    `patches/freetype` applied to FreeType (two null checks).
 
