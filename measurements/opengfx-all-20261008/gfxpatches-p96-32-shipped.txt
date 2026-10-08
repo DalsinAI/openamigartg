@@ -1,0 +1,25 @@
+opengpu.library 0.6 is loaded
+call                    Open  whose             RTG system's  others
+Text                    1     OpenLook          1             0
+TextLength              0     -                 0             0   <- not exactly one
+TextExtent              0     -                 0             0   <- not exactly one
+TextFit                 0     -                 0             0   <- not exactly one
+RectFill                1     OpenLook          0             0
+BltBitMap               0     -                 1             0   <- not exactly one
+BltTemplate             0     -                 1             0   <- not exactly one
+ScrollRaster            0     -                 1             0   <- not exactly one
+BltPattern              0     -                 1             0   <- not exactly one
+SetRast                 0     -                 1             0   <- not exactly one
+Draw                    0     -                 1             0   <- not exactly one
+PolyDraw                0     -                 0             0   <- not exactly one
+WritePixel              0     -                 1             0   <- not exactly one
+ReadPixel               0     -                 1             0   <- not exactly one
+BltBitMapRastPort       0     -                 0             0   <- not exactly one
+BltMaskBitMapRastPort   0     -                 1             0   <- not exactly one
+ClipBlit                0     -                 0             0   <- not exactly one
+WriteChunkyPixels       0     -                 1             0   <- not exactly one
+WritePixelArray8        0     -                 1             0   <- not exactly one
+WritePixelLine8         0     -                 1             0   <- not exactly one
+ReadPixelLine8          0     -                 1             0   <- not exactly one
+ReadPixelArray8         0     -                 1             0   <- not exactly one
+20 of 22 calls don't have exactly one Open patch
