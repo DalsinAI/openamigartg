@@ -1,8 +1,9 @@
 OpenGPU developer kit
 =====================
 
-Everything for building programs on OpenGPU: SDL 2, OpenGL and GLES, GLA,
-Warp3D, MiniGL and opengpu.library itself, for AmigaOS 3.2 on a 68040 or
+Everything for building programs on OpenGPU: SDL 2 (and SDL 1.2, where the
+kit was built with it), OpenGL and GLES, GLA, TinyGL, Warp3D, MiniGL and
+opengpu.library itself, for AmigaOS 3.2 on a 68040 or
 68060 with an FPU, with bebbo's m68k-amigaos-gcc (GCC 6.5 or GCC 16).
 
 Programs built with it run on OpenGPU's runtime, which OpenUp installs:
@@ -15,6 +16,7 @@ What is in it
 -------------
 
   bin/sdl2-config         flags for SDL 2, as on any other system
+  bin/sdl-config          flags for SDL 1.2 (only in a kit built with it)
   include/SDL2/           SDL 2.32.10, SDL_image, SDL_mixer, SDL_ttf, SDL_net
   include/GL/ GLES2/ GLES3/ KHR/
                           OpenGL and GLES (Mesa's and Khronos's headers)
@@ -23,6 +25,11 @@ What is in it
   include/opengpu/ proto/ inline/ clib/ libraries/
                           opengpu.library, OpenRTG, Warp3D and MiniGL
   include/Warp3D/ mgl/    Warp3D and MiniGL
+  include/tgl/ proto/tinygl.h
+                          TinyGL: GLInit, GLClose and the GLA calls, and a
+                          few GLU calls
+  include/SDL/            SDL 1.2: sdl12-compat's headers (only in a kit
+                          built with it)
   lib/libSDL2.a           SDL 2 (the program's half: SDL2.module does the work)
   lib/libSDL2main.a       empty: SDL needs no main of its own here; it is
                           there for build systems that link -lSDL2main
@@ -31,10 +38,14 @@ What is in it
   lib/libGL.a             OpenGL, GLES and GLA (GL.module does the work)
   lib/libminigl.a libmgl.a
                           MiniGL (minigl.library), and its GLUT-style helpers
+  lib/libtinygl.a         TinyGL's calls, on GL (link it before -lGL)
+  lib/libSDL.a            SDL 1.2: sdl12-compat, on SDL 2 (only in a kit
+                          built with it)
   lib/pkgconfig/          sdl2, SDL2_image, SDL2_mixer, SDL2_ttf, SDL2_net,
-                          gl and glesv2
+                          gl, glesv2 and tinygl (and sdl, with SDL 1.2)
   lib/cmake/              find_package(SDL2) and the satellites
-  examples/               a sprite program, an SDL_GL program and a GLA one
+  examples/               a sprite program, an SDL_GL program, a GLA one
+                          and a TinyGL one (and an SDL 1.2 one, with SDL 1.2)
   AutoDocs-OpenGPU.md     the reference: how it all works, and what's there
   Licences/               every notice; Licences/README says what is whose
 
@@ -95,6 +106,8 @@ Each has its build command at its top:
   examples/sprite     m68k-amigaos-gcc -O2 sprite.c -o Sprite $(sdl2-config --cflags --libs)
   examples/sdl_gl     m68k-amigaos-gcc -O2 glspin.c -o GLSpin $(sdl2-config --cflags --libs --gl)
   examples/gla        m68k-amigaos-gcc -O2 glatriangle.c -o GLATriangle $(pkg-config --cflags --libs gl)
+  examples/tinygl     m68k-amigaos-gcc -O2 tglspin.c -o TGLSpin $(pkg-config --cflags --libs tinygl)
+  examples/sdl12      m68k-amigaos-gcc -O2 bounce.c -o Bounce $(sdl-config --cflags --libs)
 
 Copy the program to the Amiga and run it from a Shell. Each takes
 SECONDS n, to end by itself.
@@ -111,6 +124,13 @@ Things to know
 - GL on AmigaChrome runs on the GPU (virgl, GL 4.3, GLES 3.1); on
   other Amigas it is softpipe on the 68k (GL 3.3, GLES 3.1). SetEnv
   SDL_OPENGPU_GL cpu picks softpipe for SDL programs.
+- SDL 1.2 programs run through sdl12-compat on OpenGPU's SDL 2, so they
+  draw, play and read input through SDL2.module, like SDL 2 programs.
+  sdl-config takes the same SDL2_CPU and SDL2_RUNTIME settings, and --gl.
+- TinyGL programs run on GL.module like other GL programs. They also need
+  LIBS:tinygl.library (OpenUp installs it), which they open themselves.
+  SetEnv TinyGL/Driver CPU picks softpipe. A program that includes only
+  <GL/gl.h> and uses the glA... calls adds -include proto/tinygl.h.
 - With GCC 16, run tools/fpcr_check.py (openamigartg) on what you build:
   GCC 16 at -m68040 can put a float-to-int store in the wrong place.
 
