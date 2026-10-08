@@ -1,0 +1,107 @@
+OpenGPU stream v1.0 / G1 completion — 8 October 2026
+
+Scope
+-----
+The v1.0 baseline only:
+  formats: CLUT8, RGB565, ARGB32, INDEX8 source
+  state: NOP, SURFACE, TARGET, CLIP
+  drawing: FILL, INVERT, COPY, TEMPLATE, PATTERN, LINE, PIXELS, COMPOSITE
+  synchronization: FENCE
+  COMPOSITE flags: SRCALPHA, BILINEAR
+
+A8, MASK, COMPOSITE MASK/ADD/IN are v1.1 and are not part of this gate.
+No v1.2 command or format was implemented.
+
+Host/reference checks
+---------------------
+openamigartg tests/run.sh:
+  4873/4873 checks passed
+  G1 golden scene: de825f7b
+  v1.1 regression scene: 400d1333
+  library/modes.c and library/opengpu/ogpu_core.c build for 68k
+
+The local workstation did not have Vulkan development headers or
+m68k-linux-gnu/qemu-m68k, so those optional runs were skipped. They are not
+used as evidence for this G1 CPU-backend gate.
+
+OS 3.2 stove build
+------------------
+Branch: opengpu/v1.0-openrtg-integration-20261008
+Stove: ~/AmigaChrome/stoves/os32
+
+  openrtg.library          40008 bytes
+  cybergraphics.library    5176 bytes
+  opengpu.library          13276 bytes
+  C:OpenRTG                6444 bytes
+  C:OpenRTG-Monitor        3716 bytes
+  C:OpenGPUCheck           37784 bytes
+
+openrtg.library and opengpu.library are AmigaOS loadseg()able binaries.
+
+ACRTG.gpu
+---------
+amigachrome-guest main, ACRTG.gpu 1.0:
+  binary: 3776 bytes, AmigaOS loadseg()able
+  ring writer host tests:
+    4096-byte ring, immediate board: 400 batches
+    4096-byte ring, lagging board:   400 batches
+    65536-byte ring, immediate:     2000 batches
+    65536-byte ring, lagging:       2000 batches
+    4100-byte ring, lagging:         300 batches
+  all passed
+
+The ACRTG.gpu README also records the earlier card-2.3 scratch-instance
+field run: G1 de825f7b and v1.1 400d1333 both correct through backend 1,
+with its representative batch at 2.12 ms versus 2011.14 ms on the 68k.
+That is prior G2 evidence; it is not required to call G1 complete.
+
+OpenRTG integration
+-------------------
+The v1.0 integration routes exact cases through opengpu.library:
+  RectFill/SetRast solid fill      -> FILL
+  COMPLEMENT solid rectangle      -> INVERT
+  BltTemplate and classic Text    -> TEMPLATE
+  plain same-format RTG blits     -> COPY
+  ScrollRaster's plain RTG moves  -> COPY through the shared blit path
+  unlayered exact area patterns   -> PATTERN
+
+Cases whose v1.0 command cannot reproduce OpenRTG semantics exactly retain
+the existing OpenRTG implementation. In particular layered pattern phase,
+non-copy minterms, masked CLUT8 writes and patterned/stippled lines stay on
+the proven CPU path.
+
+OS 3.2.3 field gate
+-------------------
+Instance-29 ("OpenUp Test"), AC090 68040, one ACRTG monitor.
+A DH0 snapshot (20261008-052336-DH0) was taken before the test and restored
+after it.
+
+OpenRTG startup:
+  openrtg.library 0.10: 1 RTG monitor
+  Monitor 1: ACRTG at $50000000, 45 modes listed
+  display database lists OpenRTG modes
+  OpenRTG screens switched on with cybergraphics.library
+
+OpenGPUCheck QUICK:
+  opengpu.library 0.3
+  backend 0: CPU
+  COMPOSITE into ARGB32: full, backend 0
+  G1 golden through library: de825f7b (right)
+  v1.1 regression through library: 400d1333 (right)
+  G1 golden on linked 68k core: de825f7b (right)
+  v1.1 regression on linked 68k core: 400d1333 (right)
+  result: all right
+
+Workbench then loaded with OpenRTG screens active. A delayed MultiView of
+S:Startup-Sequence was launched on that OpenRTG screen without stopping the
+runtime. The instance was cleanly stopped and its pre-test snapshot restored.
+
+Conclusion
+----------
+G1's stated done condition — Workbench and MultiView drawing correctly
+through stream-v1 opengpu.library on a 68040, with the golden reference
+intact — is met for the CPU backend.
+
+The stream remains wire version 1/minor 1 in current headers because the
+already-merged v1.1 extension is additive. This completion record does not
+start or imply any v1.2 work.
