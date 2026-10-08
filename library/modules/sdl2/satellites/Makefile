@@ -46,10 +46,12 @@ IMG_OBJS = $(addprefix $(OBJ)/img/,$(IMG_SRCS:.c=.o))
 $(OBJ)/img/%.o: $(IMG)/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(IMG_DEFS) -I$(IMG)/include -c $< -o $@
-# IMG_jpg.c holds tiny_jpeg, SDL_image's JPEG writer. Built with -O1 or -O2
-# by the GCC 16 stove it writes a flat grey picture on the AC090 (8 Oct
-# 2026; the same source at -O0, and on the PC at -O2, is right), so it is
-# built at -O0 until that is found. JPEG reading is stb_image's (IMG_stb.c).
+# The GCC 16 stove's -m68040 float-to-int can save FPCR in the register a
+# store indexes with (fpcr_check.py). In IMG_jpg.c (tiny_jpeg, SDL_image's
+# JPEG writer) that wrote every coefficient to one place, so its JPEGs were
+# flat grey; in Timidity's mix.c and playmidi.c it hits envelopes and
+# pitch. Those three are built at -O0 until the stove is fixed; the build
+# runs fpcr_check.py over every library.
 $(OBJ)/img/IMG_jpg.o: $(IMG)/src/IMG_jpg.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -O0 $(IMG_DEFS) -I$(IMG)/include -c $< -o $@
@@ -78,6 +80,9 @@ MIX_OBJS = $(addprefix $(OBJ)/mix/,$(MIX_SRCS:.c=.o))
 $(OBJ)/mix/%.o: $(MIX)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(MIX_DEFS) -I$(MIX)/include -I$(MIX)/src -I$(MIX)/src/codecs -I$(XMP)/include -c $< -o $@
+$(OBJ)/mix/src/codecs/timidity/mix.o $(OBJ)/mix/src/codecs/timidity/playmidi.o: $(OBJ)/mix/%.o: $(MIX)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -O0 $(MIX_DEFS) -I$(MIX)/include -I$(MIX)/src -I$(MIX)/src/codecs -I$(XMP)/include -c $< -o $@
 
 # --- FreeType (for SDL2_ttf) ---
 FT_SRCS = src/base/ftsystem.c src/base/ftinit.c src/base/ftdebug.c src/base/ftbase.c \

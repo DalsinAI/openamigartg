@@ -3,9 +3,9 @@
  *
  * SDL2.module's interface: what its first code takes and gives back. The
  * link stub (stubs/sdl2) and the module (library/modules/sdl2/module) share
- * it. It follows the layout's module ABI (an entry taking SysBase, DOSBase,
- * OpenGPUBase and a version, returning the module's table); when
- * include/opengpu/module.h lands, these become its types.
+ * it. It is the module ABI of include/opengpu/module.h: an entry taking
+ * SysBase, DOSBase, OpenGPUBase and a version, returning the module's table,
+ * whose first word is its version.
  *
  * The table's first function is SDL's own SDL_DYNAPI_entry: it fills the
  * caller's SDL jump table, so every SDL_ call a program makes goes straight
@@ -20,12 +20,24 @@
 #define SDL2_MODULE_FILE    "LIBS:OpenGPU/SDL2.module"
 #define SDL2_MODULE_VERSION 1
 
-struct SDL2ModuleArgs {
+/* The arguments are opengpu.library's OGPUModuleArgs (include/opengpu/
+   module.h, opengpu.library 0.5); the same layout is spelt out here for a
+   build against older headers. */
+#if defined(__has_include)
+#if __has_include(<opengpu/module.h>)
+#include <opengpu/module.h>
+#endif
+#endif
+#ifdef OPENGPU_MODULE_H
+typedef struct OGPUModuleArgs SDL2ModuleArgs;
+#else
+typedef struct SDL2ModuleArgs {
     struct ExecBase *SysBase;
     struct Library *DOSBase;
-    struct Library *OpenGPUBase;    /* the caller's, or NULL */
+    struct Library *OpenGPUBase;    /* opengpu.library, or NULL */
     ULONG version;                  /* SDL2_MODULE_VERSION the caller was built for */
-};
+} SDL2ModuleArgs;
+#endif
 
 struct SDL2ModuleTable {
     ULONG version;                  /* SDL2_MODULE_VERSION */
@@ -34,6 +46,6 @@ struct SDL2ModuleTable {
 };
 
 /* The module's first code: NULL if it can't start (too old, no memory). */
-typedef struct SDL2ModuleTable *(*SDL2ModuleEntry)(struct SDL2ModuleArgs *args);
+typedef struct SDL2ModuleTable *(*SDL2ModuleEntry)(SDL2ModuleArgs *args);
 
 #endif

@@ -36,9 +36,10 @@ Build a program the usual way:
 - Each program gets its own copy of the module (the layout's step 1, in
   `hari-scripts/opengpu-one-library-layout.md` section 6). SDL's globals
   are then the program's own.
-- The module's interface is `stubs/sdl2/sdl2_module.h`: the first code takes
-  SysBase, DOSBase, OpenGPUBase and a version, and returns a table. Until
-  opengpu.library has `OGPU_ModuleOpen`, the stub LoadSegs the module itself.
+- The module's interface is `include/opengpu/module.h`'s (`stubs/sdl2/sdl2_module.h`
+  adds SDL's table): the first code takes SysBase, DOSBase, OpenGPUBase and
+  a version, and returns a table. On opengpu.library 0.5 and later the stub
+  loads it with `OGPU_ModuleOpen`; on older ones it LoadSegs it itself.
 - The module has no program startup. `module/module_start.s` and
   `module/sdl2_module.c` run libnix's init list (memory, standard I/O on the
   calling program's Input and Output, the libraries libnix opens) and its
@@ -132,4 +133,6 @@ testrendercopyex on the CPU and on OpenGPU, with `tests/sdl2/bench`.
 - Step 2 of residency: SDL2.module built `-fbaserel32`, code loaded once and
   data per program. SDL's threads start in `SDL_systhread.c` with
   CreateNewProc; they will need the creating program's A4 handed on.
-- Remove the stub's own LoadSeg once opengpu.library has `OGPU_ModuleOpen`.
+- Remove the stub's own LoadSeg once every install has opengpu.library 0.5.
+- The GCC 16 stove's FPCR clash (`fpcr_check.py`): three satellite files are
+  built at -O0 until the stove is fixed, and the build checks everything.
