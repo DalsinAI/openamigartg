@@ -12,6 +12,9 @@ OUT=${1:-$HERE/../build}
 mkdir -p "$OUT"
 "$CC" -m68020 -O2 -Wall -Werror -noixemul -o "$OUT/LibCount" "$HERE/libcount.c"
 echo "$OUT/LibCount ($(wc -c < "$OUT/LibCount") bytes)"
-"$CC" -m68040 -m68881 -O2 -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenGPUCheck" "$HERE/ogpu_check.c" \
+"$CC" -m68040 -m68881 -mnobitfield -O2 -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenGPUCheck" "$HERE/ogpu_check.c" \
     "$HERE/../tests/golden_scenes.c" "$HERE/../library/opengpu/ogpu_core.c" "$HERE/../library/opengpu/ogpu_build.c" -lm
 echo "$OUT/OpenGPUCheck ($(wc -c < "$OUT/OpenGPUCheck") bytes)"
+"$CC" -m68040 -m68881 -mnobitfield -O2 -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenGPUBench" "$HERE/ogpu_bench.c" \
+    "$HERE/../library/opengpu/ogpu_core.c" "$HERE/../library/opengpu/ogpu_build.c" -lm
+echo "$OUT/OpenGPUBench ($(wc -c < "$OUT/OpenGPUBench") bytes)"

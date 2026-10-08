@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * OpenGPU's core: carries out an OGPU stream v1 (include/opengpu/stream.h).
+ * OpenGPU's core: carries out an OGPU stream v1.2 (include/opengpu/stream.h).
  * Plain C with no C library and no floating point, so the same file builds
  * for the 68k (the CPU back end), for the Cradle's runtime and for the
  * PiStorm's spare ARM core. */
@@ -21,6 +21,9 @@ struct ogpu_surface {
     int       format;       /* OGPU_FMT_ */
 };
 
+struct ogpu3d;                      /* ogpu_3d.h: 3D state for one batch */
+#define OGPU_CORE_HAS_D3 1
+
 struct ogpu_core {
     /* Turn an Amiga address and a length into memory this back end can use;
      * 0 when it can't. The CPU back end returns the address itself. */
@@ -37,6 +40,10 @@ struct ogpu_core {
     int target;             /* slot, or -1 */
     int cx0, cy0, cx1, cy1; /* clip: x0 <= x < x1; cx1 0 = the whole target */
     int last_error;         /* the first error the last run met */
+    /* The 3D state (stream3d.h's ops), or 0: a back end that draws 3D sets
+     * up a struct ogpu3d per batch (ogpu3d_init) and points this at it.
+     * ogpu_core_init sets it to 0. */
+    struct ogpu3d *d3;
     long error_word;        /* and where: the word index of its command */
 };
 
