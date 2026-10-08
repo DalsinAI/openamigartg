@@ -2,10 +2,10 @@
  * SPDX-License-Identifier: MIT
  *
  * The GLA core (gla_core.h): a Gallium front end and a software winsys for
- * Mesa's state tracker and softpipe. We modelled it on Mesa's own small
- * front ends (Haiku's hgl): the state tracker asks us for its framebuffer's
- * textures, and softpipe hands finished frames to our winsys, which passes
- * them to the buffer's present hook. Display targets live in ordinary
+ * Mesa's state tracker and softpipe, modelled on Mesa's own small front
+ * ends (Haiku's hgl): the state tracker asks the core for its framebuffer's
+ * textures, and softpipe hands finished frames to the core's winsys, which
+ * passes them to the buffer's present hook. Display targets live in ordinary
  * memory (Fast RAM on the Amiga). */
 #include "gla_core.h"
 

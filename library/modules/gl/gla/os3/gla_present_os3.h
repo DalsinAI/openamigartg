@@ -1,6 +1,6 @@
 /* Copyright (c) 2026 Dalsin Limited. Mesa for AmigaOS 3.2 (Open), MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
- * Where gl.library shows a context's frames on OS 3.2 (gla_present_os3.c). */
+ * Where the GL module shows a context's frames on OS 3.2 (gla_present_os3.c). */
 #ifndef GLA_PRESENT_OS3_H
 #define GLA_PRESENT_OS3_H
 
