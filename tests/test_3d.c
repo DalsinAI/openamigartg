@@ -438,6 +438,34 @@ static void test_mipmaps_and_bilinear(void) {
         CHECK(mono && (pix(0, 1) & 255) == 0 && (pix(63, 1) & 255) == 255 && ((pix(32, 1) & 255) > 100 && (pix(32, 1) & 255) < 155),
               "bilinear ramp %08lx %08lx %08lx", pix(0, 1), pix(32, 1), pix(63, 1));
     }
+    /* Mipmapped triangles whose areas are powers of two (in 28.4 units, 2^4 to
+     * 2^15): the level of detail takes log2 of them. GCC 6.5 built the old
+     * loop version of that for the 68k so that it never ended for these. */
+    for (i = 0, s = 16; i < 5; i++, s >>= 1) {
+        long at = TEX + 0x2000L * i;
+        for (y = 0; y < s * s; y++) wr32(at + y * 4, 0xFF808080UL);
+        if (i) lv[i - 1] = (unsigned long)at;
+    }
+    clear_target(0);
+    setup();
+    r3d_defaults();
+    R[0] = OGPU_R3D_GOURAUD | OGPU_R3D_TEXTURE | OGPU_R3D_PERSPECTIVE;
+    ogpu_render3d(&B, R);
+    ogpu_texenv(&B, 0, OGPU_ENV_REPLACE, 0);
+    ogpu_texture(&B, 0, TEX, 16 * 4, 16, 16, OGPU_FMT_ARGB32, 0, 1, 5, 2, OGPU_WRAP_REPEAT, OGPU_WRAP_REPEAT, 0, 5, lv);
+    for (i = 0; i < 12; i++) {
+        struct V v[3];
+        int k;
+        memset(v, 0, sizeof v);
+        v[0].x = 1; v[0].y = 1 + i * 4;
+        v[1].x = 1 + (double)(1 << i) / 16.0; v[1].y = v[0].y;
+        v[2].x = 1; v[2].y = v[0].y + 1;
+        v[1].u = 1; v[2].v = 1;
+        for (k = 0; k < 3; k++) { v[k].c = 0xFFFFFFFFUL; v[k].w = 0.5 + k * 0.25; v[k].s = 0xFF000000UL; put_vertex(VB + (i * 3 + k) * VSIZE, &v[k]); }
+    }
+    ogpu_triangles3d(&B, VB, 36, VSIZE, 0, 0, 0, OGPU_TRI_UNIT0, 0, LAY_FULL);
+    run();
+    CHECK(pix(1, 1 + 11 * 4) == 0xFF808080UL, "the widest power-of-two triangle drawn, got %08lx", pix(1, 1 + 11 * 4));
 }
 
 /* ---- the fragment tests, one pixel each, against floating-point sums --------------- */
