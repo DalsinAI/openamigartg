@@ -18,8 +18,8 @@ put in with SetFunction() under Forbid() with the caches cleared. At the end a
 stub comes out only if nothing patched that function after it; otherwise it
 stays and keeps passing calls through. Ctrl-C ends the count early.
 
-libcount_report.py (Python 3, on a PC) names the offsets from the NDK's FD
-files and sorts them into a table.
+libcount_report.py (Python 3, on x86 or ARM64 cores) names the offsets from
+the NDK's FD files and sorts them into a table.
 
 It was written to find which graphics, intuition and layers calls Workbench
 and programs really make on an RTG screen, for OpenRTG.
