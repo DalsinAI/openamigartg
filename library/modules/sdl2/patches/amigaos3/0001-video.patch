@@ -1,0 +1,503 @@
+diff -ruN a/src/video/amigaos3/SDL_os3aga.c b/src/video/amigaos3/SDL_os3aga.c
+--- a/src/video/amigaos3/SDL_os3aga.c	2026-10-08 05:33:48.449374678 +0100
++++ b/src/video/amigaos3/SDL_os3aga.c	2026-10-08 05:33:48.451871496 +0100
+@@ -64,21 +64,47 @@
+     LoadRGB32(&screen->ViewPort, table);
+ }
+ 
++/* The c2p is assembled for one bitplane size (BPLSIZE in the Makefile, a
++ * 320x256 screen) and eight planes one after another. Any other screen took
++ * the same plane offsets: a 640-wide screen had every plane written into its
++ * first 40 KB (a near-black picture), a smaller one was written past its
++ * bitmap. So it is used only on a bitmap laid out as it expects, and anything
++ * else goes through graphics' WriteChunkyPixels (6 Oct 2026). */
++#define OS3_C2P_BPLSIZE 10240UL
++
++static int c2p_width = 0, c2p_height = 0;
++
+ void OS3_AGA_C2PInit(int width, int height)
+ {
+ #ifndef WARPUP
+     c2p1x1_8_c5_gen_init(width, height, 0);
++    c2p_width = width;
++    c2p_height = height;
+ #endif
+ }
+ 
++static int OS3_AGA_C2PFits(const struct BitMap *bm, int width, int height)
++{
++    int p;
++
++    if (bm->Depth != 8 || (width & 31) || height > bm->Rows ||
++        (ULONG)bm->BytesPerRow * 8 != (ULONG)width ||
++        (ULONG)bm->BytesPerRow * bm->Rows != OS3_C2P_BPLSIZE) {
++        return 0;
++    }
++    for (p = 1; p < 8; p++) {
++        if ((UBYTE *)bm->Planes[p] != (UBYTE *)bm->Planes[0] + p * OS3_C2P_BPLSIZE) {
++            return 0;
++        }
++    }
++    return 1;
++}
++
+ void OS3_AGA_C2P(const void *chunky, struct Screen *screen,
+                  int width, int height)
+ {
+     struct BitMap *bm;
+ 
+-    (void)width;
+-    (void)height;
+-
+     if (!screen) {
+         return;
+     }
+@@ -89,10 +115,17 @@
+     }
+ 
+ #ifndef WARPUP
+-    /* Kalms c2p expects contiguous bitplanes with BPLSIZE spacing.
+-     * Standard AGA screen bitmaps from OpenScreen have this layout. */
+-    c2p1x1_8_c5_gen((void *)chunky, (void *)bm->Planes[0]);
++    if (OS3_AGA_C2PFits(bm, width, height)) {
++        if (width != c2p_width || height != c2p_height) {
++            OS3_AGA_C2PInit(width, height);
++        }
++        c2p1x1_8_c5_gen((void *)chunky, (void *)bm->Planes[0]);
++        return;
++    }
+ #endif
++    /* An INDEX8 surface's pitch: SDL rounds each row up to 4 bytes. */
++    WriteChunkyPixels(&screen->RastPort, 0, 0, width - 1, height - 1,
++                      (UBYTE *)chunky, (width + 3) & ~3);
+ }
+ 
+ #endif /* SDL_VIDEO_DRIVER_AMIGAOS3 */
+diff -ruN a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3events.c
+--- a/src/video/amigaos3/SDL_os3events.c	2026-10-08 05:33:48.470652140 +0100
++++ b/src/video/amigaos3/SDL_os3events.c	2026-10-08 05:33:48.472899408 +0100
+@@ -23,6 +23,8 @@
+ #include "../../events/SDL_keyboard_c.h"
+ #include "../../events/SDL_mouse_c.h"
+ #include "../../events/SDL_windowevents_c.h"
++#include "../../events/SDL_events_c.h"
++#include <dos/dos.h>
+ #include "SDL_keyboard.h"
+ #include "SDL_mouse.h"
+ 
+@@ -229,6 +231,13 @@
+     WORD   mousex, mousey;
+     struct Window *intuiwin;
+ 
++    /* Open: Ctrl-C from the Shell (or C:Break) asks the program to quit,
++       as SIGINT does on other systems. */
++    if (SetSignal(0, 0) & SIGBREAKF_CTRL_C) {
++        SetSignal(0, SIGBREAKF_CTRL_C);
++        SDL_SendQuit();
++    }
++
+     /* Walk all open SDL windows and drain their IDCMP queues */
+     for (sdlwin = _this->windows; sdlwin; sdlwin = sdlwin->next) {
+         data = (OS3_WindowData *)sdlwin->driverdata;
+@@ -259,8 +268,15 @@
+                 break;
+ 
+             case IDCMP_MOUSEMOVE:
+-                /* WA_GimmeZeroZero: coordinates are relative to inner area */
+-                SDL_SendMouseMotion(sdlwin, 0, 0, (int)mousex, (int)mousey);
++                if (SDL_GetMouse()->relative_mode) {
++                    /* IDCMP_DELTAMOVE (relative mode): the move itself */
++                    if (mousex || mousey) {
++                        SDL_SendMouseMotion(sdlwin, 0, 1, (int)mousex, (int)mousey);
++                    }
++                } else {
++                    /* WA_GimmeZeroZero: coordinates are relative to inner area */
++                    SDL_SendMouseMotion(sdlwin, 0, 0, (int)mousex, (int)mousey);
++                }
+                 break;
+ 
+             case IDCMP_CLOSEWINDOW:
+@@ -274,11 +290,16 @@
+                 break;
+ 
+             case IDCMP_ACTIVEWINDOW:
+-                SDL_SendWindowEvent(sdlwin, SDL_WINDOWEVENT_FOCUS_GAINED, 0, 0);
++                /* SDL's focus, not only the event: with windows open and no
++                 * keyboard focus, SDL drops every joystick event. */
++                SDL_SetKeyboardFocus(sdlwin);
++                SDL_SetMouseFocus(sdlwin);
+                 break;
+ 
+             case IDCMP_INACTIVEWINDOW:
+-                SDL_SendWindowEvent(sdlwin, SDL_WINDOWEVENT_FOCUS_LOST, 0, 0);
++                if (SDL_GetKeyboardFocus() == sdlwin) {
++                    SDL_SetKeyboardFocus(NULL);
++                }
+                 break;
+ 
+             default:
+diff -ruN a/src/video/amigaos3/SDL_os3framebuffer.c b/src/video/amigaos3/SDL_os3framebuffer.c
+--- a/src/video/amigaos3/SDL_os3framebuffer.c	2026-10-08 05:33:48.490333619 +0100
++++ b/src/video/amigaos3/SDL_os3framebuffer.c	2026-10-08 05:33:48.492463133 +0100
+@@ -138,6 +138,100 @@
+ /* Bytes per pixel for ARGB8888 */
+ #define OS3_BPP 4
+ 
++#if SDL_VIDEO_RENDER_OPENGPU
++#include "SDL_os3gpu.h"
++#include <proto/layers.h>
++#include <graphics/clip.h>
++
++/* Open (2026): a window is shown by OpenGPU, which copies the frame into
++   video RAM (on the Cradle, the PC does it), through each visible part of
++   the window's layer. A window with a covered part, a screen OpenGPU has no
++   format for, or no opengpu.library: WritePixelArray, as before. */
++#define OS3_GPU_KEY "OS3_GPU"
++#define OS3_GPU_WORDS 2048
++
++typedef struct OS3_GPUPresent {
++    SDL_bool usable;
++    Uint32 stream[OS3_GPU_WORDS];
++} OS3_GPUPresent;
++
++static int OS3_GPU_Present(SDL_Window *window, OS3_WindowData *data, SDL_Surface *surface,
++                           const SDL_Rect *rects, int numrects)
++{
++    OS3_GPUPresent *gp = (OS3_GPUPresent *)SDL_GetWindowData(window, OS3_GPU_KEY);
++    struct Window *win = data->window;
++    struct Layer *layer = win->RPort->Layer;
++    struct BitMap *bm = win->RPort->BitMap;
++    struct ClipRect *cr;
++    struct OGPUBatch b;
++    ULONG base = 0, bpr = 0, pixfmt = 0, bw, bh, iscgx, fence = 0;
++    APTR lock;
++    int fmt, i, ok = 0;
++
++    if (!gp) {
++        gp = (OS3_GPUPresent *)SDL_calloc(1, sizeof(*gp));
++        if (!gp) {
++            return 0;
++        }
++        gp->usable = SDL_OS3_GPU_Open();
++        SDL_SetWindowData(window, OS3_GPU_KEY, gp);
++    }
++    if (!gp->usable || !layer) {
++        return 0;
++    }
++    /* Each value asked on its own: bebbo gcc's inlines must not nest. */
++    iscgx = GetCyberMapAttr(bm, CYBRMATTR_ISCYBERGFX);
++    if (!iscgx) {
++        return 0;
++    }
++    bw = GetCyberMapAttr(bm, CYBRMATTR_WIDTH);
++    bh = GetCyberMapAttr(bm, CYBRMATTR_HEIGHT);
++
++    LockLayer(0, layer);
++    for (cr = layer->ClipRect; cr; cr = cr->Next) {
++        if (cr->obscured) {
++            UnlockLayer(layer);
++            return 0;
++        }
++    }
++    lock = LockBitMapTags(bm, LBMI_BASEADDRESS, (ULONG)&base, LBMI_BYTESPERROW, (ULONG)&bpr,
++                          LBMI_PIXFMT, (ULONG)&pixfmt, TAG_DONE);
++    fmt = SDL_OS3_GPU_FormatOfPixfmt(pixfmt);
++    if (lock && base && fmt) {
++        ogpu_batch_init(&b, gp->stream, OS3_GPU_WORDS);
++        ogpu_surface(&b, 0, base, bpr, (int)bw, (int)bh, fmt);
++        ogpu_target(&b, 0);
++        ogpu_surface(&b, 1, (unsigned long)surface->pixels, (unsigned long)surface->pitch,
++                     surface->w, surface->h, OGPU_FMT_ARGB32);
++        for (cr = layer->ClipRect; cr; cr = cr->Next) {
++            ogpu_clip(&b, cr->bounds.MinX, cr->bounds.MinY,
++                      cr->bounds.MaxX - cr->bounds.MinX + 1, cr->bounds.MaxY - cr->bounds.MinY + 1);
++            for (i = 0; i < numrects; i++) {
++                const SDL_Rect *r = &rects[i];
++                int dx = layer->bounds.MinX + r->x, dy = layer->bounds.MinY + r->y;
++                if (r->w <= 0 || r->h <= 0) {
++                    continue;
++                }
++                if (fmt == OGPU_FMT_ARGB32) {
++                    ogpu_copy(&b, 1, r->x, r->y, dx, dy, r->w, r->h);
++                } else {
++                    ogpu_composite(&b, 1, r->x, r->y, r->w, r->h, dx, dy, r->w, r->h, 255, 0);
++                }
++            }
++        }
++        if (!b.overflow && OGPU_Submit(gp->stream, (ULONG)b.words, &fence) == OGPU_OK) {
++            OGPU_Wait(fence); /* done before the bitmap and layer are let go */
++            ok = 1;
++        }
++    }
++    if (lock) {
++        UnLockBitMap(lock);
++    }
++    UnlockLayer(layer);
++    return ok;
++}
++#endif /* SDL_VIDEO_RENDER_OPENGPU */
++
+ /* Forward declaration (defined later in this file) */
+ void OS3_DestroyWindowFramebuffer(_THIS, SDL_Window *window);
+ 
+@@ -175,6 +269,21 @@
+ #endif
+ }
+ 
++/* The window's drawing area: a GimmeZeroZero window (SDL's windows on the
++ * Workbench) draws inside its borders, so Width and Height, which take the
++ * borders in, made every Workbench window look larger than its surface and
++ * sent it down the scaling path (6 Oct 2026). */
++static void OS3_InnerSize(const struct Window *iwin, int *w, int *h)
++{
++    if (iwin->Flags & WFLG_GIMMEZEROZERO) {
++        *w = iwin->GZZWidth;
++        *h = iwin->GZZHeight;
++    } else {
++        *w = iwin->Width;
++        *h = iwin->Height;
++    }
++}
++
+ int OS3_CreateWindowFramebuffer(_THIS, SDL_Window *window,
+                                 Uint32 *format, void **pixels,
+                                 int *pitch)
+@@ -218,12 +327,17 @@
+     /* Pre-allocate scaling resources if window > surface */
+     {
+         OS3_WindowData *data = (OS3_WindowData *)window->driverdata;
+-        int win_w = data->window->Width;
+-        int win_h = data->window->Height;
++        int win_w, win_h;
++        OS3_InnerSize(data->window, &win_w, &win_h);
+         if (win_w > w || win_h > h) {
+             struct BitMap *friend_bm = data->window->RPort->BitMap;
+-            struct BitMap *scale_bm = AllocBitMap(w, h,
+-                GetCyberMapAttr(friend_bm, CYBRMATTR_DEPTH),
++            /* Asked first, not as AllocBitMap's argument: bebbo gcc's inline
++             * loads a6 with GfxBase before it works out the arguments, so a
++             * nested cybergraphics call left a6 on CyberGfxBase and
++             * AllocBitMap (-918) went through cybergraphics.library's table
++             * (a Line-F software failure on OpenRTG, 6 Oct 2026). */
++            ULONG depth = GetCyberMapAttr(friend_bm, CYBRMATTR_DEPTH);
++            struct BitMap *scale_bm = AllocBitMap(w, h, depth,
+                 BMF_MINPLANES, friend_bm);
+ 
+             if (scale_bm) {
+@@ -313,9 +427,10 @@
+ 
+     /* --- RTG path --- */
+     {
+-        int win_w = data->window->Width;
+-        int win_h = data->window->Height;
+-        int need_scale = (win_w > surface->w || win_h > surface->h);
++        int win_w, win_h;
++        int need_scale;
++        OS3_InnerSize(data->window, &win_w, &win_h);
++        need_scale = (win_w > surface->w || win_h > surface->h);
+ 
+ #ifdef SDL_OS3_PROFILE
+         /* PRE-SPLIT: increment call_count AND dump regardless of which branch
+@@ -401,7 +516,21 @@
+             ULONG _t0, _t1;
+ #endif
+ 
+-            if (GetCyberMapAttr(win_bm, CYBRMATTR_ISCYBERGFX)) {
++#if SDL_VIDEO_RENDER_OPENGPU
++            if (OS3_GPU_Present(window, data, surface, rects, numrects)) {
++                static int gpu_logged = 0;
++                if (!gpu_logged) {
++                    SDL_Log("OS3_FB: OpenGPU present (into video RAM, through the window's layer)");
++                    gpu_logged = 1;
++                }
++                return 0;
++            }
++#endif
++            /* Straight into VRAM only on a screen of our own: a window on the
++             * Workbench shares the screen's bitmap, and writing from its
++             * origin painted over the Workbench instead of the window. There
++             * WritePixelArray goes through the window's layer. */
++            if (data->screen && GetCyberMapAttr(win_bm, CYBRMATTR_ISCYBERGFX)) {
+                 ULONG bm_base = 0, bm_pitch = 0;
+                 ULONG bm_pixfmt = 0, bm_bppix = 0;
+                 APTR lock;
+@@ -564,4 +693,15 @@
+     if (scale_bm) {
+         FreeBitMap(scale_bm);
+     }
++#if SDL_VIDEO_RENDER_OPENGPU
++    {
++        OS3_GPUPresent *gp = (OS3_GPUPresent *)SDL_SetWindowData(window, OS3_GPU_KEY, NULL);
++        if (gp) {
++            if (gp->usable) {
++                SDL_OS3_GPU_Close();
++            }
++            SDL_free(gp);
++        }
++    }
++#endif
+ }
+diff -ruN a/src/video/amigaos3/SDL_os3mouse.c b/src/video/amigaos3/SDL_os3mouse.c
+--- a/src/video/amigaos3/SDL_os3mouse.c	2026-10-08 05:33:48.511748882 +0100
++++ b/src/video/amigaos3/SDL_os3mouse.c	2026-10-08 05:33:48.513752119 +0100
+@@ -436,6 +436,28 @@
+     (void)y;
+ }
+ 
++/* Relative mouse mode (Open): Intuition reports each move as a delta
++   (IDCMP_DELTAMOVE) instead of a position, so a game turning with the
++   mouse never stops at the screen's edge. SDL hides the pointer. */
++static int OS3_SetRelativeMouseMode(SDL_bool enabled)
++{
++    SDL_VideoDevice *video = SDL_GetVideoDevice();
++    SDL_Window *sdlwin;
++
++    if (!video) {
++        return SDL_SetError("No video");
++    }
++    for (sdlwin = video->windows; sdlwin; sdlwin = sdlwin->next) {
++        OS3_WindowData *data = (OS3_WindowData *)sdlwin->driverdata;
++        if (data && data->window) {
++            ULONG idcmp = data->window->IDCMPFlags | IDCMP_MOUSEMOVE;
++            idcmp = enabled ? (idcmp | IDCMP_DELTAMOVE) : (idcmp & ~IDCMP_DELTAMOVE);
++            ModifyIDCMP(data->window, idcmp);
++        }
++    }
++    return 0;
++}
++
+ /* ------------------------------------------------------------------ */
+ /* Init / Quit                                                        */
+ /* ------------------------------------------------------------------ */
+@@ -449,6 +471,7 @@
+     mouse->ShowCursor         = OS3_ShowCursor;
+     mouse->FreeCursor         = OS3_FreeCursor;
+     mouse->WarpMouse          = OS3_WarpMouse;
++    mouse->SetRelativeMouseMode = OS3_SetRelativeMouseMode;
+ 
+     SDL_SetDefaultCursor(OS3_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW));
+ }
+@@ -464,6 +487,7 @@
+     mouse->ShowCursor         = NULL;
+     mouse->FreeCursor         = NULL;
+     mouse->WarpMouse          = NULL;
++    mouse->SetRelativeMouseMode = NULL;
+ 
+     /* Note: the static empty_sprite in OS3_ShowCursor is intentionally
+        NOT freed here. It is a tiny 12-byte CHIP RAM allocation that
+diff -ruN a/src/video/amigaos3/SDL_os3video.c b/src/video/amigaos3/SDL_os3video.c
+--- a/src/video/amigaos3/SDL_os3video.c	2026-10-08 05:33:48.529783812 +0100
++++ b/src/video/amigaos3/SDL_os3video.c	2026-10-08 05:33:48.533961611 +0100
+@@ -25,6 +25,7 @@
+ #include "SDL_os3framebuffer.h"
+ #include "SDL_os3events.h"
+ #include "SDL_os3mouse.h"
++#include "SDL_os3clipboard.h"
+ #include "../SDL_sysvideo.h"
+ #include "../../events/SDL_events_c.h"
+ 
+@@ -107,6 +108,11 @@
+     /* Events */
+     device->PumpEvents = OS3_PumpEvents;
+ 
++    /* Clipboard (Open): clipboard.device unit 0 */
++    device->SetClipboardText = OS3_SetClipboardText;
++    device->GetClipboardText = OS3_GetClipboardText;
++    device->HasClipboardText = OS3_HasClipboardText;
++
+     return device;
+ }
+ 
+@@ -148,15 +154,13 @@
+         return SDL_SetError("Cannot open intuition.library V39+");
+     }
+ 
+-    /* Try CyberGraphX name first (native CGX or P96 with monitor driver).
+-       Fall back to Picasso96API.library (P96 without monitor driver,
+-       common on FS-UAE where uaegfx provides the card but the P96
+-       monitor driver is not installed). Both provide the same API. */
++    /* cybergraphics.library only: CyberGraphX, Picasso96's emulation of it,
++       or OpenRTG's. Picasso96API.library is not a stand-in: its jump table
++       is a different one, so IsCyberModeID (-54) and the rest called
++       unrelated Picasso96 functions, and SDL_Init(VIDEO) hung on a machine
++       with Picasso96 installed and no board active (6 Oct 2026). Without
++       cybergraphics.library, or with it and no RTG modes, SDL uses AGA. */
+     CyberGfxBase = OpenLibrary((CONST_STRPTR)CYBERGFXNAME, 40UL);
+-    if (!CyberGfxBase) {
+-        CyberGfxBase = OpenLibrary(
+-            (CONST_STRPTR)"Picasso96API.library", 0UL);
+-    }
+ 
+     /* Restore requesters now that library opens are done */
+     me->pr_WindowPtr = oldwin;
+@@ -402,6 +406,21 @@
+         SA_AutoScroll, FALSE,
+         TAG_DONE
+     );
++    if (!screen && depth == 32) {
++        /* As OS3_OpenScreen: 32-bit board modes report a MaxDepth of 24. */
++        screen = OpenScreenTags(NULL,
++            SA_Title,      (ULONG)"SDL",
++            SA_Quiet,      TRUE,
++            SA_ShowTitle,  FALSE,
++            SA_Depth,      24UL,
++            SA_DisplayID,  modeid,
++            SA_Type,       CUSTOMSCREEN,
++            SA_Exclusive,  TRUE,
++            SA_Draggable,  FALSE,
++            SA_AutoScroll, FALSE,
++            TAG_DONE
++        );
++    }
+     if (!screen) {
+         return SDL_SetError("OS3_SetDisplayMode: OpenScreenTags failed");
+     }
+diff -ruN a/src/video/amigaos3/SDL_os3window.c b/src/video/amigaos3/SDL_os3window.c
+--- a/src/video/amigaos3/SDL_os3window.c	2026-10-08 05:33:48.550624895 +0100
++++ b/src/video/amigaos3/SDL_os3window.c	2026-10-08 05:33:48.553911148 +0100
+@@ -25,6 +25,8 @@
+ #include "SDL_os3window.h"
+ #include "SDL_os3framebuffer.h"
+ #include "../../events/SDL_windowevents_c.h"
++#include "../../events/SDL_keyboard_c.h"
++#include "../../events/SDL_mouse_c.h"
+ 
+ /*
+  * Find an RTG mode >= requested size and depth by manually walking
+@@ -151,6 +153,23 @@
+         SA_AutoScroll, FALSE,
+         TAG_DONE
+     );
++    if (!screen && depth == 32) {
++        /* A 32-bit board mode reports a MaxDepth of 24 (OpenRTG, 6 Oct 2026),
++         * and not every RTG system lets SA_Depth 32 past that. */
++        depth = 24;
++        screen = OpenScreenTags(NULL,
++            SA_Title,      (ULONG)"SDL",
++            SA_Quiet,      TRUE,
++            SA_ShowTitle,  FALSE,
++            SA_Depth,      (ULONG)depth,
++            SA_DisplayID,  modeid,
++            SA_Type,       CUSTOMSCREEN,
++            SA_Exclusive,  TRUE,
++            SA_Draggable,  FALSE,
++            SA_AutoScroll, FALSE,
++            TAG_DONE
++        );
++    }
+     if (!screen) {
+         return SDL_SetError("OS3: OpenScreenTags failed for %dx%dx%d",
+                             w, h, depth);
+@@ -359,6 +378,12 @@
+     }
+ 
+     window->driverdata = data;
++
++    /* Intuition activates the new window without an IDCMP_ACTIVEWINDOW
++     * we can count on, so SDL is told here: without keyboard focus it drops
++     * joystick events while a window is open. */
++    SDL_SetMouseFocus(window);
++    SDL_SetKeyboardFocus(window);
+     return 0;
+ }
+ 
