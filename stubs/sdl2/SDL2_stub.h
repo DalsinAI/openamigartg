@@ -61,6 +61,14 @@ extern void SDL2Stub_Init(void);
 /* The program's GL for the module (SDL2_gl.c sets it before main runs). */
 extern const struct SDL2GLBridge *SDL2Stub_gl;
 
+/* Called before SDL2.module closes, newest first: the satellite stubs
+   (sat_stub.h) close their modules here while SDL is still open. */
+struct SDL2StubCloseHook {
+    struct SDL2StubCloseHook *next;
+    void (*close)(void);
+};
+extern void SDL2Stub_AtClose(struct SDL2StubCloseHook *hook);
+
 /* Every call into the module: its A4 for the call, the program's after. */
 #define SDL2STUB_A4() OGPU_A4(SDL2Stub_a4)
 #define SDL2STUB_INIT() do { if (!SDL2Stub_ready) SDL2Stub_Init(); } while (0)
