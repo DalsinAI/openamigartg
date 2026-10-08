@@ -1,0 +1,67 @@
+diff --git a/src/gallium/drivers/virgl/virgl_encode.c b/src/gallium/drivers/virgl/virgl_encode.c
+index 117ee96..1e3e2f2 100644
+--- a/src/gallium/drivers/virgl/virgl_encode.c
++++ b/src/gallium/drivers/virgl/virgl_encode.c
+@@ -1234,8 +1234,18 @@ int virgl_encoder_write_constant_buffer(struct virgl_context *ctx,
+    virgl_encoder_write_cmd_dword(ctx, VIRGL_CMD0(VIRGL_CCMD_SET_CONSTANT_BUFFER, 0, size + 2));
+    virgl_encoder_write_dword(ctx->cbuf, virgl_shader_stage_convert(shader));
+    virgl_encoder_write_dword(ctx->cbuf, index);
+-   if (data)
++   if (data) {
++#if UTIL_ARCH_BIG_ENDIAN
++      /* words (floats and ints), each turned little-endian */
++      for (uint32_t i = 0; i < size; i++) {
++         uint32_t w;
++         memcpy(&w, (const uint8_t *)data + i * 4, 4);
++         virgl_encoder_write_dword(ctx->cbuf, w);
++      }
++#else
+       virgl_encoder_write_block(ctx->cbuf, data, size * 4);
++#endif
++   }
+    return 0;
+ }
+ 
+diff --git a/src/gallium/drivers/virgl/virgl_encode.h b/src/gallium/drivers/virgl/virgl_encode.h
+index 627ba44..a17ab37 100644
+--- a/src/gallium/drivers/virgl/virgl_encode.h
++++ b/src/gallium/drivers/virgl/virgl_encode.h
+@@ -28,6 +28,8 @@
+ 
+ #include "virgl_winsys.h"
+ #include "virtio-gpu/virgl_protocol.h"
++#include "util/u_math.h"
++#include "util/u_endian.h"
+ 
+ struct tgsi_token;
+ 
+@@ -47,17 +49,29 @@ struct virgl_indexbuf {
+    const void *user_buffer;  /**< pointer to a user buffer if buffer == NULL */
+ };
+ 
++/* The command stream is little-endian words, as virglrenderer reads it, on
++ * every CPU: a big-endian one (the 68k on AmigaOS) turns each word round
++ * here. Blocks of bytes (shader text, strings) go as they are. */
+ static inline void virgl_encoder_write_dword(struct virgl_cmd_buf *state,
+                                             uint32_t dword)
+ {
++#if UTIL_ARCH_BIG_ENDIAN
++   state->buf[state->cdw++] = util_bswap32(dword);
++#else
+    state->buf[state->cdw++] = dword;
++#endif
+ }
+ 
+ static inline void virgl_encoder_write_qword(struct virgl_cmd_buf *state,
+                                             uint64_t qword)
+ {
++#if UTIL_ARCH_BIG_ENDIAN
++   virgl_encoder_write_dword(state, (uint32_t)qword);
++   virgl_encoder_write_dword(state, (uint32_t)(qword >> 32));
++#else
+    memcpy(state->buf + state->cdw, &qword, sizeof(uint64_t));
+    state->cdw += 2;
++#endif
+ }
+ 
+ static inline void virgl_encoder_write_block(struct virgl_cmd_buf *state,

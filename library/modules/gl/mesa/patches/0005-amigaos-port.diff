@@ -1,0 +1,213 @@
+AmigaOS (libnix) port: POSIX-lite OS detection, usleep, no open_memstream or
+thread CPU clocks, 8-byte alignment for TGSI, a pthread mutex for ASTC.
+
+--- a/src/gallium/auxiliary/tgsi/tgsi_exec.c
++++ b/src/gallium/auxiliary/tgsi/tgsi_exec.c
+@@ -73,12 +73,12 @@
+ #define TILE_BOTTOM_LEFT  2
+ #define TILE_BOTTOM_RIGHT 3
+ 
+-static_assert(alignof(union tgsi_exec_channel) == 16, "");
+-static_assert(alignof(struct tgsi_exec_vector) == 16, "");
+-static_assert(alignof(struct tgsi_exec_machine) == 16, "");
++static_assert(alignof(union tgsi_exec_channel) == TGSI_ALIGN_BYTES, "");
++static_assert(alignof(struct tgsi_exec_vector) == TGSI_ALIGN_BYTES, "");
++static_assert(alignof(struct tgsi_exec_machine) == TGSI_ALIGN_BYTES, "");
+ 
+ union tgsi_double_channel {
+-   alignas(16)
++   TGSI_ALIGN16
+    double d[TGSI_QUAD_SIZE];
+    unsigned u[TGSI_QUAD_SIZE][2];
+    uint64_t u64[TGSI_QUAD_SIZE];
+@@ -86,13 +86,13 @@
+ };
+ 
+ struct tgsi_double_vector {
+-   alignas(16)
++   TGSI_ALIGN16
+    union tgsi_double_channel xy;
+    union tgsi_double_channel zw;
+ };
+ 
+-static_assert(alignof(union tgsi_double_channel) == 16, "");
+-static_assert(alignof(struct tgsi_double_vector) == 16, "");
++static_assert(alignof(union tgsi_double_channel) == TGSI_ALIGN_BYTES, "");
++static_assert(alignof(struct tgsi_double_vector) == TGSI_ALIGN_BYTES, "");
+ 
+ static void
+ micro_abs(union tgsi_exec_channel *dst,
+--- a/src/gallium/auxiliary/tgsi/tgsi_exec.h
++++ b/src/gallium/auxiliary/tgsi/tgsi_exec.h
+@@ -33,6 +33,14 @@
+ #include "pipe/p_state.h"
+ #include "pipe/p_shader_tokens.h"
+ 
++/* AmigaOS objects align to at most 8 bytes, and the 68k has no SIMD. */
++#if defined(__amigaos__)
++#define TGSI_ALIGN_BYTES 8
++#else
++#define TGSI_ALIGN_BYTES 16
++#endif
++#define TGSI_ALIGN16 alignas(TGSI_ALIGN_BYTES)
++
+ #if defined __cplusplus
+ extern "C" {
+ #endif
+@@ -73,7 +81,7 @@
+   */
+ union tgsi_exec_channel
+ {
+-   alignas(16)
++   TGSI_ALIGN16
+    float    f[TGSI_QUAD_SIZE];
+    int32_t  i[TGSI_QUAD_SIZE];
+    uint32_t u[TGSI_QUAD_SIZE];
+@@ -84,7 +92,7 @@
+   */
+ struct tgsi_exec_vector
+ {
+-   alignas(16) union tgsi_exec_channel xyzw[TGSI_NUM_CHANNELS];
++   TGSI_ALIGN16 union tgsi_exec_channel xyzw[TGSI_NUM_CHANNELS];
+ };
+ 
+ /**
+@@ -296,7 +304,7 @@
+ {
+    /* Total = program temporaries + internal temporaries
+     */
+-   alignas(16)
++   TGSI_ALIGN16
+    struct tgsi_exec_vector       Temps[TGSI_EXEC_NUM_TEMPS];
+ 
+    unsigned                       ImmsReserved;
+--- a/src/util/detect_os.h
++++ b/src/util/detect_os.h
+@@ -86,6 +86,12 @@
+ #define DETECT_OS_POSIX 1
+ #endif
+ 
++#if defined(__amigaos__)
++/* AmigaOS with libnix: time, sleep and sched calls, not a full POSIX. */
++#define DETECT_OS_AMIGAOS 1
++#define DETECT_OS_POSIX_LITE 1
++#endif
++
+ #if defined(__managarm__)
+ #define DETECT_OS_MANAGARM 1
+ #define DETECT_OS_POSIX 1
+--- a/src/util/log.c
++++ b/src/util/log.c
+@@ -36,6 +36,10 @@
+ #include "util/u_process.h"
+ #endif
+ 
++#if DETECT_OS_AMIGAOS
++#include "util/u_process.h"
++#endif
++
+ #if DETECT_OS_ANDROID
+ #include <android/log.h>
+ #endif
+--- a/src/util/memstream.c
++++ b/src/util/memstream.c
+@@ -63,6 +63,11 @@
+    }
+ 
+    return success;
++#elif defined(__amigaos__)
++   /* libnix has no open_memstream; callers treat this as out of memory. */
++   (void)bufp, (void)sizep;
++   mem->f = NULL;
++   return false;
+ #else
+    FILE *const f = open_memstream(bufp, sizep);
+    mem->f = f;
+--- a/src/util/os_misc.c
++++ b/src/util/os_misc.c
+@@ -81,6 +81,8 @@
+ #elif DETECT_OS_FUCHSIA
+ #include <unistd.h>
+ #include <zircon/syscalls.h>
++#elif DETECT_OS_AMIGAOS
++#  include <unistd.h>
+ #else
+ #error unexpected platform in os_sysinfo.c
+ #endif
+--- a/src/util/os_time.c
++++ b/src/util/os_time.c
+@@ -86,7 +86,7 @@
+    time.tv_nsec = (usecs % 1000000) * 1000;
+    while (clock_nanosleep(CLOCK_MONOTONIC, 0, &time, &time) == EINTR);
+ 
+-#elif DETECT_OS_POSIX
++#elif DETECT_OS_POSIX || DETECT_OS_AMIGAOS
+    usleep(usecs);
+ 
+ #elif DETECT_OS_WINDOWS
+--- a/src/util/texcompress_astc_luts.cpp
++++ b/src/util/texcompress_astc_luts.cpp
+@@ -23,7 +23,6 @@
+ #include <assert.h>
+ #include <cstdint>
+ #include <cstring>
+-#include <mutex>
+ #include <unordered_map>
+ #include <vector>
+ 
+@@ -349,7 +348,7 @@
+ 
+ ASTCLutHolder::PartitionTable &ASTCLutHolder::get_partition_table(unsigned width, unsigned height)
+ {
+-	std::lock_guard<std::mutex> holder{table_lock};
++	astc_lock_guard holder{table_lock};
+ 	auto itr = tables.find(width * 16 + height);
+ 	if (itr != tables.end())
+ 	{
+--- a/src/util/texcompress_astc_luts.h
++++ b/src/util/texcompress_astc_luts.h
+@@ -22,7 +22,24 @@
+ 
+ #pragma once
+ 
++#if defined(__amigaos__)
++/* AmigaOS: libstdc++ has no gthreads, so no std::mutex; the stove's pthreads. */
++#include <pthread.h>
++struct astc_mutex {
++   pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
++   void lock() { pthread_mutex_lock(&m); }
++   void unlock() { pthread_mutex_unlock(&m); }
++};
++struct astc_lock_guard {
++   astc_mutex &mu;
++   explicit astc_lock_guard(astc_mutex &m) : mu(m) { mu.lock(); }
++   ~astc_lock_guard() { mu.unlock(); }
++};
++#else
+ #include <mutex>
++typedef std::mutex astc_mutex;
++typedef std::lock_guard<std::mutex> astc_lock_guard;
++#endif
+ #include <unordered_map>
+ #include <vector>
+ 
+@@ -117,7 +134,7 @@
+                 unsigned lut_height = 0;
+         };
+ 
+-        std::mutex table_lock;
++        astc_mutex table_lock;
+         std::unordered_map<unsigned, PartitionTable> tables;
+ 
+         PartitionTable &get_partition_table(unsigned width, unsigned height);
+--- a/src/util/u_thread.c
++++ b/src/util/u_thread.c
+@@ -176,7 +176,7 @@
+ int64_t
+ util_thread_get_time_nano(thrd_t thread)
+ {
+-#if defined(HAVE_PTHREAD) && !defined(__APPLE__) && !defined(__HAIKU__) && !defined(__managarm__)
++#if defined(HAVE_PTHREAD) && !defined(__APPLE__) && !defined(__HAIKU__) && !defined(__managarm__) && !defined(__amigaos__)
+    struct timespec ts;
+    clockid_t cid;
+ 
