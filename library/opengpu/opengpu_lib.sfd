@@ -1,4 +1,4 @@
-==id $Id: opengpu_lib.sfd 0.1 (6.10.2026) $
+==id $Id: opengpu_lib.sfd 0.3 (8.10.2026) $
 * "opengpu.library"
 ==base _OpenGPUBase
 ==basetype struct Library *
