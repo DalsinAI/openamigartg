@@ -1,0 +1,39 @@
+OpenInput: SDL's platform is "AmigaOS 3", so mapping files with platform:AmigaOS 3 lines load; and the joystick driver can ask whether a program or the user gave SDL its own mapping for a GUID (src/joystick/amigaos3).
+
+--- a/src/SDL.c
++++ b/src/SDL.c
+@@ -642,6 +642,8 @@
+     return "Nokia N-Gage";
+ #elif defined(__3DS__)
+     return "Nintendo 3DS";
++#elif defined(__AMIGA__) && !defined(__amigaos4__) && !defined(__MORPHOS__) && !defined(__AROS__)
++    return "AmigaOS 3";
+ #else
+     return "Unknown (see SDL_platform.h)";
+ #endif
+--- a/src/joystick/SDL_gamecontroller.c
++++ b/src/joystick/SDL_gamecontroller.c
+@@ -1797,6 +1797,23 @@
+ }
+ 
+ /*
++ * AmigaOS 3.x (src/joystick/amigaos3, OpenInput): whether the program or
++ * the user gave SDL a mapping of its own for this GUID (an API or user
++ * priority line), rather than one SDL made from the driver.
++ */
++SDL_bool SDL_PrivateGameControllerHasOwnMapping(SDL_JoystickGUID guid)
++{
++    ControllerMapping_t *mapping;
++    SDL_bool retval;
++
++    SDL_LockJoysticks();
++    mapping = SDL_PrivateGetControllerMappingForGUID(guid, SDL_FALSE);
++    retval = (mapping && mapping->priority > SDL_CONTROLLER_MAPPING_PRIORITY_DEFAULT) ? SDL_TRUE : SDL_FALSE;
++    SDL_UnlockJoysticks();
++    return retval;
++}
++
++/*
+  * Get the mapping string for this GUID
+  */
+ char *SDL_GameControllerMappingForGUID(SDL_JoystickGUID guid)
