@@ -1,0 +1,85 @@
+--- a/src/IMG.c
++++ b/src/IMG.c
+@@ -23,6 +23,12 @@
+ 
+ #include "SDL_image.h"
+ 
++#ifdef OGPU_IMAGE_LADDER
++/* Altered for OpenGPU by Dalsin Limited, 2026: the decoding ladder
++   (ogpu_image.h). */
++#include "ogpu_image.h"
++#endif
++
+ #ifdef __EMSCRIPTEN__
+ #include <emscripten/emscripten.h>
+ #endif
+@@ -148,7 +154,12 @@
+     }
+     initialized |= result;
+ 
++#ifdef OGPU_IMAGE_LADDER
++    /* What the x86 or ARM64 cores decode counts too. */
++    return initialized | ogpu_image_init_flags(flags & ~initialized);
++#else
+     return initialized;
++#endif
+ }
+ 
+ void IMG_Quit()
+@@ -172,6 +183,9 @@
+         IMG_QuitWEBP();
+     }
+     initialized = 0;
++#ifdef OGPU_IMAGE_LADDER
++    ogpu_image_close();
++#endif
+ }
+ 
+ #if !defined(__APPLE__) || defined(SDL_IMAGE_USE_COMMON_BACKEND)
+@@ -203,7 +217,17 @@
+         /* The error message has been set in SDL_RWFromFile */
+         return NULL;
+     }
++#ifdef OGPU_IMAGE_LADDER
++    {
++        SDL_Surface *image = IMG_LoadTyped_RW(src, 1, ext);
++        if (!image) {
++            image = ogpu_image_load_datatype(file);
++        }
++        return image;
++    }
++#else
+     return IMG_LoadTyped_RW(src, 1, ext);
++#endif
+ }
+ #endif
+ 
+@@ -273,6 +297,14 @@
+     }
+ #endif
+ 
++#ifdef OGPU_IMAGE_LADDER
++    if ((image = ogpu_image_load(src, type, 0)) != NULL) {
++        if (freesrc)
++            SDL_RWclose(src);
++        return image;
++    }
++#endif
++
+     /* Detect the type of image being loaded */
+     for ( i=0; i < SDL_arraysize(supported); ++i ) {
+         if (supported[i].is) {
+@@ -293,6 +325,13 @@
+         return image;
+     }
+ 
++#ifdef OGPU_IMAGE_LADDER
++    if ((image = ogpu_image_load(src, type, 1)) != NULL) {
++        if (freesrc)
++            SDL_RWclose(src);
++        return image;
++    }
++#endif
+     if ( freesrc ) {
+         SDL_RWclose(src);
+     }

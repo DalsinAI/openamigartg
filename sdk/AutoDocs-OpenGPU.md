@@ -24,7 +24,9 @@ time:
 | The program uses | It links | It needs at run time |
 | --- | --- | --- |
 | SDL 2 | `-lSDL2` (and `-lGL` when it calls `SDL_GL_`) | opengpu.library, SDL2.module (and GL.module) |
-| SDL_image, SDL_mixer, SDL_ttf, SDL_net | `-lSDL2_image` and the others, before `-lSDL2` | as SDL 2 (SDL_net: bsdsocket.library) |
+| SDL_image, SDL_mixer | `-lSDL2_image`, `-lSDL2_mixer`, before `-lSDL2` | as SDL 2, and SDL2_image.module, SDL2_mixer.module |
+| SDL_ttf, SDL_net | `-lSDL2_ttf`, `-lSDL2_net`, before `-lSDL2` | as SDL 2 (SDL_net: bsdsocket.library) |
+| All of SDL in the program | `-lSDL2_image_static -lSDL2_mixer_static -lSDL2_static` | nothing of OpenGPU's |
 | SDL 1.2 (a kit built with it) | `-lSDL` (`sdl-config --libs`; with `--gl`, `-lSDL_gl` and `-lGL` too) | as SDL 2 |
 | OpenGL, GLES, GLA | `-lGL` | opengpu.library, GL.module |
 | TinyGL | `-ltinygl -lGL` (`pkg-config tinygl`) | opengpu.library, GL.module, tinygl.library |
@@ -138,6 +140,29 @@ SVG, TGA, XCF, XPM, XV), SDL_mixer 2.8.2 (WAV, AIFF, VOC, Ogg Vorbis, MP3,
 FLAC, MIDI with Timidity, and MOD, XM, S3M, IT, MED with libxmp), SDL_ttf
 2.24.0 (FreeType built in, no HarfBuzz) and SDL_net 2.4.0 (over
 bsdsocket.library; link `-lsocket`, which its `.pc` file gives).
+
+### SDL_image and SDL_mixer: modules, and the cores
+
+SDL_image and SDL_mixer are modules like SDL 2: `LIBS:OpenGPU/SDL2_image.module`
+and `SDL2_mixer.module`, loaded once and kept resident, each program with
+its own copy of their data. `-lSDL2_image` and `-lSDL2_mixer` are their
+stubs, and they call SDL through the program's own `libSDL2.a`, so link
+`-lSDL2` after them. The headers and the API are upstream's.
+
+They decode on the x86 or ARM64 cores where they can, through
+`media.decode/1` on the services card or a paired Cradle:
+
+- `IMG_Load` and the rest: JPEG, PNG (not paletted ones), WebP, AVIF, HEIC,
+  JPEG XL and TIFF go to the cores, and come back as 32-bit surfaces
+  (`SDL_PIXELFORMAT_ARGB8888` with alpha, `SDL_PIXELFORMAT_RGB888`
+  without). The other formats, and all of them when there is no service,
+  are SDL_image's own on the CPU; then the service for a format SDL_image
+  doesn't know; then the Amiga's datatypes (`IMG_Load` with a file name).
+  `SDL_IMAGE_DECODER` (a hint, or SetEnv) `cpu` keeps to SDL_image's own.
+- `Mix_LoadMUS` and `Mix_LoadWAV`: Ogg Vorbis, MP3, FLAC and tracker modules
+  are decoded by the cores, a piece ahead of what plays; without the
+  service, by SDL_mixer's own decoders. The sound goes to SDL's audio device
+  (AHI, else Paula). `SDL_MIXER_DECODER` `cpu` keeps to SDL_mixer's own.
 
 ### SDL_GL on GL.module
 

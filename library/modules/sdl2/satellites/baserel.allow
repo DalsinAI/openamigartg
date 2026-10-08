@@ -1,0 +1,8 @@
+# SDL2_image.module's and SDL2_mixer.module's absolute references into their
+# data, reviewed (tools/baserel_check.py). One regular expression a line, for
+# the check's report line.
+#
+# libxmp's bunzip2.c (its bzip2 depacker): GCC 16 turns crc_init's loop into
+# a lookup table of its own, 256 constant longs in the data, and indexes it
+# from its absolute address; it is only ever read. Reviewed 8 October 2026.
+^read of \.data\+0x0 of bunzip2\.o, from the code at _libxmp_depacker_compress\+0x[0-9a-f]+ \(\.text of bunzip2\.o\)$

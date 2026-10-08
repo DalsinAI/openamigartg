@@ -14,9 +14,11 @@
 #
 #   library/modules/sdl2/build.sh [OUT_DIR] [TARGETS]
 #       OUT_DIR  default build/; TARGETS default: module stub static tests satellites
-#       (satellites: SDL2_image, SDL2_mixer, SDL2_ttf and SDL2_net, with
+#       (satellites: SDL2_image.module and SDL2_mixer.module with their
+#       link stubs, the same as static libraries, SDL2_ttf and SDL2_net, with
 #       FreeType and libxmp, all pinned in UPSTREAM.json: satellites/Makefile;
-#       patches/freetype holds the Team's changes to FreeType)
+#       patches/sdl2_image, patches/sdl2_mixer and patches/freetype hold the
+#       Team's changes to them)
 #   CPU="-m68020 -m68881"   another CPU (default -m68040 -m68881)
 #
 # Needs the GCC 16 stove (STOVE, default ~/AmigaChrome/stoves/os32-gcc16/prefix),
@@ -118,6 +120,6 @@ esac
 # 7. GCC 16's FPCR clash (fpcr_check.py) must not be in anything built.
 STOVE=${STOVE:-$HOME/AmigaChrome/stoves/os32-gcc16/prefix}
 set --
-for f in "$OUT/SDL2.module" "$OUT"/libSDL2*.a; do [ -f "$f" ] && set -- "$@" "$f"; done
+for f in "$OUT/SDL2.module" "$OUT"/SDL2_*.module "$OUT"/libSDL2*.a; do [ -f "$f" ] && set -- "$@" "$f"; done
 [ $# -eq 0 ] || python3 "$HERE/fpcr_check.py" "$STOVE/bin/m68k-amigaos-objdump" "$@"
 echo "SDL 2 built in $OUT"
