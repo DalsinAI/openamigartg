@@ -33,7 +33,10 @@ FT  := $(WORK)/freetype-2.14.3
 XMP := $(WORK)/libxmp-4.7.3
 OBJ := $(WORK)/obj-satellites
 
-CFLAGS = -std=gnu11 $(OPT) $(CPU) -noixemul -w -I$(SDLINC) -D__AMIGAOS3__
+# -fno-delete-null-pointer-checks: address 0 is memory on an Amiga; without it
+# GCC puts TRAP #7 (Software Failure 80000027) where it proves a pointer null,
+# in place of the access.
+CFLAGS = -std=gnu11 $(OPT) $(CPU) -fno-delete-null-pointer-checks -noixemul -w -I$(SDLINC) -D__AMIGAOS3__
 
 # --- SDL2_image ---
 IMG_SRCS = IMG.c IMG_bmp.c IMG_gif.c IMG_jpg.c IMG_lbm.c IMG_pcx.c IMG_png.c IMG_pnm.c \

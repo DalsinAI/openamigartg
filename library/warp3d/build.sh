@@ -27,13 +27,16 @@ if [ "${1:-}" = headers ]; then
 fi
 OUT=${1:-$ROOT/build}
 mkdir -p "$OUT"
-FLAGS="-m68040 -mhard-float -mnobitfield -O2 -fomit-frame-pointer -Wall -Wextra -Werror -Wno-unused-parameter -I$ROOT/include"
+# -fno-delete-null-pointer-checks on every 68k compile: address 0 is memory on
+# an Amiga, and without it GCC puts TRAP #7 (Software Failure 80000027) where
+# it proves a pointer null, in place of the access.
+FLAGS="-m68040 -mhard-float -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -Wall -Wextra -Werror -Wno-unused-parameter -I$ROOT/include"
 OGPU="$ROOT/library/opengpu"
 # The cores as opengpu.library builds them (-m68020): on the AC090 their
 # 68040-tuned code ran a quarter slower (8 October 2026, W3DTest).
 mkdir -p "$OUT/w3d-obj"
 for f in ogpu_core ogpu_3d ogpu_build ogpu_build3d; do
-    "$CC" -m68020 -mnobitfield -O2 -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
+    "$CC" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
         -I"$ROOT/include" -c -o "$OUT/w3d-obj/$f.o" "$OGPU/$f.c"
 done
 "$CC" $FLAGS -fno-toplevel-reorder -fno-builtin -nostartfiles -nostdlib -o "$OUT/Warp3D.library" \
@@ -44,8 +47,8 @@ echo "$OUT/Warp3D.library ($(wc -c < "$OUT/Warp3D.library") bytes)"
 echo "$OUT/W3DTest ($(wc -c < "$OUT/W3DTest") bytes)"
 "$CC" $FLAGS -noixemul -o "$OUT/W3DCheck" "$ROOT/tools/w3dcheck.c"
 echo "$OUT/W3DCheck ($(wc -c < "$OUT/W3DCheck") bytes)"
-"$CC" -m68020 -O2 -Wall -Wextra -Werror -noixemul -I"$ROOT/include" -o "$OUT/Warp3DPrefs" "$ROOT/tools/w3dprefs.c"
+"$CC" -m68020 -O2 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -noixemul -I"$ROOT/include" -o "$OUT/Warp3DPrefs" "$ROOT/tools/w3dprefs.c"
 echo "$OUT/Warp3DPrefs ($(wc -c < "$OUT/Warp3DPrefs") bytes)"
 # The headers' structures, as 68k programs were compiled (compile-time checks only).
-"$CC" -m68020 -std=gnu11 -I"$ROOT/include" -c -o "$OUT/w3d_layout.o" "$ROOT/tests/w3d_layout.c"
+"$CC" -m68020 -std=gnu11 -fno-delete-null-pointer-checks -I"$ROOT/include" -c -o "$OUT/w3d_layout.o" "$ROOT/tests/w3d_layout.c"
 echo "include/Warp3D/Warp3D.h: every structure offset as 68k programs have it"

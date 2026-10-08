@@ -16,7 +16,10 @@ OUT=${1:-$ROOT/build/modules}
 COMMON=$ROOT/library/modules/common
 mkdir -p "$OUT/shared" "$OUT/each"
 CC16=$STOVE16/bin/m68k-amigaos-gcc
-F="-m68040 -m68881 -mnobitfield -O2 -fomit-frame-pointer -noixemul -Wall -Wextra -Werror -Wno-unused-parameter -I$ROOT/include -I$COMMON"
+# -fno-delete-null-pointer-checks on every 68k compile: address 0 is memory on
+# an Amiga, and without it GCC puts TRAP #7 (Software Failure 80000027) where
+# it proves a pointer null, in place of the access.
+F="-m68040 -m68881 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -noixemul -Wall -Wextra -Werror -Wno-unused-parameter -I$ROOT/include -I$COMMON"
 # kind: shared or each; its extra flags.
 build() {
     K=$1 NAME=$2; shift 2
@@ -33,6 +36,6 @@ build shared Test.module -fbaserel32 -resident32
 build each TestEach.module
 # Nothing in the shared one may reach its data except through A4.
 python3 "$ROOT/tools/baserel_check.py" "$STOVE16/bin/m68k-amigaos-" "$OUT/shared/Test.module.debug" "$OUT/shared/Test.module.map"
-"$STOVE/prefix/bin/m68k-amigaos-gcc" -m68040 -m68881 -O2 -ffixed-a4 -Wall -Werror -noixemul -I"$ROOT/include" -o "$OUT/ModuleCheck" "$HERE/module_check.c" -lm
+"$STOVE/prefix/bin/m68k-amigaos-gcc" -m68040 -m68881 -O2 -fno-delete-null-pointer-checks -ffixed-a4 -Wall -Werror -noixemul -I"$ROOT/include" -o "$OUT/ModuleCheck" "$HERE/module_check.c" -lm
 echo "$OUT/ModuleCheck ($(wc -c < "$OUT/ModuleCheck") bytes)"
 python3 "$ROOT/tools/fpcr_check.py" "$STOVE16/bin/m68k-amigaos-objdump" "$OUT/Test.module" "$OUT/TestEach.module" "$OUT/ModuleCheck"

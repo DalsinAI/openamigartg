@@ -37,7 +37,10 @@ MODULE_CFLAGS := $(if $(filter 1,$(SHARED)),-fbaserel32) -I$(COMMON)
 MODULE_LDFLAGS := $(if $(filter 1,$(SHARED)),-fbaserel32 -resident32)
 OGPU_BUILD3D := $(wildcard $(OGPU_SRC)/ogpu_build3d.c)
 
-CFLAGS_BASE = -std=gnu11 $(OPT) $(CPU) -noixemul -Wall -Wno-unused-parameter \
+# -fno-delete-null-pointer-checks: address 0 is memory on an Amiga; without it
+# GCC puts TRAP #7 (Software Failure 80000027) where it proves a pointer null,
+# in place of the access.
+CFLAGS_BASE = -std=gnu11 $(OPT) $(CPU) -fno-delete-null-pointer-checks -noixemul -Wall -Wno-unused-parameter \
          -Wno-sign-compare -Wno-unused-but-set-variable \
          -I$(SDL)/include -I$(SDL)/src -I$(SDK_INC) -I$(ROOT)/include -I$(ROOT)/stubs/sdl2 \
          -DSDL_VIDEO_RENDER_OPENGPU=1 -D__AMIGAOS3__

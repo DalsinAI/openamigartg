@@ -47,7 +47,10 @@ python3 "$STUBS/gen_gl.py" --stub "$W/gl_stub_calls.s" --exports "$W/gl_exports.
     --header "$GL/gla/gla_core.h" --header "$GL/gla/os3/gla_present_os3.h" --header "$GL/gla/os3/gla_virgl_os3.h" \
     "$W/gl.names" "$STUBS/gla.names"
 
-MF="-m68040 -m68881 -mnobitfield -O2 -fomit-frame-pointer -noixemul -Wall -Wextra -Werror -Wno-unused-parameter -I$REPO/include -I$COMMON -I$STUBS"
+# -fno-delete-null-pointer-checks on every 68k compile: address 0 is memory on
+# an Amiga, and without it GCC puts TRAP #7 (Software Failure 80000027) where
+# it proves a pointer null, in place of the access.
+MF="-m68040 -m68881 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -noixemul -Wall -Wextra -Werror -Wno-unused-parameter -I$REPO/include -I$COMMON -I$STUBS"
 # The module's own objects reach their globals through A4 too.
 MODF="$MF -fbaserel32"
 cd "$B"
