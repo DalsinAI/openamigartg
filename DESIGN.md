@@ -381,7 +381,10 @@ reason for folks to move into our ecosystem"):
 The first measurement decides the order: which of these Workbench, a MUI
 program and a game call, and how often (Phase 0).
 
-## 5. OpenGPU: one layer for drawing, compositing, 3D and compute
+## 5. OpenGPU
+
+> Stream v1.2 is now being specified in `docs/opengpu-stream-v1.2-proposals.md`. The current wire format remains v1.1 until the CPU core and golden tests implement the full mandatory v1.2 surface.
+: one layer for drawing, compositing, 3D and compute
 
 Team, 4 October 2026: "Is there value in offering an opengpu.library that
 lets drawing functions go via the graphics chip's GPU if it has one? A
