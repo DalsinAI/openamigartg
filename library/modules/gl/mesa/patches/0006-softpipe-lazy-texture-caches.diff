@@ -1,0 +1,64 @@
+softpipe: make each texture tile cache when its slot first gets a sampler
+view. Making all MESA_SHADER_STAGES x 128 of them (256 KB each) up front took
+about 200 MB, which AmigaOS has to find in real memory.
+
+--- a/src/gallium/drivers/softpipe/sp_context.c
++++ b/src/gallium/drivers/softpipe/sp_context.c
+@@ -238,14 +238,10 @@
+       softpipe->cbuf_cache[i] = sp_create_tile_cache( &softpipe->pipe );
+    softpipe->zsbuf_cache = sp_create_tile_cache( &softpipe->pipe );
+ 
+-   /* Allocate texture caches */
+-   for (sh = 0; sh < ARRAY_SIZE(softpipe->tex_cache); sh++) {
+-      for (i = 0; i < ARRAY_SIZE(softpipe->tex_cache[0]); i++) {
+-         softpipe->tex_cache[sh][i] = sp_create_tex_tile_cache(&softpipe->pipe);
+-         if (!softpipe->tex_cache[sh][i])
+-            goto fail;
+-      }
+-   }
++   /* Texture caches (256 KB each) are made when a sampler view is first
++    * bound to their slot (softpipe_set_sampler_views): making all of them
++    * here took about 200 MB, which a machine without overcommit (AmigaOS)
++    * really has to find. */
+ 
+    softpipe->fs_machine = tgsi_exec_machine_create(MESA_SHADER_FRAGMENT);
+ 
+--- a/src/gallium/drivers/softpipe/sp_state_sampler.c
++++ b/src/gallium/drivers/softpipe/sp_state_sampler.c
+@@ -119,8 +119,11 @@
+       struct pipe_sampler_view **pview = &softpipe->sampler_views[shader][start + i];
+ 
+       pipe_sampler_view_reference(pview, views[i]);
+-      sp_tex_tile_cache_set_sampler_view(softpipe->tex_cache[shader][start + i],
+-                                         views[i]);
++      if (views[i] && !softpipe->tex_cache[shader][start + i])
++         softpipe->tex_cache[shader][start + i] = sp_create_tex_tile_cache(pipe);
++      if (softpipe->tex_cache[shader][start + i])
++         sp_tex_tile_cache_set_sampler_view(softpipe->tex_cache[shader][start + i],
++                                            views[i]);
+       /*
+        * We don't really have variants, however some bits are different per shader,
+        * so just copy?
+@@ -139,8 +142,9 @@
+    for (; i < num + unbind_num_trailing_slots; i++) {
+       struct pipe_sampler_view **pview = &softpipe->sampler_views[shader][start + i];
+       pipe_sampler_view_reference(pview, NULL);
+-      sp_tex_tile_cache_set_sampler_view(softpipe->tex_cache[shader][start + i],
+-                                         NULL);
++      if (softpipe->tex_cache[shader][start + i])
++         sp_tex_tile_cache_set_sampler_view(softpipe->tex_cache[shader][start + i],
++                                            NULL);
+    }
+ 
+ 
+--- a/src/gallium/drivers/softpipe/sp_tex_tile_cache.c
++++ b/src/gallium/drivers/softpipe/sp_tex_tile_cache.c
+@@ -167,6 +167,8 @@
+ {
+    int pos;
+ 
++   if (!tc)
++      return;   /* this slot never had a sampler view */
+    if (tc->texture) {
+       /* caching a texture, mark all entries as empty */
+       for (pos = 0; pos < ARRAY_SIZE(tc->entries); pos++) {

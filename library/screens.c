@@ -46,6 +46,7 @@
 #include <proto/utility.h>
 #include <proto/opengpu.h>
 #include <opengpu/build.h>
+#include <openrtg/openrtg.h>
 
 #include "modes.h"
 #include "screens.h"
@@ -128,6 +129,12 @@ static void trace_big(const char *what, LONG a, LONG b, LONG c, LONG d, LONG w, 
 #define R_SPR_SIZE 0xA0
 #define R_SPR_DATA 0xA4
 #define R_SPR_COLOR 0xA8
+#define R_VERSION 0x04
+#define R_RING_BASE 0xB0
+#define R_RING_SIZE 0xB4
+#define R_GPU_INFO 0xD0
+#define RING_RESERVE 0x00040000UL   /* as acrtg.card 2.3: the top 256 KiB of video RAM for OpenGPU's ring */
+#define RING_BYTES   0x00010000UL
 #define C_MODE 1
 #define C_PAN 6
 #define C_DISPLAY 7
@@ -140,6 +147,27 @@ static UBYTE *board[ORTG_MAX_MONITORS + 1];               /* each monitor's boar
 static struct ortg_mode_table **tables;
 
 static void reg(int n, ULONG off, ULONG v) { *(volatile ULONG *)(board[n] + REGS_AT + off) = v; }
+static ULONG rreg(int n, ULONG off) { return *(volatile ULONG *)(board[n] + REGS_AT + off); }
+
+/* The video RAM bitmaps may use on each board. */
+static ULONG vram_limit[ORTG_MAX_MONITORS + 1];
+
+/* OpenGPU's command ring needs a place in video RAM nobody else uses. With
+ * Picasso96, acrtg.card 2.3 keeps the top 256 KiB back and sets the ring
+ * up there; OpenRTG, driving the board itself, does the same, so ACRTG.gpu
+ * finds its ring either way. A ring already there is left alone. */
+static void ring_reserve(int n)
+{
+    ULONG base, size;
+    vram_limit[n] = VRAM_SIZE;
+    if (rreg(n, R_VERSION) < 3 || !(rreg(n, R_GPU_INFO) & 1)) return;     /* no ring before acrtg-v3 */
+    base = rreg(n, R_RING_BASE); size = rreg(n, R_RING_SIZE);
+    if (!size || base < VRAM_SIZE - RING_RESERVE || base + size > VRAM_SIZE) {
+        reg(n, R_RING_BASE, VRAM_SIZE - RING_RESERVE);
+        reg(n, R_RING_SIZE, RING_BYTES);
+    }
+    vram_limit[n] = VRAM_SIZE - RING_RESERVE;
+}
 
 /* What each monitor shows now. */
 static struct { struct ortg_bitmap *bm; UWORD w, h; UBYTE fmt; } shown[ORTG_MAX_MONITORS + 1];
@@ -166,7 +194,7 @@ static LONG vram_alloc(int monitor, ULONG size)
         if (clash < 0) break;
         off = blk[clash].off + blk[clash].size;
     }
-    if (off + size > VRAM_SIZE) return -1;
+    if (off + size > (vram_limit[monitor] ? vram_limit[monitor] : VRAM_SIZE)) return -1;
     for (i = 0; i < BLOCKS; i++)
         if (!blk[i].used) {
             blk[i].off = off; blk[i].size = size; blk[i].used = 1; blk[i].monitor = (UBYTE)monitor;
@@ -278,7 +306,8 @@ static void pens_of(struct RastPort *rp, struct pens *p)
  * drawing off (0) or on, and COMPLEMENT inverts the colour. */
 struct ink { ULONG a, b, x; UBYTE mode, mask; UBYTE bpp; };
 struct fill_ctx { struct pens p; UWORD *ptrn; int ptsz; int ptoff_y; };
-struct tmpl_ctx { struct pens p; const UBYTE *src; LONG src_x, mod; LONG at_x, at_y; };
+struct obatch;
+struct tmpl_ctx { struct pens p; const UBYTE *src; LONG src_x, mod; LONG at_x, at_y; struct obatch *ob; };
 
 static void ink_of(const struct pens *p, const struct ortg_bitmap *o, struct ink *k)
 {
@@ -315,9 +344,45 @@ UBYTE ortg_px_pen(const struct ortg_bitmap *o, ULONG px)
     return (UBYTE)best;
 }
 
-/* ---- OpenGPU v1.0 client ------------------------------------------------------------ */
+/* ---- OpenGPU: the drawing that goes through its stream ---------------------------------
+ *
+ * Each helper draws one piece (a rectangle of one bitmap, inclusive
+ * coordinates) with OpenGPU and returns 1, or returns 0 having drawn
+ * nothing, and the caller draws the piece with the CPU code below, which
+ * defines what OpenRTG draws. A helper is used only where its command
+ * gives the CPU code's pixels exactly. Each piece is one batch, done when
+ * the helper returns (graphics.library's calls are synchronous); lines
+ * gather their pieces into one batch. ortg_stats counts both ways. */
 
 #define ORTG_OGPU_WORDS 64
+
+ULONG ortg_stats[ORTG_STAT_COUNT][4];
+
+void ortg_stat(int kind, int gpu, ULONG pixels)
+{
+    if (kind < 0 || kind >= ORTG_STAT_COUNT) return;
+    ortg_stats[kind][gpu ? 0 : 1]++;
+    ortg_stats[kind][gpu ? 2 : 3] += pixels;
+}
+
+static int ogpu_off;            /* ORTG_DRAW_CPU_ONLY: everything on the CPU (for comparing the two) */
+
+ULONG ortg_draw_stats(ULONG *counts, ULONG kinds, ULONG flags)
+{
+    ULONG k, i;
+    Forbid();
+    for (k = 0; k < ORTG_STAT_COUNT; k++)
+        for (i = 0; i < 4; i++) {
+            if (counts && k < kinds) counts[k * 4 + i] = ortg_stats[k][i];
+            if (flags & ORTG_DRAW_RESET) ortg_stats[k][i] = 0;
+        }
+    if (flags & ORTG_DRAW_CPU_ONLY) ogpu_off = 1;
+    if (flags & ORTG_DRAW_OPENGPU) ogpu_off = 0;
+    Permit();
+    return ORTG_STAT_COUNT;
+}
+
+static ULONG area(LONG x0, LONG y0, LONG x1, LONG y1) { return (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1); }
 
 static int ogpu_format_of(const struct ortg_bitmap *bm)
 {
@@ -328,10 +393,19 @@ static int ogpu_format_of(const struct ortg_bitmap *bm)
     return 0;
 }
 
+/* OGPU_Query's answers, kept: 0 not asked, 1 yes, 2 no (opcodes below 0x40). */
+static UBYTE ogpu_known[0x40][4];
+
 static int ogpu_can(int op, const struct ortg_bitmap *bm)
 {
-    int fmt = ogpu_format_of(bm);
-    return OpenGPUBase && fmt && OGPU_ANSWER(OGPU_Query((ULONG)op, (ULONG)fmt)) != OGPU_NONE;
+    int fmt = ogpu_format_of(bm), yes;
+    if (!OpenGPUBase || !fmt || ogpu_off) return 0;
+    if (op < 0x40 && ogpu_known[op][fmt]) return ogpu_known[op][fmt] == 1;
+    yes = OGPU_ANSWER(OGPU_Query((ULONG)op, (ULONG)fmt)) != OGPU_NONE;
+    /* Ask again until a process has asked: opengpu.library looks for its
+     * drivers then, and the answer may change once. */
+    if (op < 0x40 && ((struct Task *)FindTask(NULL))->tc_Node.ln_Type == NT_PROCESS) ogpu_known[op][fmt] = yes ? 1 : 2;
+    return yes;
 }
 
 static int ogpu_submit_batch(struct OGPUBatch *b)
@@ -349,6 +423,14 @@ static void ogpu_target_bitmap(struct OGPUBatch *b, int slot, const struct ortg_
     ogpu_surface(b, slot, (ULONG)bm->mem, bm->stride, bm->width, bm->height, ogpu_format_of(bm));
 }
 
+/* A batch drawing on bm, slot 0 the target. */
+static void ogpu_begin(struct OGPUBatch *b, UBYTE *stream, const struct ortg_bitmap *bm)
+{
+    ogpu_batch_init(b, stream, ORTG_OGPU_WORDS);
+    ogpu_target_bitmap(b, 0, bm);
+    ogpu_target(b, 0);
+}
+
 static int ogpu_fill_piece(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
                            const struct ink *k)
 {
@@ -359,14 +441,98 @@ static int ogpu_fill_piece(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LO
     if (!k || !k->mask || (k->bpp == 1 && k->mask != 0xFF)) return 0;
     op = (k->mode & COMPLEMENT) ? OGPU_OP_INVERT : OGPU_OP_FILL;
     if (!ogpu_can(op, bm)) return 0;
-
-    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
-    ogpu_target_bitmap(&b, 0, bm);
-    ogpu_target(&b, 0);
+    ogpu_begin(&b, stream, bm);
     if (op == OGPU_OP_INVERT)
         ogpu_invert(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, k->x);
     else
         ogpu_fill(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, k->a);
+    return ogpu_submit_batch(&b);
+}
+
+/* A raw pixel value over a rectangle (SetRast, ScrollRaster's uncovered
+ * area, ORTG_FillPixels): every pixel, whatever the RastPort's mask. */
+int ortg_ogpu_fill(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, ULONG value)
+{
+    UBYTE stream[ORTG_OGPU_WORDS * 4];
+    struct OGPUBatch b;
+    if (x0 > x1 || y0 > y1) return 1;
+    if (!ogpu_can(OGPU_OP_FILL, bm)) return 0;
+    ogpu_begin(&b, stream, bm);
+    ogpu_fill(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, value);
+    return ogpu_submit_batch(&b);
+}
+
+/* Pixel ^= mask over a rectangle (ORTG_InvertPixels). */
+int ortg_ogpu_invert(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, ULONG mask)
+{
+    UBYTE stream[ORTG_OGPU_WORDS * 4];
+    struct OGPUBatch b;
+    if (!ogpu_can(OGPU_OP_INVERT, bm)) return 0;
+    ogpu_begin(&b, stream, bm);
+    ogpu_invert(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, mask);
+    return ogpu_submit_batch(&b);
+}
+
+/* Pixels in memory, 1:1, into a rectangle: OGPU's PIXELS (format an
+ * OGPU_FMT_ source format; table an INDEX8 source's 256 ARGB colours). */
+int ortg_ogpu_pixels(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
+                     const void *src, ULONG src_bpr, int format, const void *table)
+{
+    UBYTE stream[ORTG_OGPU_WORDS * 4];
+    struct OGPUBatch b;
+    if (!ogpu_can(OGPU_OP_PIXELS, bm)) return 0;
+    ogpu_begin(&b, stream, bm);
+    ogpu_pixels(&b, (ULONG)src, src_bpr, format, (ULONG)table, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    return ogpu_submit_batch(&b);
+}
+
+/* A rectangle of the bitmap copied, raw, into memory (ORTG_ReadPixels' RAW
+ * format): a surface of the same format there, and a COPY. */
+int ortg_ogpu_read(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, void *dst, ULONG dst_bpr)
+{
+    UBYTE stream[ORTG_OGPU_WORDS * 4];
+    struct OGPUBatch b;
+    LONG w = x1 - x0 + 1, h = y1 - y0 + 1;
+    if (!ogpu_can(OGPU_OP_COPY, bm)) return 0;
+    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
+    ogpu_target_bitmap(&b, 0, bm);
+    ogpu_surface(&b, 1, (ULONG)dst, dst_bpr, w, h, ogpu_format_of(bm));
+    ogpu_target(&b, 1);
+    ogpu_copy(&b, 0, x0, y0, 0, 0, w, h);
+    return ogpu_submit_batch(&b);
+}
+
+/* A rectangle of a 16 or 32-bit bitmap into memory as ARGB with alpha 255
+ * (ORTG_ReadPixels' ARGB and 0RGB): COMPOSITE, opaque, onto a surface
+ * there, which writes each pixel's colour with alpha 255. */
+int ortg_ogpu_read_argb(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, void *dst, ULONG dst_bpr)
+{
+    UBYTE stream[ORTG_OGPU_WORDS * 4];
+    struct OGPUBatch b;
+    LONG w = x1 - x0 + 1, h = y1 - y0 + 1;
+    if (bm->bpp == 1 || !ogpu_can(OGPU_OP_COMPOSITE, bm)) return 0;
+    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
+    ogpu_target_bitmap(&b, 0, bm);
+    ogpu_surface(&b, 1, (ULONG)dst, dst_bpr, w, h, OGPU_FMT_ARGB32);
+    ogpu_target(&b, 1);
+    ogpu_composite(&b, 0, x0, y0, w, h, 0, 0, w, h, 255, 0);
+    return ogpu_submit_batch(&b);
+}
+
+/* ARGB pixels in memory blended over a rectangle by their alpha times
+ * alpha (0-255): COMPOSITE with SRCALPHA, 1:1 (16 and 32-bit bitmaps). */
+int ortg_ogpu_alpha(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
+                    const void *src, ULONG src_bpr, ULONG alpha)
+{
+    UBYTE stream[ORTG_OGPU_WORDS * 4];
+    struct OGPUBatch b;
+    LONG w = x1 - x0 + 1, h = y1 - y0 + 1;
+    if (bm->bpp == 1 || !ogpu_can(OGPU_OP_COMPOSITE, bm)) return 0;
+    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
+    ogpu_target_bitmap(&b, 0, bm);
+    ogpu_surface(&b, 1, (ULONG)src, src_bpr, w, h, OGPU_FMT_ARGB32);
+    ogpu_target(&b, 0);
+    ogpu_composite(&b, 1, 0, 0, w, h, x0, y0, w, h, (int)(alpha & 255), OGPU_COMP_SRCALPHA);
     return ogpu_submit_batch(&b);
 }
 
@@ -377,17 +543,57 @@ static int ogpu_pattern_piece(struct ortg_bitmap *bm,
 {
     UBYTE stream[ORTG_OGPU_WORDS * 4];
     struct OGPUBatch b;
-    if (!f || !f->ptrn || !k || dx || dy || !k->mask ||
+    UWORD shifted[64];
+    const UWORD *ptrn;
+    if (!f || !f->ptrn || !k || !k->mask || f->ptsz < 1 || f->ptsz > 64 ||
         (k->bpp == 1 && k->mask != 0xFF))
         return 0;
     if (!ogpu_can(OGPU_OP_PATTERN, bm)) return 0;
-    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
-    ogpu_target_bitmap(&b, 0, bm);
-    ogpu_target(&b, 0);
-    ogpu_pattern(&b, (ULONG)f->ptrn, (ULONG)f->ptsz,
+    /* OpenGPU's PATTERN is anchored at the bitmap's 0,0 and OpenRTG's at the
+     * RastPort's (dx, dy in the bitmap): the rows taken from dy on, each
+     * turned right by dx, are the same pattern anchored at 0,0. */
+    ptrn = f->ptrn;
+    if (dx || dy) {
+        int r, sh = (int)(dx & 15);
+        for (r = 0; r < f->ptsz; r++) {
+            UWORD v = f->ptrn[(UWORD)(r - dy) & (f->ptsz - 1)];
+            shifted[r] = sh ? (UWORD)((v >> sh) | (v << (16 - sh))) : v;
+        }
+        ptrn = shifted;
+    }
+    ogpu_begin(&b, stream, bm);
+    ogpu_pattern(&b, (ULONG)ptrn, (ULONG)f->ptsz,
                  x0, y0, x1 - x0 + 1, y1 - y0 + 1,
                  k->a, k->b, k->mode & ~INVERSVID);
     return ogpu_submit_batch(&b);
+}
+
+/* One batch for many pieces of one call (Text's glyphs): what a piece adds
+ * waits for ob_flush, which every CPU drawing in the call comes after. */
+#define OB_WORDS 128
+struct obatch {
+    struct OGPUBatch b;
+    const struct ortg_bitmap *tgt;
+    int failed;
+    UBYTE buf[OB_WORDS * 4];
+};
+
+static void ob_init(struct obatch *o) { ogpu_batch_init(&o->b, o->buf, OB_WORDS); o->tgt = NULL; o->failed = 0; }
+
+static void ob_flush(struct obatch *o)
+{
+    if (o && o->b.words) {
+        if (!ogpu_submit_batch(&o->b)) o->failed = 1;
+        ogpu_batch_init(&o->b, o->buf, OB_WORDS);
+        o->tgt = NULL;
+    }
+}
+
+/* Room for `words` more, drawing on bm. */
+static void ob_room(struct obatch *o, const struct ortg_bitmap *bm, int words)
+{
+    if (o->b.words + words + 8 > OB_WORDS) ob_flush(o);
+    if (o->tgt != bm) { ogpu_target_bitmap(&o->b, 0, bm); ogpu_target(&o->b, 0); o->tgt = bm; }
 }
 
 static int ogpu_template_piece(struct ortg_bitmap *bm,
@@ -397,8 +603,9 @@ static int ogpu_template_piece(struct ortg_bitmap *bm,
 {
     UBYTE stream[ORTG_OGPU_WORDS * 4];
     struct OGPUBatch b;
-    LONG row, first;
+    LONG row, first, mod;
     const UBYTE *src;
+    UBYTE rom_rows[256];
 
     if (!t || !k || !k->mask || (k->bpp == 1 && k->mask != 0xFF) || t->mod <= 0)
         return 0;
@@ -408,11 +615,27 @@ static int ogpu_template_piece(struct ortg_bitmap *bm,
     first = t->src_x + (x0 - dx - t->at_x);
     if (row < 0 || first < 0) return 0;
     src = t->src + row * t->mod;
+    mod = t->mod;
+    if (t->ob) {
+        /* gathered into the call's batch (the source stays where it is) */
+        if (!TypeOfMem((APTR)src)) return 0;
+        ob_room(t->ob, bm, 9);
+        ogpu_template(&t->ob->b, (ULONG)src, (ULONG)mod, (ULONG)first, x0, y0, x1 - x0 + 1, y1 - y0 + 1,
+                      k->a, k->b, k->mode & ~INVERSVID);
+        return 1;
+    }
+    /* A template in ROM (topaz's glyphs) is out of a host back end's reach:
+     * the rows this piece needs, copied to the stack. */
+    if (!TypeOfMem((APTR)src)) {
+        LONG h = y1 - y0 + 1, bytes = ((first & 7) + (x1 - x0 + 1) + 7) >> 3, r, i;
+        if (h * bytes > (LONG)sizeof rom_rows) return 0;
+        for (r = 0; r < h; r++)
+            for (i = 0; i < bytes; i++) rom_rows[r * bytes + i] = src[r * t->mod + (first >> 3) + i];
+        src = rom_rows; mod = bytes; first &= 7;
+    }
 
-    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
-    ogpu_target_bitmap(&b, 0, bm);
-    ogpu_target(&b, 0);
-    ogpu_template(&b, (ULONG)src, (ULONG)t->mod, (ULONG)first,
+    ogpu_begin(&b, stream, bm);
+    ogpu_template(&b, (ULONG)src, (ULONG)mod, (ULONG)first,
                   x0, y0, x1 - x0 + 1, y1 - y0 + 1,
                   k->a, k->b, k->mode & ~INVERSVID);
     return ogpu_submit_batch(&b);
@@ -514,11 +737,12 @@ static void fill_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
 {
     struct fill_ctx *f = c;
     struct ink k;
+    int kind;
     ink_of(&f->p, bm, &k);
-    if (!f->ptrn && ogpu_fill_piece(bm, x0, y0, x1, y1, &k))
-        return;
-    if (f->ptrn && ogpu_pattern_piece(bm, x0, y0, x1, y1, dx, dy, f, &k))
-        return;
+    kind = f->ptrn ? ORTG_STAT_PATTERN : (k.mode & COMPLEMENT) ? ORTG_STAT_INVERT : ORTG_STAT_FILL;
+    if (!f->ptrn && ogpu_fill_piece(bm, x0, y0, x1, y1, &k)) { ortg_stat(kind, 1, area(x0, y0, x1, y1)); return; }
+    if (f->ptrn && ogpu_pattern_piece(bm, x0, y0, x1, y1, dx, dy, f, &k)) { ortg_stat(kind, 1, area(x0, y0, x1, y1)); return; }
+    ortg_stat(kind, 0, area(x0, y0, x1, y1));
     for (LONG y = y0; y <= y1; y++) {
         if (!f->ptrn) {
             if (!(k.mode & COMPLEMENT) && (k.mask == 0xFF || (k.bpp != 1 && k.mask))) {
@@ -543,8 +767,9 @@ static void tmpl_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
     struct tmpl_ctx *t = c;
     struct ink k;
     ink_of(&t->p, bm, &k);
-    if (ogpu_template_piece(bm, x0, y0, x1, y1, dx, dy, t, &k))
-        return;
+    if (ogpu_template_piece(bm, x0, y0, x1, y1, dx, dy, t, &k)) { ortg_stat(ORTG_STAT_TEMPLATE, 1, area(x0, y0, x1, y1)); return; }
+    ortg_stat(ORTG_STAT_TEMPLATE, 0, area(x0, y0, x1, y1));
+    ob_flush(t->ob);                                /* what the batch holds first */
     for (LONG y = y0; y <= y1; y++) {
         const UBYTE *s = t->src + (y - dy - t->at_y) * t->mod;
         for (LONG x = x0; x <= x1; x++) {
@@ -628,8 +853,8 @@ static void blit(struct BitMap *src, LONG sx, LONG sy, struct BitMap *dst, LONG 
         /* v1.0's COPY is the preferred path for the common RTG move/copy.
          * It is synchronous at the graphics.library boundary: future queued
          * drivers are waited here before the call returns. */
-        if (ogpu_copy_rect(os, sx, sy, od, dx, dy, w, h))
-            return;
+        if (ogpu_copy_rect(os, sx, sy, od, dx, dy, w, h)) { ortg_stat(ORTG_STAT_COPY, 1, (ULONG)w * (ULONG)h); return; }
+        ortg_stat(ORTG_STAT_COPY, 0, (ULONG)w * (ULONG)h);
         /* No OpenGPU, unsupported memory or a refused batch: keep the
          * proven OpenRTG CPU copy as the exact fallback. */
         ULONG bytes = (ULONG)w * od->bpp;
@@ -639,6 +864,31 @@ static void blit(struct BitMap *src, LONG sx, LONG sy, struct BitMap *dst, LONG 
         }
         return;
     }
+    if (od && !cookie && ((m >> 7) & 1) == ((m >> 5) & 1) && ((m >> 6) & 1) == ((m >> 4) & 1)) {
+        /* A minterm that ignores the source (layers clears a window with
+         * 0x00): a fill or an invert, as the loop below does it. */
+        int ok = 0, op = m & 0xF0;
+        if (op == 0xA0) ok = 1;                                     /* the destination as it is */
+        else if (od->bpp != 1 ? mask != 0 : (op == 0x50 || mask == 0xFF)) {
+            if (op == 0x50) ok = ortg_ogpu_invert(od, dx, dy, dx + w - 1, dy + h - 1, od->bpp == 1 ? mask : od->bpp == 2 ? 0xFFFF : 0xFFFFFF);
+            else ok = ortg_ogpu_fill(od, dx, dy, dx + w - 1, dy + h - 1, od->bpp == 1 ? (op ? 0xFF : 0) : ortg_pen_px(od, op ? 255 : 0));
+        } else if (od->bpp != 1) ok = 1;                            /* mask 0 on 16 and 32-bit: nothing changes */
+        ortg_stat(ORTG_STAT_BLIT, ok, (ULONG)w * (ULONG)h);
+        if (ok) return;
+    } else if (os && od && os->bpp != od->bpp && !cookie && (m & 0xF0) == 0xC0 && (od->bpp == 1 ? mask == 0xFF : mask != 0)
+        && (os->bpp == 1 || od->bpp == 2)) {
+        /* A copy between formats, as the loop below converts: pens to
+         * their colours (through the pen table), or colours cut to RGB565. */
+        const UBYTE *sp = os->mem + sy * os->stride + sx * os->bpp;
+        int ok = os->bpp == 1 ? ortg_ogpu_pixels(od, dx, dy, dx + w - 1, dy + h - 1, sp, os->stride, OGPU_FMT_INDEX8, ortg_pen_rgb[od->pal_index])
+                              : ortg_ogpu_pixels(od, dx, dy, dx + w - 1, dy + h - 1, sp, os->stride, ogpu_format_of(os), NULL);
+        ortg_stat(ORTG_STAT_BLIT_CONVERT, ok, (ULONG)w * (ULONG)h);
+        if (ok) return;
+    } else if (od)
+        ortg_stat(cookie ? ORTG_STAT_BLIT_MASKED : !os ? ORTG_STAT_BLIT_PLANAR : os->bpp != od->bpp ? ORTG_STAT_BLIT_CONVERT : ORTG_STAT_BLIT,
+                  0, (ULONG)w * (ULONG)h);
+    else if (os)
+        ortg_stat(ORTG_STAT_BLIT_PLANAR, 0, (ULONG)w * (ULONG)h);
     for (LONG j = 0; j < h; j++) {
         LONG yy = down ? j : h - 1 - j;
         for (LONG i = 0; i < w; i++) {
@@ -770,7 +1020,7 @@ static void do_fill(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, con
         struct tmpl_ctx t;
         pens_of(rp, &t.p);
         t.p.mode &= ~JAM2;                              /* a mask draws only where it is set */
-        t.src = mask; t.src_x = 0; t.mod = (LONG)mask_bpr; t.at_x = x0; t.at_y = y0;
+        t.src = mask; t.src_x = 0; t.mod = (LONG)mask_bpr; t.at_x = x0; t.at_y = y0; t.ob = NULL;
         pieces(rp, x0, y0, x1, y1, tmpl_piece, &t);
         return;
     }
@@ -801,6 +1051,9 @@ static void setrast_patch(REG(a1, struct RastPort *rp), REG(d0, ULONG pen), REG(
     struct ortg_bitmap *o = ortg_of(rp->BitMap);
     if (o) {
         ULONG v = ortg_pen_px(o, pen);
+        ULONG n = (ULONG)o->width * o->height;
+        if (ortg_ogpu_fill(o, 0, 0, (LONG)o->width - 1, (LONG)o->height - 1, v)) { ortg_stat(ORTG_STAT_SETRAST, 1, n); return; }
+        ortg_stat(ORTG_STAT_SETRAST, 0, n);
         for (ULONG y = 0; y < o->height; y++)
             for (ULONG x = 0; x < o->width; x++) ortg_put(o, (LONG)x, (LONG)y, v);
         return;
@@ -838,10 +1091,65 @@ static void line(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1)
     }
 }
 
+/* Lines through OpenGPU: one batch of CLIP and LINE for each visible piece.
+ * OpenGPU's LINE and line() above break ties between their two steps
+ * differently, so only the lines without ties go there: horizontal,
+ * vertical and 45 degree ones, solid, through the whole mask. That is
+ * almost every line a window's borders and gadgets draw. */
+#define LINE_WORDS 96
+struct line_ctx {
+    struct OGPUBatch b;
+    const struct ortg_bitmap *tgt;
+    const struct pens *p;
+    LONG x0, y0, x1, y1;
+    int ok;
+    UBYTE buf[LINE_WORDS * 4];
+};
+
+static void line_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
+{
+    struct line_ctx *l = c;
+    struct ink k;
+    if (!l->ok) return;
+    if (l->b.words + 6 + 2 + 3 + 5 > LINE_WORDS) {
+        if (!ogpu_submit_batch(&l->b)) { l->ok = 0; return; }
+        ogpu_batch_init(&l->b, l->buf, LINE_WORDS);
+        l->tgt = NULL;
+    }
+    ink_of(l->p, bm, &k);
+    if (l->tgt != bm) { ogpu_target_bitmap(&l->b, 0, bm); ogpu_target(&l->b, 0); l->tgt = bm; }
+    ogpu_clip(&l->b, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    ogpu_line(&l->b, l->x0 + dx, l->y0 + dy, l->x1 + dx, l->y1 + dy, k.a, k.mode & COMPLEMENT);
+}
+
+/* One line, through OpenGPU when it draws exactly the same, else line(). */
+static void any_line(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1)
+{
+    LONG adx = x1 > x0 ? x1 - x0 : x0 - x1, ady = y1 > y0 ? y1 - y0 : y0 - y1;
+    ULONG n = (ULONG)(adx > ady ? adx : ady) + 1;
+    struct ortg_bitmap *o = ortg_of(rp->BitMap);
+    struct pens p;
+    pens_of(rp, &p);
+    p.mode &= ~JAM2;
+    if (o && OpenGPUBase && !ogpu_off && rp->LinePtrn == 0xFFFF && (adx == 0 || ady == 0 || adx == ady)
+        && (o->bpp == 1 ? p.mask == 0xFF : p.mask != 0) && ogpu_can(OGPU_OP_LINE, o)) {
+        struct line_ctx l;
+        LONG bx0 = x0 < x1 ? x0 : x1, by0 = y0 < y1 ? y0 : y1;
+        ogpu_batch_init(&l.b, l.buf, LINE_WORDS);
+        l.tgt = NULL; l.p = &p; l.x0 = x0; l.y0 = y0; l.x1 = x1; l.y1 = y1; l.ok = 1;
+        pieces(rp, bx0, by0, bx0 + adx, by0 + ady, line_piece, &l);
+        if (l.ok && (!l.b.words || ogpu_submit_batch(&l.b))) { ortg_stat(ORTG_STAT_LINE, 1, n); return; }
+        /* A refused batch: what it drew, line() draws again the same (in
+         * COMPLEMENT, it can't be undone, so that one is counted wrong). */
+    }
+    ortg_stat(ORTG_STAT_LINE, 0, n);
+    line(rp, x0, y0, x1, y1);
+}
+
 static void draw_patch(REG(a1, struct RastPort *rp), REG(d0, WORD x), REG(d1, WORD y), REG(a6, struct GfxBase *g))
 {
     if (ortg_is(rp->BitMap)) {
-        line(rp, rp->cp_x, rp->cp_y, x, y);
+        any_line(rp, rp->cp_x, rp->cp_y, x, y);
         rp->cp_x = (WORD)x; rp->cp_y = (WORD)y;
         return;
     }
@@ -852,7 +1160,7 @@ static void polydraw_patch(REG(a1, struct RastPort *rp), REG(d0, WORD n), REG(a0
 {
     if (ortg_is(rp->BitMap)) {
         for (LONG i = 0; i < n; i++) {
-            line(rp, rp->cp_x, rp->cp_y, xy[2 * i], xy[2 * i + 1]);
+            any_line(rp, rp->cp_x, rp->cp_y, xy[2 * i], xy[2 * i + 1]);
             rp->cp_x = xy[2 * i]; rp->cp_y = xy[2 * i + 1];
         }
         return;
@@ -866,6 +1174,7 @@ static LONG writepixel_patch(REG(a1, struct RastPort *rp), REG(d0, WORD x), REG(
         struct pens p;
         pens_of(rp, &p);
         p.mode &= ~JAM2;
+        ortg_stat(ORTG_STAT_PIXEL, 0, 1);
         pieces(rp, x, y, x, y, pixel_piece, &p);
         return 0;
     }
@@ -882,6 +1191,7 @@ static ULONG readpixel_patch(REG(a1, struct RastPort *rp), REG(d0, WORD x), REG(
 {
     if (ortg_is(rp->BitMap)) {
         struct read_ctx r = { -1 };
+        ortg_stat(ORTG_STAT_PIXEL, 0, 1);
         pieces(rp, x, y, x, y, read_piece, &r);
         return (ULONG)r.v;
     }
@@ -896,11 +1206,36 @@ static void blttemplate_patch(REG(a0, PLANEPTR src), REG(d0, WORD sx), REG(d1, L
     if (ortg_is(rp->BitMap)) {
         struct tmpl_ctx t;
         pens_of(rp, &t.p);
-        t.src = src; t.src_x = sx; t.mod = mod; t.at_x = x; t.at_y = y;
+        t.src = src; t.src_x = sx; t.mod = mod; t.at_x = x; t.at_y = y; t.ob = NULL;
         pieces(rp, x, y, x + w - 1, y + h - 1, tmpl_piece, &t);
         return;
     }
     old_blttemplate(src, sx, mod, rp, x, y, w, h, g);
+}
+
+/* A ROM font's glyphs, copied to RAM once (fonts in ROM stay for good), so
+ * a host back end reaches them; a font in RAM as it is. */
+#define FONT_CACHE 8
+static struct { const UBYTE *rom; UBYTE *ram; } font_cache[FONT_CACHE];
+
+static const UBYTE *font_data(struct TextFont *f)
+{
+    const UBYTE *src = f->tf_CharData;
+    ULONG bytes = (ULONG)f->tf_Modulo * f->tf_YSize;
+    UBYTE *copy;
+    int i;
+    if (!src || TypeOfMem((APTR)src) || !bytes || bytes > 65536) return src;
+    for (i = 0; i < FONT_CACHE; i++) if (font_cache[i].rom == src) return font_cache[i].ram;
+    if (!(copy = AllocVec(bytes, MEMF_ANY))) return src;
+    CopyMem((APTR)src, copy, bytes);
+    Forbid();
+    for (i = 0; i < FONT_CACHE; i++) {
+        if (font_cache[i].rom == src) { Permit(); FreeVec(copy); return font_cache[i].ram; }
+        if (!font_cache[i].rom) { font_cache[i].rom = src; font_cache[i].ram = copy; Permit(); return copy; }
+    }
+    Permit();
+    FreeVec(copy);
+    return src;
 }
 
 static LONG text_patch(REG(a1, struct RastPort *rp), REG(a0, STRPTR s), REG(d0, WORD n), REG(a6, struct GfxBase *g))
@@ -913,8 +1248,10 @@ static LONG text_patch(REG(a1, struct RastPort *rp), REG(a0, STRPTR s), REG(d0, 
         LONG x = rp->cp_x, top = rp->cp_y - f->tf_Baseline, total = 0, i;
         int prop = (f->tf_Flags & FPF_PROPORTIONAL) && space;
         struct tmpl_ctx t;
+        struct obatch ob;
         UBYTE style = rp->AlgoStyle;
         pens_of(rp, &t.p);
+        ob_init(&ob);
         /* the advance of the whole string, for JAM2's background */
         for (i = 0; i < (LONG)n; i++) {
             UBYTE c = (UBYTE)s[i];
@@ -928,7 +1265,7 @@ static LONG text_patch(REG(a1, struct RastPort *rp), REG(a0, STRPTR s), REG(d0, 
             pieces(rp, x, top, x + total - 1, top + f->tf_YSize - 1, fill_piece, &bg);
         }
         t.p.mode &= ~JAM2;
-        t.src = f->tf_CharData; t.mod = f->tf_Modulo;
+        t.src = font_data(f); t.mod = f->tf_Modulo; t.ob = OpenGPUBase && !ogpu_off ? &ob : NULL;
         for (i = 0; i < (LONG)n; i++) {
             UBYTE c = (UBYTE)s[i];
             int k = (c >= f->tf_LoChar && c <= f->tf_HiChar) ? c - f->tf_LoChar : f->tf_HiChar - f->tf_LoChar + 1;
@@ -943,6 +1280,7 @@ static LONG text_patch(REG(a1, struct RastPort *rp), REG(a0, STRPTR s), REG(d0, 
             }
             x += (prop ? space[k] : f->tf_XSize) + rp->TxSpacing + ((style & FSF_BOLD) ? f->tf_BoldSmear : 0);
         }
+        ob_flush(t.ob);
         if (style & FSF_UNDERLINED) {
             struct fill_ctx u;
             u.p = t.p; u.ptrn = NULL; u.ptsz = 1;
@@ -1031,6 +1369,25 @@ static void scroll_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG
         blit(&bm->bm, sx, sy, &bm->bm, tx, ty, mw, mh, 0xC0, 0xFF, NULL, 0, 0, 0);
     }
     ULONG v = ortg_pen_px(bm, s->pen);
+    {
+        /* What the move uncovered: whole rows, then the side band of the rest. */
+        LONG ry0 = y0, ry1 = y1, cy0 = y0, cy1 = y1, cx0 = 0, cx1 = -1;
+        int ok;
+        if (mw <= 0 || mh <= 0) { cy0 = 1; cy1 = 0; }                 /* all of it: one fill */
+        else {
+            if (s->dy > 0) { ry0 = y1 - s->dy + 1; cy1 = ry0 - 1; }
+            else if (s->dy < 0) { ry1 = y0 - s->dy - 1; cy0 = ry1 + 1; }
+            else { ry0 = 1; ry1 = 0; }
+            if (s->dx > 0) { cx0 = x1 - s->dx + 1; cx1 = x1; }
+            else if (s->dx < 0) { cx0 = x0; cx1 = x0 - s->dx - 1; }
+        }
+        ok = ortg_ogpu_fill(bm, x0, ry0, x1, ry1, v) && (cx1 < cx0 || ortg_ogpu_fill(bm, cx0, cy0, cx1, cy1, v));
+        if (ok) {
+            ortg_stat(ORTG_STAT_SCROLL, 1, (ry1 >= ry0 ? area(x0, ry0, x1, ry1) : 0) + (cx1 >= cx0 && cy1 >= cy0 ? area(cx0, cy0, cx1, cy1) : 0));
+            return;
+        }
+        ortg_stat(ORTG_STAT_SCROLL, 0, 0);
+    }
     for (LONG y = y0; y <= y1; y++) {
         int ybar = (s->dy > 0 && y > y1 - s->dy) || (s->dy < 0 && y < y0 - s->dy) || mh <= 0;
         for (LONG x = x0; x <= x1; x++)
@@ -1054,6 +1411,13 @@ struct array_ctx { UBYTE *a; LONG bpr, at_x, at_y; };
 static void array_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct array_ctx *a = c;
+    {
+        const UBYTE *src = a->a + (y0 - dy - a->at_y) * a->bpr + (x0 - dx - a->at_x);
+        int ok = a->bpr > 0 && (bm->bpp == 1 ? ortg_ogpu_pixels(bm, x0, y0, x1, y1, src, (ULONG)a->bpr, OGPU_FMT_CLUT8, NULL)
+                                             : ortg_ogpu_pixels(bm, x0, y0, x1, y1, src, (ULONG)a->bpr, OGPU_FMT_INDEX8, ortg_pen_rgb[bm->pal_index]));
+        ortg_stat(ORTG_STAT_CHUNKY, ok, area(x0, y0, x1, y1));
+        if (ok) return;
+    }
     for (LONG y = y0; y <= y1; y++) {
         UBYTE *s = a->a + (y - dy - a->at_y) * a->bpr + (x0 - dx - a->at_x);
         if (bm->bpp == 1) { UBYTE *d = bm->mem + y * bm->stride + x0; for (LONG x = x0; x <= x1; x++) *d++ = *s++; }
@@ -1086,6 +1450,7 @@ static LONG wpa8_patch(REG(a0, struct RastPort *rp), REG(d0, WORD x0), REG(d1, W
 static void array_read_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct array_ctx *a = c;
+    ortg_stat(ORTG_STAT_CHUNKY_READ, 0, area(x0, y0, x1, y1));
     for (LONG y = y0; y <= y1; y++) {
         UBYTE *d = a->a + (y - dy - a->at_y) * a->bpr + (x0 - dx - a->at_x);
         if (bm->bpp == 1) { UBYTE *s = bm->mem + y * bm->stride + x0; for (LONG x = x0; x <= x1; x++) *d++ = *s++; }
@@ -1732,12 +2097,17 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
     if (!(IntuitionBase = (struct IntuitionBase *)OpenLibrary("intuition.library", 39))) return 0;
     if (!(UtilityBase = OpenLibrary("utility.library", 39))) return 0;
     tables = t;
-    for (int n = 1; n <= ORTG_MAX_MONITORS; n++) board[n] = boards[n];
+    for (int n = 1; n <= ORTG_MAX_MONITORS; n++) if ((board[n] = boards[n]) != NULL) ring_reserve(n);
 
     /* OpenGPU v1.0/G1 is optional at boot. When present, the common RTG
      * fill/template/copy paths above submit v1.0 batches; every refusal
      * falls back to the existing OpenRTG CPU implementation. */
     OpenGPUBase = OpenLibrary((CONST_STRPTR)OPENGPU_NAME, OPENGPU_VERSION);
+    /* Ask once now, from C:OpenRTG's process with the rings in place:
+     * opengpu.library loads its drivers (LIBS:OpenGPU/) on the first
+     * question a process asks, and better here than inside a drawing call
+     * that holds a layer's lock. */
+    if (OpenGPUBase) (void)OGPU_Query(OGPU_OP_FILL, OGPU_FMT_CLUT8);
 
     /* New stack: OpenGfx 1.1 owns Text, TextLength, TextExtent, TextFit,
      * RectFill, BltBitMap, BltTemplate and ScrollRaster. OpenRTG provides

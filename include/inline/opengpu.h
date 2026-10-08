@@ -17,4 +17,8 @@
     LP3(0x2a, LONG, OGPU_Submit, APTR, stream, a0, ULONG, words, d0, ULONG *, fence, a1, , OPENGPU_BASE_NAME)
 #define OGPU_Wait(fence) \
     LP1(0x30, LONG, OGPU_Wait, ULONG, fence, d0, , OPENGPU_BASE_NAME)
+#define OGPU_ModuleOpen(name, version, table) \
+    LP3(0x36, APTR, OGPU_ModuleOpen, CONST_STRPTR, name, a0, ULONG, version, d0, APTR *, table, a1, , OPENGPU_BASE_NAME)
+#define OGPU_ModuleClose(handle) \
+    LP1NR(0x3c, OGPU_ModuleClose, APTR, handle, a0, , OPENGPU_BASE_NAME)
 #endif

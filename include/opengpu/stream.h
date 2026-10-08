@@ -1,11 +1,16 @@
 /* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * OGPU stream v1.1: the bytes every OpenGPU back end receives (DESIGN.md
- * section 5). v1.1 adds A8 coverage masks for anti-aliased text and clip
+ * OGPU stream v1.2: the bytes every OpenGPU back end receives (DESIGN.md
+ * section 5). v1.1 added A8 coverage masks for anti-aliased text and clip
  * paths (OpenGfx): the A8 format, MASK, and COMPOSITE's MASK, ADD and IN
- * flags. A v1.0 back end answers OGPU_NONE to OGPU_Query(OGPU_OP_MASK, ...),
- * so a program asks before it uses any of them. The 68k's own CPU back end, ACRTG.gpu on the Cradle and
+ * flags. v1.2 (8 October 2026) adds what SDL 2's renderer and Warp3D need:
+ * blend modes (as SDL's), FILL_BLEND, LINES_BLEND, POINTS_BLEND,
+ * COMPOSITE_AFFINE (scale, rotate, flip, colour modulation), YUV, the
+ * formats of real cards' screens, and the 3D range 0x0030-0x003F, whose
+ * layouts are in stream3d.h (TRIANGLES serves SDL_RenderGeometry and
+ * Warp3D alike). An older back end answers OGPU_NONE to OGPU_Query for
+ * anything newer than it, so a program asks before it uses any of them. The 68k's own CPU back end, ACRTG.gpu on the Cradle and
  * PiStorm.gpu on a spare ARM core all read exactly this, so they draw the
  * same pixels.
  *
@@ -29,7 +34,7 @@
 #define OPENGPU_STREAM_H
 
 #define OGPU_STREAM_VERSION 1
-#define OGPU_STREAM_MINOR   1
+#define OGPU_STREAM_MINOR   2
 
 #define OGPU_HDR(op, words)     (((unsigned long)(op) << 16) | ((unsigned long)(words) & 0xFFFFUL))
 #define OGPU_HDR_OP(w)          ((unsigned)((w) >> 16))
@@ -42,7 +47,14 @@
 #define OGPU_FMT_ARGB32         3   /* 4 bytes: A, R, G, B */
 #define OGPU_FMT_INDEX8         4   /* PIXELS sources only: 1 byte, looked up in a 256-entry ARGB table */
 #define OGPU_FMT_A8             5   /* v1.1: 1 byte: coverage (alpha) 0-255, no colour */
-#define OGPU_FMT_COUNT          6
+/* v1.2: the screens of real cards and of a PiStorm's Picasso96, as targets
+ * and sources; ACRTG needs only RGB565 and ARGB32. */
+#define OGPU_FMT_RGB565PC       6   /* 2 bytes, low byte first */
+#define OGPU_FMT_RGB555         7   /* 2 bytes, high byte first: 0RRRRRGG GGGBBBBB */
+#define OGPU_FMT_RGB555PC       8   /* 2 bytes, low byte first */
+#define OGPU_FMT_BGRA32         9   /* 4 bytes: B, G, R, A */
+#define OGPU_FMT_COUNT          10
+/* 16-18 (Z16, Z32, S8: depth and stencil) are stream3d.h's. */
 
 /* Draw modes, as graphics.library's (JAM1, JAM2, COMPLEMENT, INVERSVID). */
 #define OGPU_JAM1               0
@@ -66,9 +78,20 @@
 #define OGPU_OP_PIXELS          0x0016  /* address, bytes per row, format, table, xy, wh 7  */
 #define OGPU_OP_MASK            0x0017  /* v1.1: address, bytes per row, xy, wh, colour  6
                                            (an A8 mask in memory; colour is ARGB32)      */
+#define OGPU_OP_FILL_BLEND      0x0018  /* v1.2: xy, wh, colour (ARGB32), blend           5  */
+#define OGPU_OP_LINES_BLEND     0x0019  /* v1.2: address of points (one OGPU_XY word
+                                           each), count, colour (ARGB32), flags          5  */
+#define OGPU_OP_POINTS_BLEND    0x001A  /* v1.2: address of points, count, colour, blend  5  */
 #define OGPU_OP_COMPOSITE       0x0020  /* source slot, source xy, source wh, xy, wh,
                                            alpha (0-255), flags                          8  */
                                         /* with OGPU_COMP_MASK, then: mask slot, mask xy 10 */
+#define OGPU_OP_COMPOSITE_AFFINE 0x0021 /* v1.2: source slot, source xy, source wh,
+                                           m00, m01, m02, m10, m11, m12, colour, flags   12 */
+#define OGPU_OP_YUV             0x0022  /* v1.2: Y address, Y bytes per row, U (or UV)
+                                           address, its bytes per row, V address, its
+                                           bytes per row, wh, xy, format                 10 */
+/* 0x0030-0x003F: 3D (TRIANGLES, RENDER3D, TEXENV, TEXTURE, DEPTH, CLEAR3D):
+ * include/opengpu/stream3d.h. */
 #define OGPU_OP_FENCE           0x00F0  /* id: reported when everything before is done   2  */
 /* 0x0080-0x008F: GPU APIs carried through OpenGPU, run by a back end's
  * extension hook (ogpu_core.ext) in stream order; a back end without one
@@ -86,6 +109,59 @@
 #define OGPU_COMP_MASK          4   /* an A8 surface's coverage, read 1:1 against the destination rect */
 #define OGPU_COMP_ADD           8   /* dst + src * coverage, each channel saturating at 255 */
 #define OGPU_COMP_IN            16  /* dst * coverage: clips what is already there */
+/* v1.2: one of the blend modes below, in bits 8-10, instead of OVER, ADD or IN. */
+#define OGPU_COMP_BLENDMODE     128
+#define OGPU_COMP_MODE(m)       ((unsigned long)(m) << 8)
+#define OGPU_COMP_MODE_OF(f)    ((int)(((f) >> 8) & 7))
+
+/* v1.2: blend modes, as SDL's (colours not premultiplied). FILL_BLEND,
+ * POINTS_BLEND and COMPOSITE_AFFINE take one in their flags' bits 0-2, as
+ * TRIANGLES does (stream3d.h's OGPU_TRI_BLEND_ are the same numbers); LINES_BLEND
+ * too, beside its own flags; COMPOSITE with OGPU_COMP_BLENDMODE in bits 8-10.
+ * The source's alpha is its own (with OGPU_COMP_SRCALPHA, where a source has
+ * one) times the colour's or the alpha word's, times any mask. */
+#define OGPU_BLEND_NONE         0   /* dst = src */
+#define OGPU_BLEND_BLEND        1   /* dstRGB = srcRGB * srcA + dstRGB * (1 - srcA); dstA = srcA + dstA * (1 - srcA) */
+#define OGPU_BLEND_ADD          2   /* dstRGB = dstRGB + srcRGB * srcA, saturating; dstA kept */
+#define OGPU_BLEND_MOD          3   /* dstRGB = srcRGB * dstRGB; dstA kept */
+#define OGPU_BLEND_MUL          4   /* dstRGB = srcRGB * dstRGB + dstRGB * (1 - srcA), saturating; dstA kept */
+#define OGPU_BLEND_MASK         7
+
+/* v1.2: LINES_BLEND's flags, above its blend mode. */
+#define OGPU_LINES_STRIP        8   /* each point joins the next (else pairs: 0-1, 2-3, ...) */
+#define OGPU_LINES_LAST         16  /* draw each line's last point (else it is left out, so
+                                       a strip's joints are blended once) */
+
+/* v1.2: COMPOSITE_AFFINE. The matrix, 16.16 signed, takes a point of the
+ * source (from its corner at source xy) to the target:
+ *   x = m00 u + m01 v + m02,  y = m10 u + m11 v + m12.
+ * Each target pixel whose centre maps inside the source rectangle is drawn,
+ * from the source pixel there (or the four round it, with BILINEAR), times
+ * the colour (ARGB32; its alpha is the global alpha; 0xFFFFFFFF changes
+ * nothing). The matrix's own scale is at most 127 either way. Flags: a blend
+ * mode in bits 0-2, OGPU_COMP_SRCALPHA (8 here: the source's own alpha),
+ * OGPU_COMP_BILINEAR (16 here). */
+#define OGPU_AFF_SRCALPHA       8
+#define OGPU_AFF_BILINEAR       16
+
+/* v1.2: YUV's format word: the layout in bits 0-7, the colour space in bits
+ * 8-15. Planar layouts give the Y, U and V planes' addresses (YV12 is I420
+ * with its planes named in the file's order: give U's and V's addresses as
+ * they are); NV12 and NV21 give Y and the interleaved UV (V's address is 0);
+ * packed layouts give their one plane as Y. Drawn 1:1 into the target
+ * (RGB565 or ARGB32 and the v1.2 formats) at xy, inside the clip; wh is the
+ * picture's size, even. */
+#define OGPU_YUV_I420           1
+#define OGPU_YUV_YV12           2
+#define OGPU_YUV_NV12           3
+#define OGPU_YUV_NV21           4
+#define OGPU_YUV_YUY2           5
+#define OGPU_YUV_UYVY           6
+#define OGPU_YUV_YVYU           7
+#define OGPU_YUV_BT601          0   /* video range, 16-235 */
+#define OGPU_YUV_BT709          1
+#define OGPU_YUV_JPEG           2   /* full range */
+#define OGPU_YUV_FORMAT(layout, space) ((unsigned long)(layout) | ((unsigned long)(space) << 8))
 
 #define OGPU_MAX_SLOTS          16
 #define OGPU_MAX_SIZE           16384   /* widths and heights */
