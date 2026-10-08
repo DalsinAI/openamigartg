@@ -5,6 +5,7 @@
 #include <exec/types.h>
 #include <opengpu/opengpu.h>
 #include <opengpu/module.h>
+#include <opengpu/gfx.h>
 extern struct Library *OpenGPUBase;
 #include <inline/opengpu.h>
 #endif

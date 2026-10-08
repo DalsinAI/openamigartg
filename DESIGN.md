@@ -250,7 +250,10 @@ install competing patches for the overlapping drawing calls. OpenRTG provides
 `ScrollRaster` for OpenRTG bitmaps; the three measurement calls currently
 fall through to graphics.library because OpenRTG does not change font metrics.
 If OpenGfx is absent, OpenRTG keeps its existing standalone patch path. All
-other OpenRTG-specific hooks remain owned by OpenRTG.
+other OpenRTG-specific hooks remain owned by OpenRTG. Since opengpu.library
+0.6 (8 October 2026) OpenGfx is inside opengpu.library, and openrtg.library
+0.12 registers its provider there; with an older opengpu.library it still
+opens `opengfx.library` (by now a stub that forwards to opengpu.library).
 
 
 - **Display database:** NextDisplayInfo, FindDisplayInfo, GetDisplayInfoData,
@@ -309,7 +312,8 @@ other OpenRTG-specific hooks remain owned by OpenRTG.
   (`BltPattern`, `Draw`, pixel arrays, display database, bitmap/screen
   management and board drivers).
   When OpenGfx is not installed, OpenRTG retains its standalone patch path so
-  the library remains usable independently.
+  the library remains usable independently. OpenGfx lives in opengpu.library
+  from 0.6 (`library/ogfx`, "One library" below).
 
 - **The pointer:** each monitor's front screen gets the board's hardware
   sprite (acrtg-v2), which Cradle shows as the PC's cursor.
@@ -568,16 +572,19 @@ and Warp3D.library becomes a stub over it. Then: "resident core, shared big
 parts". The layout below was agreed that day; three helpers add files to it
 without editing each other's.
 
-**OpenGfx's fork, planned.** `library/ogfx/` takes amigachrome-guest
-`libraries/opengfx` at 90aa66f (opengfx.library 1.1: the eight
+**OpenGfx, merged (8 October 2026).** `library/ogfx/` holds amigachrome-guest
+`libraries/opengfx` as of 90aa66f (opengfx.library 1.1: the eight
 graphics.library drawing and text patches, the leaves, the premultiplied
-composite reference). `FORK.md` there records the commit and every change.
-The fork's work then moves onto OpenGPU: the leaves' rectangles become
-FILL, COPY and TEMPLATE batches, its composites COMPOSITE and MASK, so the
-same drawing reaches the ring on the Cradle and the CPU core elsewhere. Its
-LVOs follow OpenGPU's from offset 66 in their own order, so a program
-written for opengfx.library needs only its base changed. Merging the fork
-back is a diff of `FORK.md`'s list against opengfx.library at the time.
+composite reference), merged into opengpu.library 0.6 once the OpenGfx work's
+testing was done; `FORK.md` there records the commit and every change. Its
+six calls are OpenGPU's LVOs from offset 66 in their own order, and the eight
+graphics.library calls follow as LVOs of their own (102 to 144), so a
+program written for opengfx.library needs only its base changed. The patches
+are thin entries in the library's base that call the same code.
+`opengfx.library` 1.2 is a stub that forwards to these LVOs. Next, OpenGfx's
+work moves onto OpenGPU: the leaves' rectangles become FILL, COPY and
+TEMPLATE batches, its composites COMPOSITE and MASK, so the same drawing
+reaches the ring on the Cradle and the CPU core elsewhere.
 
 #### 1. One library, heavy parts loaded on demand
 
@@ -607,7 +614,8 @@ back is a diff of `FORK.md`'s list against opengfx.library at the time.
 | 48 | OGPU_Wait |
 | 54 | OGPU_ModuleOpen |
 | 60 | OGPU_ModuleClose |
-| 66 onwards | the OpenGfx fork's calls, in their own order: OGFX_Version, InstallPatches, SetEnabled, Status, RegisterProvider, UnregisterProvider; then 2D calls as they come |
+| 66 to 96 | OpenGfx's calls, in opengfx.library's order: OGFX_Version, InstallPatches, SetEnabled, Status, RegisterProvider, UnregisterProvider (0.6) |
+| 102 to 144 | graphics.library's eight, through OpenGfx: OGFX_Text, TextLength, TextExtent, TextFit, RectFill, BltBitMap, BltTemplate, ScrollRaster (0.6); then 2D calls as they come |
 
 Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x0035 and the rest) and pass them to `OGPU_Submit`.
 
@@ -629,7 +637,7 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
 - `opengpu/`, the core (library owner): `opengpu_lib.c` (the LVO table, the driver loader and the module loader), `ogpu_core.c/.h` and `ogpu_build.c`.
   - Exception: `ogpu_3d.c/.h`, the CPU rasteriser, belongs to the Warp3D helper. The owner wires 0x0030–0x0035 into `ogpu_core_run` with one call, `ogpu_3d_run(core, op, cmd, words)`.
   - The same files also compile into the runtime's host core, so `ogpu_3d.c` stays integer-only and free of the C library.
-- `ogfx/`, the 2D OpenGfx fork (library owner, later): a copy of amigachrome-guest `libraries/opengfx` at 90aa66f, with `FORK.md` recording the fork commit and a running change list. opengfx.library itself is untouched.
+- `ogfx/`, OpenGfx (library owner): amigachrome-guest `libraries/opengfx` as of 90aa66f, merged into opengpu.library 0.6, with `FORK.md` recording the commit and every change. opengfx.library 1.1 is kept, archived, in amigachrome-guest; `opengfx.library` 1.2 there is a stub that forwards to opengpu.library.
 - `warp3d/` (Warp3D helper): Warp3D.library, the 92-LVO stub, with its own `build.sh`.
 - `modules/gl/` (library owner): GL.module, holding Mesa's port moved from openamigamesa:
   - `mesa/UPSTREAM.json` pin, `mesa/patches/`, the POSIX shim;
@@ -679,7 +687,7 @@ opengpu.library holds 2D, the OpenGfx fork, the 3D rasteriser and the driver loa
 - **Nothing from disk at init.** Init only sets up semaphores. Drivers load on first use from a DOS process, as 0.3 already does.
 - **Resident drivers first.** Before scanning `LIBS:OpenGPU/`, the library looks for drivers already resident (FindResident / the library list). ACRTG.gpu can then live in the ACRTG boot ROM next to acrtg.card, and a booted Cradle needs no driver file.
 - **Stack.** The CPU back end runs on the caller's stack. The core struct is about 400 bytes on the stack; the 3D state (1.7 KB) comes from AllocVec, so patched graphics.library calls from small-stack tasks are safe.
-- **OpenGfx's patches** become thin entry points in the core (SetFunction at init, or at the first OpenLibrary until it is in ROM). They call the same code that programs reach through the LVOs.
+- **OpenGfx's patches** are thin entry points in the core: `OGFX_InstallPatches` writes an 18-byte entry for each into the base and points graphics.library's vector at it (SetFunction at init once it is in ROM). They call the same code that programs reach through the LVOs, and OpenGfx keeps no writable globals (0.6).
 
 ##### Mesa and SDL 2: code loaded once, data per program
 

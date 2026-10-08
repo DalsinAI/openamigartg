@@ -22,4 +22,6 @@ echo "$OUT/OpenGPUBench ($(wc -c < "$OUT/OpenGPUBench") bytes)"
 echo "$OUT/GfxBench ($(wc -c < "$OUT/GfxBench") bytes)"
 "$CC" -m68040 -m68881 -O2 -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenRTGExact" "$HERE/ortg_exact.c"
 echo "$OUT/OpenRTGExact ($(wc -c < "$OUT/OpenRTGExact") bytes)"
-python3 "$HERE/fpcr_check.py" "${CC%gcc}objdump" "$OUT/LibCount" "$OUT/OpenGPUCheck" "$OUT/OpenGPUBench" "$OUT/GfxBench" "$OUT/OpenRTGExact"
+"$CC" -m68040 -m68881 -O2 -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenGfxCheck" "$HERE/ogfx_check.c" -lm
+echo "$OUT/OpenGfxCheck ($(wc -c < "$OUT/OpenGfxCheck") bytes)"
+python3 "$HERE/fpcr_check.py" "${CC%gcc}objdump" "$OUT/LibCount" "$OUT/OpenGPUCheck" "$OUT/OpenGPUBench" "$OUT/GfxBench" "$OUT/OpenRTGExact" "$OUT/OpenGfxCheck"
