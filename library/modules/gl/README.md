@@ -42,17 +42,50 @@ deals with byte order in these places:
     openamigamesa keeps OpenDemos.
   - 0007-0010 are for virgl.
 
+## GL.module and libGL.a
+
+On AmigaOS 3.2 programs don't carry Mesa. They link `libGL.a` (`stubs/gl`),
+and their first GL call loads `LIBS:OpenGPU/GL.module` through
+opengpu.library's `OGPU_ModuleOpen` (`include/opengpu/module.h`):
+
+- **GL.module** (`module/`) is Mesa, the GLA core and its OS 3 parts, linked
+  as a module on `library/modules/common`. Its table hands out every call by
+  name: the 1,300 GL and GLES entry points Mesa's glapi generated for this
+  build, and the 15 GLA calls (`stubs/gl/gla.names`). It is about 20 MB and
+  opens in about a second on the AC090.
+- **libGL.a** has one entry per call, generated with the module's table from
+  the same list (`stubs/gl/gen_gl.py`). An entry jumps through its slot in a
+  table, so it works whatever the call's arguments. The first call loads the
+  module and binds the whole table by name in one pass. A call the installed
+  module doesn't have returns 0.
+- Each program gets its own copy of the module (step 1 of the residency
+  plan, DESIGN.md section 5), so Mesa's globals are its own.
+- GL runs on the program's stack: give `main` a big one (OpenDemos asks
+  libnix for 1 MB).
+
+## GCC 16's FPCR clash
+
+At `-m68040`, GCC 16 sometimes saves FPCR around a float-to-int store in
+the register the store indexes with, so the value lands in the wrong place
+(`tools/fpcr_check.py`). `mesa/fpcr_fix.py` scans Mesa's objects after
+each build and builds any that have one again at `-m68020 -m68881` (which
+converts with `fintrz`), linked ahead of the libraries. On 8 October 2026
+that was one of 833: `feedback.c`'s `update_hit_record`. `module/build.sh`
+checks GL.module itself before it ships.
+
 ## Build
 
 ```
 sh mesa/build.sh                                        # this machine: test_gla
 CROSS=mesa/cross/m68k-amigaos.ini sh mesa/build.sh      # AmigaOS 3.2 (the os32-gcc16 stove's bin/ first on PATH)
+sh module/build.sh [OUT_DIR]                            # AmigaOS 3.2: GL.module, libGL.a, include/ (default build/gl)
 ACVIRGL_LIB=/path/libvirglrenderer.so.1 sh tests/run.sh
 ```
 
 `GL_WORK` chooses the work directory, which defaults to `build/` here (about
-1 GB). Programs link the GLA core from `gla-link.env` in the build
-directory (OpenDemos does).
+1 GB). A program for OS 3.2 compiles with Mesa's `include/` and
+`OUT_DIR/include` and links `-L OUT_DIR -lGL`; OpenDemos (openamigamesa)
+does.
 
 ## Measured, 8 October 2026
 
@@ -62,10 +95,14 @@ virglrenderer 1.3.0 on the PC's graphics chip):
 - **test_gla:** softpipe gives its stored pictures. virgl gives GL 4.3, the
   same pictures as virgl on the x86 host (c3c62778, 34e0c2fd, 1a30012c),
   and 100% of softpipe's within the allowance.
-- **OpenDemos at 320x240** (openamigamesa), softpipe → virgl:
-  - Boing: 4.2 → 342 fps
-  - Chrome Gears: 1.5 → 421 fps
-  - Copper Tunnel: 0.3 → 512 fps
+- **OpenDemos at 320x240** (openamigamesa), linked with libGL.a (100 KB
+  rather than 20 MB), GL from GL.module, softpipe → virgl:
+  - Boing: 4.0 → 357 fps
+  - Chrome Gears: 1.5 → 427 fps
+  - Copper Tunnel: 0.3 → 738 fps
 
-Next: GL.module (loaded by OGPU_ModuleOpen) and the libGL.a link stub, so
-programs no longer carry Mesa's 20 MB each.
+  A second run gave 442, 556 and 1,205 fps on virgl (the PC's load
+  varies) and the same on softpipe. Mesa linked into the program gave
+  4.2 → 342, 1.5 → 421, 0.3 → 512: the module costs nothing per call.
+- **ModuleCheck** (`tests/modules`) opens GL.module in 1,020 ms and finds
+  its 1,315 calls.
