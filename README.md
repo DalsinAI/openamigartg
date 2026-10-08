@@ -83,6 +83,15 @@ that it is based on OpenRTG by Dalsin Limited.
 - `measurements/`: LibCount's raw counts from the OS 3.2.3 scratch copy with
   Picasso96, 4 October 2026: Workbench for 45 seconds, and MultiView showing
   a true-colour PNG for 30. The design's phase 0 section reads them.
+- `tools/make_sdk.py` and `sdk/`: the OpenGPU developer kit
+  (`OpenGPU-SDK-0.6`): SDL 2 and its satellites, OpenGL, GLES and GLA,
+  Warp3D, MiniGL and opengpu.library's headers and link libraries,
+  `sdl2-config`, pkg-config and CMake files, examples and every notice, as a
+  `.tar.gz` for the PC and an `.lha` for the Amiga. Run after
+  `library/build.sh` and the GL module's build:
+  `tools/make_sdk.py --build build --gl build/gl OUT_DIR --archives`.
+  `sdk/README` is the kit's readme and `sdk/AutoDocs-OpenGPU.md` its
+  reference. The kit is build output and is not committed.
 
 ## Contributors
 
