@@ -14,9 +14,10 @@ BUILD    library/build.sh's output (the SDL 2 libraries and headers, its
 GL_OUT   library/modules/gl/module/build.sh's output (libGL.a, include/gla)
 MESA_SRC Mesa's source tree, for GL's and Khronos's headers; default: SRC
          in GL_WORK's gla-link.env (GL_WORK, default the GL module's build/)
-SDL12_OUT SDL 1.2 (sdl12-compat on OpenGPU's SDL 2), optional: a folder with
-         include/SDL/ (sdl12-compat's headers), libSDL.a and LICENSE.txt.
-         Without it the kit has no SDL 1.2 (no SDL/, -lSDL or sdl-config).
+SDL12_OUT SDL 1.2 (sdl12-compat on OpenGPU's SDL 2): library/modules/sdl12's
+         output, a folder with include/SDL/ (sdl12-compat's headers), libSDL.a
+         and LICENSE.txt; default BUILD/sdl12 when it is there. Without it the
+         kit has no SDL 1.2 (no SDL/, -lSDL or sdl-config).
 
 It makes OUT_DIR/OpenGPU-SDK-VERSION/ and, with --archives, its .tar.gz
 (for cross-compiling on the PC) and .lha (for the Amiga) beside it.
@@ -180,10 +181,14 @@ SDL_CONFIG = r'''#!/bin/sh
 # SDL 1.2 here is sdl12-compat on OpenGPU's SDL 2 (SDL2.module): libSDL.a
 # turns SDL 1.2's calls into SDL 2's, so both draw through the same engine.
 #   m68k-amigaos-gcc game.c -o Game $(sdl-config --cflags --libs)
-# A program that calls SDL_GL_ functions asks for GL too, and gets -lGL:
+# libSDL.a carries SDL 2's link library inside it, so -lSDL is all a
+# program needs. One that uses OpenGL (SDL_OPENGL) asks for GL too, which
+# links SDL 2's GL calls and -lGL:
 #   m68k-amigaos-gcc glgame.c -o GLGame $(sdl-config --cflags --libs --gl)
 # It finds the kit as sdl2-config does, and takes the same SDL2_CPU and
-# SDL2_RUNTIME settings.
+# SDL2_RUNTIME settings. --cflags gives -DNO_SDL_GLU: the kit has no GLU,
+# so SDL_opengl.h doesn't include GL/glu.h (tgl/glu.h has a few GLU calls,
+# in libtinygl.a).
 self=$0
 while [ -L "$self" ]; do
     link=$(readlink "$self")
@@ -211,15 +216,16 @@ usage() {
 }
 [ $# -eq 0 ] && usage 1 1>&2
 gl=
-for a in "$@"; do [ "$a" = --gl ] && gl=" -lGL"; done
+gl12=
+for a in "$@"; do [ "$a" = --gl ] && gl=" -lGL" && gl12=" -Wl,-u,_SDL12Amiga_gl -lSDL_gl"; done
 out=
 while [ $# -gt 0 ]; do
     case $1 in
     --prefix=*|--exec-prefix=*) ;;
     --prefix|--exec-prefix) out="$out $prefix" ;;
     --version) out="$out @VERSION@" ;;
-    --cflags) out="$out -I$includedir/SDL $runtime $cpu$extra" ;;
-    --libs|--static-libs) out="$out $runtime $cpu -L$libdir -lSDL -lSDL2$gl -lm" ;;
+    --cflags) out="$out -I$includedir/SDL -DNO_SDL_GLU $runtime $cpu$extra" ;;
+    --libs|--static-libs) out="$out $runtime $cpu -L$libdir$gl12 -lSDL$gl -lm" ;;
     --gl) ;;
     *) usage 1 1>&2 ;;
     esac
@@ -248,8 +254,8 @@ PC = {
 }
 # Only with --sdl12.
 PC_SDL12 = {
-    "sdl": ("sdl", "Simple DirectMedia Layer 1.2 on OpenGPU: sdl12-compat on SDL 2", SDL12_VERSION, "sdl2",
-            "-L${libdir} -lSDL", "-I${includedir}/SDL"),
+    "sdl": ("sdl", "Simple DirectMedia Layer 1.2 on OpenGPU: sdl12-compat on SDL 2", SDL12_VERSION, "",
+            "-L${libdir} -lSDL -lm", "-I${includedir}/SDL -DNO_SDL_GLU"),
 }
 
 
@@ -317,6 +323,8 @@ def make_kit(args) -> Path:
     work = build / "sdl2-work"
     mesa = mesa_src(args)
     sdl12 = Path(args.sdl12).resolve() if args.sdl12 else None
+    if not sdl12 and (build / "sdl12" / "libSDL.a").is_file():
+        sdl12 = build / "sdl12"
     kit = Path(args.out).resolve() / f"OpenGPU-SDK-{args.version}"
     if kit.exists():
         die(f"{kit} is there already: choose another OUT_DIR, or move it away")
@@ -381,6 +389,7 @@ def make_kit(args) -> Path:
             if not (inc / "SDL" / need).is_file():
                 die(f"no SDL/{need} in {sdl12}")
         copy(sdl12 / "libSDL.a", lib / "libSDL.a")
+        copy(sdl12 / "libSDL_gl.a", lib / "libSDL_gl.a")
 
     # 4. The libraries. One set serves both stoves: the GCC 16 builds link
     #    with GCC 6.5's libnix too (same libnix, a.out objects, FPU ABI).
@@ -431,7 +440,7 @@ def make_kit(args) -> Path:
     notices.append(("OpenGPU, OpenRTG, Warp3D, MiniGL, TinyGL and GLA headers; libGL.a, libminigl.a, libmgl.a, libtinygl.a; libSDL2.a's SDL2_gl.o; sdl2-config, sdl-config, the pkg-config and CMake files; the examples", "MIT, Dalsin Limited (OpenGPU.txt)"))
     if sdl12:
         copy(sdl12 / "LICENSE.txt", L / "sdl12-compat.txt")
-        notices.append((f"sdl12-compat {SDL12_VERSION}: SDL/ headers, libSDL.a (with dr_mp3: public domain or MIT-0)", "Zlib (sdl12-compat.txt)"))
+        notices.append((f"sdl12-compat {SDL12_VERSION}: SDL/ headers, libSDL.a (altered by the Team for AmigaOS 3; with dr_mp3: public domain or MIT-0). libSDL.a also holds libSDL2.a's members, renamed SDL2X_; libSDL_gl.a", "Zlib (sdl12-compat.txt)"))
     sdl = work / f"SDL2-{SDL_VERSION}"
     copy(sdl / "LICENSE.txt", L / "SDL2.txt")
     notices.append((f"SDL {SDL_VERSION}: SDL2/ headers (SDL_config.h is the Team's SDL_config_amigaos.h, MIT), libSDL2.a (SDL's dynamic API, altered by the Team), libSDL2_test.a", "Zlib (SDL2.txt)"))
@@ -523,7 +532,7 @@ def main() -> int:
     ap.add_argument("--build", default=str(ROOT / "build"))
     ap.add_argument("--gl", default=str(ROOT / "build" / "gl"))
     ap.add_argument("--mesa")
-    ap.add_argument("--sdl12", help="sdl12-compat's build (include/SDL/, libSDL.a, LICENSE.txt); optional")
+    ap.add_argument("--sdl12", help="sdl12-compat's build (include/SDL/, libSDL.a, LICENSE.txt); default BUILD/sdl12")
     ap.add_argument("--version", default="0.6")
     ap.add_argument("--stove", default=os.environ.get("STOVE16", str(Path.home() / "AmigaChrome/stoves/os32-gcc16/prefix")),
                     help="a stove prefix, for m68k-amigaos-ar when it isn't on PATH")
