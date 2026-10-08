@@ -2052,10 +2052,6 @@ static int try_opengfx_handoff(void)
 {
     int registered = 0;
 
-    OpenGfxBase = OpenLibrary((CONST_STRPTR)ORTG_OPENGFXLIB_NAME,
-                              ORTG_OPENGFXLIB_VERSION);
-    if (!OpenGfxBase) return 0;
-
     ogfx_provider.size = sizeof ogfx_provider;
     ogfx_provider.abi = ORTG_OGFX_PROVIDER_ABI_V1;
     ogfx_provider.owner = (APTR)&ogfx_provider;
@@ -2068,6 +2064,20 @@ static int try_opengfx_handoff(void)
     ogfx_provider.textextent = NULL;
     ogfx_provider.textfit = NULL;
     ogfx_provider.blttemplate = ogfx_blttemplate_provider;
+
+    /* opengpu.library 0.6 and later carries OpenGfx itself: the one library
+     * that does all the drawing. OpenRTG registers there, and doesn't look
+     * for opengfx.library (by now a stub that forwards to it). */
+    if (OpenGPUBase && (OpenGPUBase->lib_Version > 0 || OpenGPUBase->lib_Revision >= ORTG_OPENGPU_OGFX_REVISION)) {
+        if (!ORTG_OGPU_OGFX_RegisterProvider(OpenGPUBase, &ogfx_provider)) return 0;
+        if (ORTG_OGPU_OGFX_InstallPatches(OpenGPUBase)) return 1;
+        (void)ORTG_OGPU_OGFX_UnregisterProvider(OpenGPUBase, (APTR)&ogfx_provider);
+        return 0;
+    }
+
+    OpenGfxBase = OpenLibrary((CONST_STRPTR)ORTG_OPENGFXLIB_NAME,
+                              ORTG_OPENGFXLIB_VERSION);
+    if (!OpenGfxBase) return 0;
 
     if (!ORTG_OGFX_RegisterProvider(OpenGfxBase, &ogfx_provider))
         goto fail;
@@ -2109,7 +2119,8 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
      * that holds a layer's lock. */
     if (OpenGPUBase) (void)OGPU_Query(OGPU_OP_FILL, OGPU_FMT_CLUT8);
 
-    /* New stack: OpenGfx 1.1 owns Text, TextLength, TextExtent, TextFit,
+    /* New stack: OpenGfx (inside opengpu.library from 0.6, before that
+     * opengfx.library 1.1) owns Text, TextLength, TextExtent, TextFit,
      * RectFill, BltBitMap, BltTemplate and ScrollRaster. OpenRTG provides
      * its RTG drawing implementations through the provider bridge. If
      * OpenGfx is absent, retain the old standalone OpenRTG patch path. */

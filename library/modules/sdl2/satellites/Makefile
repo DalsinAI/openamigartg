@@ -108,9 +108,11 @@ NET_OBJS = $(addprefix $(OBJ)/net/,SDLnet.o SDLnetTCP.o SDLnetUDP.o SDLnetselect
 $(OBJ)/net/net_shim.o: $(HERE)net_shim.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
-$(OBJ)/net/%.o: $(NET)/src/%.c
+# libnix's select() never sees a socket that has data (net_shim.c): SDL2_net
+# calls net_shim.c's ogpu_net_select instead.
+$(OBJ)/net/%.o: $(NET)/src/%.c $(HERE)Makefile
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -I$(NET)/include -c $< -o $@
+	$(CC) $(CFLAGS) -Dselect=ogpu_net_select -I$(NET)/include -c $< -o $@
 
 .PHONY: satellites headers
 satellites: headers $(OUT)/libSDL2_image.a $(OUT)/libSDL2_mixer.a $(OUT)/libSDL2_ttf.a $(OUT)/libSDL2_net.a \

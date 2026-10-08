@@ -1,0 +1,441 @@
+# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# SPDX-License-Identifier: MIT
+#
+# minigl.library's interface, from which library/minigl/gen_api.py makes
+# include/libraries/minigl_dispatch.h (the table and the calls programs
+# make through it), include/mgl/minigl_calls.h (the calls' prototypes),
+# library/minigl/mgl_table.c (the table the library hands out) and
+# library/minigl/mgl_static.c (the same calls as functions, for libmgl.a).
+#
+# "slot" lines are the table's entries after its five header fields, in
+# table order: the order and the types are what compiled programs use
+# (dispatch ABI 5, 205 entries, 840 bytes), so a line is never moved.
+#   slot RETURN | NAME | PARAMETERS
+# "call" lines are the functions programs call (gl*, glu*, glut*, mgl*):
+#   call RETURN | NAME | PARAMETERS | HOW
+# HOW is an entry and its arguments, where CTX is the current context;
+# "guard" calls only when there is a current context; "create" makes the
+# new context current; "delete" and "glutinit" are written out by the
+# generator.
+
+slot void | GLActiveTextureARB | GLcontext context, GLenum unit
+slot void | GLAlphaFunc | GLcontext context, GLenum func, GLclampf ref
+slot void | GLArrayElement | GLcontext context, GLint i
+slot void | GLBegin | GLcontext context, GLenum mode
+slot void | GLBindTexture | GLcontext context, GLenum target, GLuint texture
+slot void | GLBlendFunc | GLcontext context, GLenum sfactor, GLenum dfactor
+slot void | GLClear | GLcontext context, GLbitfield mask
+slot void | GLClearColor | GLcontext context, GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha
+slot void | GLClearDepth | GLcontext context, GLclampd depth
+slot void | GLColor3fv | GLcontext context, GLfloat *v
+slot void | GLColor3ubv | GLcontext context, GLubyte *v
+slot void | GLColor4f | GLcontext context, GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha
+slot void | GLColor4fv | GLcontext context, GLfloat *v
+slot void | GLColor4ub | GLcontext context, GLubyte red, GLubyte green, GLubyte blue, GLubyte alhpa
+slot void | GLColor4ubv | GLcontext context, GLubyte *v
+slot void | GLColorMask | GLcontext context, GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha
+slot void | GLColorPointer | GLcontext context, GLint size, GLenum type, GLsizei stride, const GLvoid *pointer
+slot void | GLColorTable | GLcontext context, GLenum target, GLenum internalformat, GLint width, GLenum format, GLenum type, GLvoid *data
+slot void | GLCullFace | GLcontext context, GLenum mode
+slot void | GLDeleteTextures | GLcontext context, GLsizei n, const GLuint *textures
+slot void | GLDepthFunc | GLcontext context, GLenum func
+slot void | GLDepthMask | GLcontext context, GLboolean flag
+slot void | GLDepthRange | GLcontext context, GLclampd n, GLclampd f
+slot void | GLDisableClientState | GLcontext context, GLenum cap
+slot void | GLDrawArrays | GLcontext context, GLenum mode, GLint first, GLsizei count
+slot void | GLDrawBuffer | GLcontext context, GLenum mode
+slot void | GLDrawElements | GLcontext context, GLenum mode, GLsizei count, GLenum type, const GLvoid *indices
+slot void | GLEnableClientState | GLcontext context, GLenum cap
+slot void | GLEnd | GLcontext context
+slot void | GLFinish | GLcontext context
+slot void | GLFlush | GLcontext context
+slot void | GLFogf | GLcontext context, GLenum pname, GLfloat param
+slot void | GLFogfv | GLcontext context, GLenum pname, GLfloat *param
+slot void | GLFrontFace | GLcontext context, GLenum mode
+slot void | GLFrustum | GLcontext context, GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar
+slot void | GLGenTextures | GLcontext context, GLsizei n, GLuint *textures
+slot void | GLGetBooleanv | GLcontext context, GLenum pname, GLboolean *params
+slot GLenum | GLGetError | GLcontext context
+slot void | GLGetFloatv | GLcontext context, GLenum pname, GLfloat *params
+slot void | GLGetIntegerv | GLcontext context, GLenum pname, GLint *params
+slot const GLubyte* | GLGetString | GLcontext context, GLenum name
+slot void | GLHint | GLcontext context, GLenum target, GLenum mode
+slot GLboolean | GLIsEnabled | GLcontext context, GLenum cap
+slot void | GLLoadIdentity | GLcontext context
+slot void | GLLoadMatrixd | GLcontext context, const GLdouble *m
+slot void | GLLoadMatrixf | GLcontext context, const GLfloat *m
+slot void | GLLockArrays | GLcontext context, GLuint first, GLsizei count
+slot void | GLMatrixMode | GLcontext context, GLenum mode
+slot void | GLMultMatrixd | GLcontext context, const GLdouble *m
+slot void | GLMultMatrixf | GLcontext context, const GLfloat *m
+slot void | GLMultiTexCoord2fARB | GLcontext context, GLenum unit, GLfloat s, GLfloat t
+slot void | GLMultiTexCoord2fvARB | GLcontext context, GLenum unit, GLfloat *v
+slot void | GLNormal3f | GLcontext context, GLfloat x, GLfloat y, GLfloat z
+slot void | GLOrtho | GLcontext context, GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar
+slot void | GLPixelStorei | GLcontext context, GLenum pname, GLint param
+slot void | GLPointSize | GLcontext context, GLfloat size
+slot void | GLPolygonMode | GLcontext context, GLenum face, GLenum mode
+slot void | GLPopMatrix | GLcontext context
+slot void | GLPushMatrix | GLcontext context
+slot void | GLReadPixels | GLcontext context, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels
+slot void | GLRotated | GLcontext context, GLdouble angle, GLdouble x, GLdouble y, GLdouble z
+slot void | GLRotatef | GLcontext context, GLfloat angle, GLfloat x, GLfloat y, GLfloat z
+slot void | GLRotatefEXT | GLcontext context, GLfloat angle, const GLint xyz
+slot void | GLRotatefEXTs | GLcontext context, GLfloat sin_an, GLfloat cos_an, const GLint xyz
+slot void | GLScaled | GLcontext context, GLdouble x, GLdouble y, GLdouble z
+slot void | GLScalef | GLcontext context, GLfloat x, GLfloat y, GLfloat z
+slot void | GLScissor | GLcontext context, GLint x, GLint y, GLsizei width, GLsizei height
+slot void | GLShadeModel | GLcontext context, GLenum mode
+slot void | GLTexCoord2f | GLcontext context, GLfloat s, GLfloat t
+slot void | GLTexCoord2fv | GLcontext context, GLfloat *v
+slot void | GLTexCoord4f | GLcontext context, GLfloat s, GLfloat t, GLfloat r, GLfloat q
+slot void | GLTexCoord4fv | GLcontext context, GLfloat *v
+slot void | GLTexCoordPointer | GLcontext context, GLint size, GLenum type, GLsizei stride, const GLvoid *pointer
+slot void | GLTexEnvi | GLcontext context, GLenum target, GLenum pname, GLint param
+slot void | GLTexGeni | GLcontext context, GLenum coord, GLenum mode, GLenum map
+slot void | GLTexImage2D | GLcontext context, GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels
+slot void | GLTexParameteri | GLcontext context, GLenum target, GLenum pname, GLint param
+slot void | GLTexSubImage2D | GLcontext context, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels
+slot void | GLTranslated | GLcontext context, GLdouble x, GLdouble y, GLdouble z
+slot void | GLTranslatef | GLcontext context, GLfloat x, GLfloat y, GLfloat z
+slot void | GLULookAt | GLfloat ex, GLfloat ey, GLfloat ez, GLfloat cx, GLfloat cy, GLfloat cz, GLfloat ux, GLfloat uy, GLfloat uz
+slot void | GLUPerspective | GLfloat fovy, GLfloat aspect, GLfloat znear, GLfloat zfar
+slot void | GLUnlockArrays | GLcontext context
+slot void | GLVertex2fv | GLcontext context, GLfloat *v
+slot void | GLVertex3fv | GLcontext context, GLfloat *v
+slot void | GLVertex4f | GLcontext context, GLfloat x, GLfloat y, GLfloat z, GLfloat w
+slot void | GLVertex4fv | GLcontext context, GLfloat *v
+slot void | GLVertexPointer | GLcontext context, GLint size, GLenum type, GLsizei stride, const GLvoid *pointer
+slot void | GLViewport | GLcontext context, GLint x, GLint y, GLsizei width, GLsizei height
+slot void | MGLClearPointer | GLcontext context
+slot void * | MGLCreateContext | int offx, int offy, int w, int h
+slot void * | MGLCreateContextFromID | GLint ID, GLint *w, GLint *h
+slot void | MGLDeleteContext | GLcontext context
+slot void | MGLDrawMultitexBuffer | GLcontext context, GLenum BSrc, GLenum BDst, GLenum TexEnv
+slot void | MGLEnableSync | GLcontext context, GLboolean enable
+slot void | MGLExit | GLcontext context
+slot void * | MGLGetInputWindowHandle | GLcontext context
+slot void * | MGLGetWindowHandle | GLcontext context
+slot void | MGLIdleFunc | GLcontext context, IdleFn i
+slot void | MGLKeyFunc | GLcontext context, KeyHandlerFn k
+slot GLboolean | MGLLockBack | GLcontext context, MGLLockInfo *info
+slot GLboolean | MGLLockDisplay | GLcontext context
+slot void | MGLLockMode | GLcontext context, GLenum lockMode
+slot void | MGLMainLoop | GLcontext context
+slot void | MGLMinTriArea | GLcontext context, GLfloat area
+slot void | MGLMouseFunc | GLcontext context, MouseHandlerFn m
+slot void | MGLPrintMatrix | GLcontext context, int mode
+slot void | MGLPrintMatrixStack | GLcontext context, int mode
+slot GLboolean | MGLResizeContext | GLcontext context, GLsizei width, GLsizei height
+slot void | MGLSetPointer | GLcontext context
+slot void | MGLSetState | GLcontext context, GLenum cap, GLboolean state
+slot void | MGLSetZOffset | GLcontext context, GLfloat offset
+slot void | MGLSpecialFunc | GLcontext context, SpecialHandlerFn s
+slot void | MGLSwitchDisplay | GLcontext context
+slot void | MGLTexMemStat | GLcontext context, GLint *Current, GLint *Peak
+slot void | MGLUnlockDisplay | GLcontext context
+slot void | MGLWriteShotPPM | GLcontext context, char *filename
+slot void | mglChooseGuardBand | GLboolean flag
+slot void | mglChooseMtexBufferSize | int size
+slot void | mglChooseNumberOfBuffers | int number
+slot void | mglChoosePixelDepth | int depth
+slot void | mglChooseTextureBufferSize | int size
+slot void | mglChooseVertexBufferSize | int size
+slot void | mglChooseWindowMode | GLboolean flag
+slot GLint | mglGetSupportedScreenModes | MGLScreenModeCallback CallbackFn
+slot void | mglProhibitAlphaFallback | GLboolean flag
+slot void | mglProhibitMipMapping | GLboolean flag
+slot void | mglProposeCloseDesktop | GLboolean closeme
+slot void | GLPolygonOffset | GLcontext context, GLfloat factor, GLfloat units
+slot void | GLClientActiveTextureARB | GLcontext context, GLenum unit
+slot void | GLInterleavedArrays | GLcontext context, GLenum format, GLsizei stride, const GLvoid *pointer
+slot void | GLMultiDrawArrays | GLcontext context, GLenum mode, const GLint *first, const GLsizei *count, GLsizei primcount
+slot void | GLBlendEquation | GLcontext context, GLenum mode
+slot void | GLBlendFuncSeparate | GLcontext context, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha
+slot GLboolean | GLIsTexture | GLcontext context, GLuint texture
+slot void | mglChooseZBufferDepth | int bits
+slot void | GLLineWidth | GLcontext context, GLfloat width
+slot void | GLTexGenfv | GLcontext context, GLenum coord, GLenum pname, const GLfloat *params
+slot void | GLCopyTexImage2D | GLcontext context, GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border
+slot void | GLCopyTexSubImage2D | GLcontext context, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height
+slot GLboolean | GLAreTexturesResident | GLcontext context, GLsizei n, const GLuint *textures, GLboolean *residences
+slot void | GLEdgeFlag | GLcontext context, GLboolean flag
+slot void | GLEdgeFlagPointer | GLcontext context, GLsizei stride, const GLvoid *pointer
+slot void | GLEdgeFlagv | GLcontext context, const GLboolean *flag
+slot void | GLGetDoublev | GLcontext context, GLenum pname, GLdouble *params
+slot void | GLGetPointerv | GLcontext context, GLenum pname, GLvoid **params
+slot void | GLIndexi | GLcontext context, GLint c
+slot void | GLIndexiv | GLcontext context, const GLint *c
+slot void | GLIndexPointer | GLcontext context, GLenum type, GLsizei stride, const GLvoid *pointer
+slot void | GLPrioritizeTextures | GLcontext context, GLsizei n, const GLuint *textures, const GLclampf *priorities
+slot void | GLReadBuffer | GLcontext context, GLenum mode
+slot void * | MGLCreateContextFromWindow | struct Window *window
+slot void * | MGLCreateContextFromBitMap | struct BitMap *bitmap
+slot void | GLLightf | GLcontext context, GLenum light, GLenum pname, GLfloat param
+slot void | GLLightfv | GLcontext context, GLenum light, GLenum pname, const GLfloat *params
+slot void | GLMaterialf | GLcontext context, GLenum face, GLenum pname, GLfloat param
+slot void | GLMaterialfv | GLcontext context, GLenum face, GLenum pname, const GLfloat *params
+slot void | GLLightModelf | GLcontext context, GLenum pname, GLfloat param
+slot void | GLLightModelfv | GLcontext context, GLenum pname, const GLfloat *params
+slot void | GLGetLightfv | GLcontext context, GLenum light, GLenum pname, GLfloat *params
+slot void | GLGetMaterialfv | GLcontext context, GLenum face, GLenum pname, GLfloat *params
+slot GLuint | GLGenLists | GLcontext context, GLsizei range
+slot void | GLDeleteLists | GLcontext context, GLuint list, GLsizei range
+slot GLboolean | GLIsList | GLcontext context, GLuint list
+slot void | GLNewList | GLcontext context, GLuint list, GLenum mode
+slot void | GLEndList | GLcontext context
+slot void | GLCallList | GLcontext context, GLuint list
+slot GLint | GLUBuild2DMipmaps | GLcontext context, GLenum target, GLint internalFormat, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *data
+slot const GLubyte * | GLUErrorString | GLenum errCode
+slot GLUquadricObj * | GLUNewQuadric | void
+slot void | GLUDeleteQuadric | GLUquadricObj *q
+slot void | GLUQuadricNormals | GLUquadricObj *q, GLenum normals
+slot void | GLUQuadricTexture | GLUquadricObj *q, GLboolean textureCoords
+slot void | GLUQuadricDrawStyle | GLUquadricObj *q, GLenum drawStyle
+slot void | GLUQuadricOrientation | GLUquadricObj *q, GLenum orientation
+slot void | GLUCylinder | GLUquadricObj *q, GLdouble base, GLdouble top, GLdouble height, GLint slices, GLint stacks
+slot void | GLUSphere | GLUquadricObj *q, GLdouble radius, GLint slices, GLint stacks
+slot void | GLUDisk | GLUquadricObj *q, GLdouble inner, GLdouble outer, GLint slices, GLint loops
+slot void | GLUTInit | int *argcp, char **argv
+slot void | GLUTInitDisplayMode | unsigned int mode
+slot void | GLUTInitWindowSize | int width, int height
+slot void | GLUTInitWindowPosition | int x, int y
+slot int | GLUTCreateWindow | const char *title
+slot void | GLUTMainLoop | void
+slot void | GLUTDisplayFunc | void (*func)(void)
+slot void | GLUTIdleFunc | void (*func)(void)
+slot void | GLUTKeyboardFunc | void (*func)(unsigned char key, int x, int y)
+slot void | GLUTReshapeFunc | void (*func)(int width, int height)
+slot void | GLUTSwapBuffers | void
+slot void | GLUTPostRedisplay | void
+slot int | GLUTGet | GLenum state
+slot void | GLUTGameModeString | const char *string
+slot int | GLUTEnterGameMode | void
+slot void | GLUTLeaveGameMode | void
+slot int | GLUTGameModeGet | GLenum query
+slot void | GLUTSolidCube | GLdouble size
+slot void | GLUTSolidSphere | GLdouble radius, GLint slices, GLint stacks
+slot void | GLUTSolidCone | GLdouble base, GLdouble height, GLint slices, GLint stacks
+slot void | GLUTSolidTorus | GLdouble innerRadius, GLdouble outerRadius, GLint sides, GLint rings
+slot void | GLUTSolidDodecahedron | void
+slot void | GLNormalPointer | GLcontext context, GLenum type, GLsizei stride, const GLvoid *pointer
+slot void | GLUQuadricCallback | GLUquadricObj *q, GLenum which, MGLUfuncptr fn
+slot void | GLColorMaterial | GLcontext context, GLenum face, GLenum mode
+slot void | GLTexEnvfv | GLcontext context, GLenum target, GLenum pname, const GLfloat *params
+slot void | GLNormal3fv | GLcontext context, GLfloat *n
+
+call void | glActiveTextureARB | GLenum unit | GLActiveTextureARB(CTX, unit)
+call void | glAlphaFunc | GLenum func, GLclampf ref | GLAlphaFunc(CTX, func, ref)
+call void | glArrayElement | GLint i | GLArrayElement(CTX, i)
+call void | glBegin | GLenum mode | GLBegin(CTX, mode)
+call void | glBindTexture | GLenum target, GLuint texture | GLBindTexture(CTX, target, texture)
+call void | glBlendFunc | GLenum sfactor, GLenum dfactor | GLBlendFunc(CTX, sfactor, dfactor)
+call void | glClear | GLbitfield mask | GLClear(CTX, mask)
+call void | glClearColor | GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha | GLClearColor(CTX, red, green, blue, alpha)
+call void | glClearDepth | GLclampd depth | GLClearDepth(CTX, depth)
+call void | glColor3f | GLfloat red, GLfloat green, GLfloat blue | GLColor4f(CTX, red, green, blue, 1.0f)
+call void | glColor3fv | GLfloat *v | GLColor3fv(CTX, v)
+call void | glColor3ub | GLubyte red, GLubyte green, GLubyte blue | GLColor4ub(CTX, red, green, blue, 255)
+call void | glColor3ubv | GLubyte *v | GLColor3ubv(CTX, v)
+call void | glColor4f | GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha | GLColor4f(CTX, red, green, blue, alpha)
+call void | glColor4fv | GLfloat *v | GLColor4fv(CTX, v)
+call void | glColor4ub | GLubyte red, GLubyte green, GLubyte blue, GLubyte alpha | GLColor4ub(CTX, red, green, blue, alpha)
+call void | glColor4ubv | GLubyte *v | GLColor4ubv(CTX, v)
+call void | glColorMask | GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha | GLColorMask(CTX, red, green, blue, alpha)
+call void | glColorPointer | GLint size, GLenum type, GLsizei stride, const GLvoid *pointer | GLColorPointer(CTX, size, type, stride, pointer)
+call void | glColorTable | GLenum target, GLenum internalformat, GLint width, GLenum format, GLenum type, GLvoid *data | GLColorTable(CTX, target, internalformat, width, format, type, data)
+call void | glColorTableEXT | GLenum target, GLenum internalformat, GLint width, GLenum format, GLenum type, GLvoid *data | GLColorTable(CTX, target, internalformat, width, format, type, data)
+call void | glCullFace | GLenum mode | GLCullFace(CTX, mode)
+call void | glDeleteTextures | GLsizei n, const GLuint *textures | GLDeleteTextures(CTX, n, textures)
+call void | glDepthFunc | GLenum func | GLDepthFunc(CTX, func)
+call void | glDepthMask | GLboolean flag | GLDepthMask(CTX, flag)
+call void | glDepthRange | GLclampd n, GLclampd f | GLDepthRange(CTX, n, f)
+call void | glDisable | GLenum cap | MGLSetState(CTX, cap, GL_FALSE)
+call void | glDisableClientState | GLenum cap | GLDisableClientState(CTX, cap)
+call void | glDrawArrays | GLenum mode, GLint first, GLsizei count | GLDrawArrays(CTX, mode, first, count)
+call void | glDrawBuffer | GLenum mode | GLDrawBuffer(CTX, mode)
+call void | glDrawElements | GLenum mode, GLsizei count, GLenum type, const GLvoid *pointer | GLDrawElements(CTX, mode, count, type, pointer)
+call void | glEnable | GLenum cap | MGLSetState(CTX, cap, GL_TRUE)
+call void | glEnableClientState | GLenum cap | GLEnableClientState(CTX, cap)
+call void | glEnd | void | GLEnd(CTX)
+call void | glFinish | void | GLFinish(CTX)
+call void | glFlush | void | GLFlush(CTX)
+call void | glFogf | GLenum pname, GLfloat param | GLFogf(CTX, pname, param)
+call void | glFogfv | GLenum pname, GLfloat *param | GLFogfv(CTX, pname, param)
+call void | glFogi | GLenum pname, GLint param | GLFogf(CTX, pname, (GLfloat)param)
+call void | glFrontFace | GLenum mode | GLFrontFace(CTX, mode)
+call void | glFrustum | GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar | GLFrustum(CTX, left, right, bottom, top, zNear, zFar)
+call void | glGenTextures | GLsizei n, GLuint *textures | GLGenTextures(CTX, n, textures)
+call void | glGetBooleanv | GLenum pname, GLboolean *params | GLGetBooleanv(CTX, pname, params)
+call GLenum | glGetError | void | GLGetError(CTX)
+call void | glGetFloatv | GLenum pname, GLfloat *params | GLGetFloatv(CTX, pname, params)
+call void | glGetIntegerv | GLenum pname, GLint *params | GLGetIntegerv(CTX, pname, params)
+call const GLubyte * | glGetString | GLenum name | GLGetString(CTX, name)
+call void | glHint | GLenum target, GLenum mode | GLHint(CTX, target, mode)
+call GLboolean | glIsEnabled | GLenum cap | GLIsEnabled(CTX, cap)
+call void | glLoadIdentity | void | GLLoadIdentity(CTX)
+call void | glLoadMatrixd | const GLdouble *m | GLLoadMatrixd(CTX, m)
+call void | glLoadMatrixf | const GLfloat *m | GLLoadMatrixf(CTX, m)
+call void | glLockArrays | GLuint first, GLsizei count | GLLockArrays(CTX, first, count)
+call void | glMatrixMode | GLenum mode | GLMatrixMode(CTX, mode)
+call void | glMultiTexCoord2fARB | GLenum unit, GLfloat s, GLfloat t | GLMultiTexCoord2fARB(CTX, unit, s, t)
+call void | glMultiTexCoord2fvARB | GLenum unit, GLfloat *v | GLMultiTexCoord2fvARB(CTX, unit, v)
+call void | glMultMatrixd | const GLdouble *m | GLMultMatrixd(CTX, m)
+call void | glMultMatrixf | const GLfloat *m | GLMultMatrixf(CTX, m)
+call void | glNormal3f | GLfloat x, GLfloat y, GLfloat z | GLNormal3f(CTX, x, y, z)
+call void | glNormal3fv | GLfloat *v | GLNormal3fv(CTX, v)
+call void | glOrtho | GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble zNear, GLdouble zFar | GLOrtho(CTX, left, right, bottom, top, zNear, zFar)
+call void | glPixelStorei | GLenum pname, GLint param | GLPixelStorei(CTX, pname, param)
+call void | glPointSize | GLfloat s | GLPointSize(CTX, s)
+call void | glLineWidth | GLfloat w | GLLineWidth(CTX, w)
+call void | glTexGenfv | GLenum coord, GLenum pname, const GLfloat *params | GLTexGenfv(CTX, coord, pname, params)
+call void | glCopyTexImage2D | GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border | GLCopyTexImage2D(CTX, target, level, internalformat, x, y, width, height, border)
+call void | glCopyTexSubImage2D | GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height | GLCopyTexSubImage2D(CTX, target, level, xoffset, yoffset, x, y, width, height)
+call void | glPolygonMode | GLenum face, GLenum mode | GLPolygonMode(CTX, face, mode)
+call void | glPolygonOffset | GLfloat factor, GLfloat units | GLPolygonOffset(CTX, factor, units)
+call void | glPopMatrix | void | GLPopMatrix(CTX)
+call void | glPushMatrix | void | GLPushMatrix(CTX)
+call void | glReadPixels | GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels | GLReadPixels(CTX, x, y, width, height, format, type, pixels)
+call void | glRotated | GLdouble angle, GLdouble x, GLdouble y, GLdouble z | GLRotated(CTX, angle, x, y, z)
+call void | glRotatef | GLfloat angle, GLfloat x, GLfloat y, GLfloat z | GLRotatef(CTX, angle, x, y, z)
+call void | glRotatefEXT | GLfloat angle, const GLint xyz | GLRotatefEXT(CTX, angle, xyz)
+call void | glRotatefEXTs | GLfloat sin_an, GLfloat cos_an, const GLint xyz | GLRotatefEXTs(CTX, sin_an, cos_an, xyz)
+call void | glScaled | GLdouble x, GLdouble y, GLdouble z | GLScaled(CTX, x, y, z)
+call void | glScalef | GLfloat x, GLfloat y, GLfloat z | GLScalef(CTX, x, y, z)
+call void | glScissor | GLint x, GLint y, GLsizei width, GLsizei height | GLScissor(CTX, x, y, width, height)
+call void | glShadeModel | GLenum mode | GLShadeModel(CTX, mode)
+call void | glTexCoord2f | GLfloat s, GLfloat t | GLTexCoord2f(CTX, s, t)
+call void | glTexCoord2fv | GLfloat *v | GLTexCoord2fv(CTX, v)
+call void | glTexCoord4f | GLfloat s, GLfloat t, GLfloat r, GLfloat q | GLTexCoord4f(CTX, s, t, r, q)
+call void | glTexCoord4fv | GLfloat *v | GLTexCoord4fv(CTX, v)
+call void | glTexCoordPointer | GLint size, GLenum type, GLsizei stride, const GLvoid *pointer | GLTexCoordPointer(CTX, size, type, stride, pointer)
+call void | glTexEnvf | GLenum target, GLenum pname, GLfloat param | GLTexEnvi(CTX, target, pname, (GLint)param)
+call void | glTexEnvi | GLenum target, GLenum pname, GLint param | GLTexEnvi(CTX, target, pname, param)
+call void | glTexEnviv | GLenum target, GLenum pname, GLint *param | GLTexEnvi(CTX, target, pname, *param)
+call void | glTexGeni | GLenum coord, GLenum mode, GLenum map | GLTexGeni(CTX, coord, mode, map)
+call void | glTexImage2D | GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels | GLTexImage2D(CTX, target, level, internalformat, width, height, border, format, type, pixels)
+call void | glTexParameterf | GLenum target, GLenum pname, GLfloat param | GLTexParameteri(CTX, target, pname, (GLint)param)
+call void | glTexParameteri | GLenum target, GLenum pname, GLint param | GLTexParameteri(CTX, target, pname, param)
+call void | glTexSubImage2D | GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels | GLTexSubImage2D(CTX, target, level, xoffset, yoffset, width, height, format, type, pixels)
+call void | glTranslated | GLdouble x, GLdouble y, GLdouble z | GLTranslated(CTX, x, y, z)
+call void | glTranslatef | GLfloat x, GLfloat y, GLfloat z | GLTranslatef(CTX, x, y, z)
+call void | gluLookAt | GLfloat ex, GLfloat ey, GLfloat ez, GLfloat cx, GLfloat cy, GLfloat cz, GLfloat ux, GLfloat uy, GLfloat uz | guard GLULookAt(ex, ey, ez, cx, cy, cz, ux, uy, uz)
+call void | glUnlockArrays | void | GLUnlockArrays(CTX)
+call void | gluPerspective | GLfloat fovy, GLfloat aspect, GLfloat znear, GLfloat zfar | guard GLUPerspective(fovy, aspect, znear, zfar)
+call void | glVertex2f | GLfloat x, GLfloat y | GLVertex4f(CTX, x, y, 0.0f, 1.0f)
+call void | glVertex2fv | GLfloat *v | GLVertex2fv(CTX, v)
+call void | glVertex3f | GLfloat x, GLfloat y, GLfloat z | GLVertex4f(CTX, x, y, z, 1.0f)
+call void | glVertex3fv | GLfloat *v | GLVertex3fv(CTX, v)
+call void | glVertex4f | GLfloat x, GLfloat y, GLfloat z, GLfloat w | GLVertex4f(CTX, x, y, z, w)
+call void | glVertex4fv | GLfloat *v | GLVertex4fv(CTX, v)
+call void | glVertexPointer | GLint size, GLenum type, GLsizei stride, const GLvoid *pointer | GLVertexPointer(CTX, size, type, stride, pointer)
+call void | glNormalPointer | GLenum type, GLsizei stride, const GLvoid *pointer | GLNormalPointer(CTX, type, stride, pointer)
+call void | gluQuadricCallback | GLUquadricObj *q, GLenum which, MGLUfuncptr fn | GLUQuadricCallback(q, which, fn)
+call void | glColorMaterial | GLenum face, GLenum mode | GLColorMaterial(CTX, face, mode)
+call void | glTexEnvfv | GLenum target, GLenum pname, const GLfloat *params | GLTexEnvfv(CTX, target, pname, params)
+call void | glViewport | GLint x, GLint y, GLsizei width, GLsizei height | GLViewport(CTX, x, y, width, height)
+call void | mglClearPointer | void | MGLClearPointer(CTX)
+call void * | mglCreateContext | int offx, int offy, int w, int h | create MGLCreateContext(offx, offy, w, h)
+call void * | mglCreateContextFromID | GLint id, GLint *w, GLint *h | create MGLCreateContextFromID(id, w, h)
+call void * | mglCreateContextFromWindow | struct Window *window | create MGLCreateContextFromWindow(window)
+call void * | mglCreateContextFromBitMap | struct BitMap *bitmap | create MGLCreateContextFromBitMap(bitmap)
+call void | mglDrawMultitexBuffer | GLenum s, GLenum d, GLenum env | MGLDrawMultitexBuffer(CTX, s, d, env)
+call void | mglEnableSync | GLboolean enable | MGLEnableSync(CTX, enable)
+call void | mglExit | void | MGLExit(CTX)
+call void * | mglGetWindowHandle | void | MGLGetWindowHandle(CTX)
+call void | mglIdleFunc | IdleFn i | MGLIdleFunc(CTX, i)
+call void | mglKeyFunc | KeyHandlerFn k | MGLKeyFunc(CTX, k)
+call GLboolean | mglLockBack | MGLLockInfo *info | MGLLockBack(CTX, info)
+call GLboolean | mglLockDisplay | void | MGLLockDisplay(CTX)
+call void | mglLockMode | GLenum lockMode | MGLLockMode(CTX, lockMode)
+call void | mglMainLoop | void | MGLMainLoop(CTX)
+call void | mglMinTriArea | GLfloat area | MGLMinTriArea(CTX, area)
+call void | mglMouseFunc | MouseHandlerFn m | MGLMouseFunc(CTX, m)
+call void | mglPrintMatrix | GLenum mode | MGLPrintMatrix(CTX, mode)
+call void | mglPrintMatrixStack | GLenum mode | MGLPrintMatrixStack(CTX, mode)
+call GLboolean | mglResizeContext | GLsizei width, GLsizei height | MGLResizeContext(CTX, width, height)
+call void | mglSetPointer | void | MGLSetPointer(CTX)
+call void | mglSetZOffset | GLfloat offset | MGLSetZOffset(CTX, offset)
+call void | mglSpecialFunc | SpecialHandlerFn s | MGLSpecialFunc(CTX, s)
+call void | mglSwitchDisplay | void | MGLSwitchDisplay(CTX)
+call void | mglTexMemStat | GLint *Current, GLint *Peak | MGLTexMemStat(CTX, Current, Peak)
+call void | mglUnlockDisplay | void | MGLUnlockDisplay(CTX)
+call void | mglWriteShotPPM | char *filename | MGLWriteShotPPM(CTX, filename)
+call void | mglChooseNumberOfBuffers | int number | mglChooseNumberOfBuffers(number)
+call void | mglChooseVertexBufferSize | int size | mglChooseVertexBufferSize(size)
+call void | mglChooseWindowMode | GLboolean flag | mglChooseWindowMode(flag)
+call void | mglProposeCloseDesktop | GLboolean closeme | mglProposeCloseDesktop(closeme)
+call void | mglChooseGuardBand | GLboolean flag | mglChooseGuardBand(flag)
+call void | mglChooseMtexBufferSize | int size | mglChooseMtexBufferSize(size)
+call void | mglChooseTextureBufferSize | int size | mglChooseTextureBufferSize(size)
+call void | mglProhibitAlphaFallback | GLboolean flag | mglProhibitAlphaFallback(flag)
+call void | mglProhibitMipMapping | GLboolean flag | mglProhibitMipMapping(flag)
+call GLint | mglGetSupportedScreenModes | MGLScreenModeCallback CallbackFn | mglGetSupportedScreenModes(CallbackFn)
+call void * | mglGetInputWindowHandle | void | MGLGetInputWindowHandle(CTX)
+call void | glClientActiveTextureARB | GLenum unit | GLClientActiveTextureARB(CTX, unit)
+call void | glInterleavedArrays | GLenum format, GLsizei stride, const GLvoid *pointer | GLInterleavedArrays(CTX, format, stride, pointer)
+call void | glMultiDrawArrays | GLenum mode, const GLint *first, const GLsizei *count, GLsizei primcount | GLMultiDrawArrays(CTX, mode, first, count, primcount)
+call GLboolean | glIsTexture | GLuint texture | GLIsTexture(CTX, texture)
+call void | mglChooseZBufferDepth | int bits | mglChooseZBufferDepth(bits)
+call void | glBlendEquation | GLenum mode | GLBlendEquation(CTX, mode)
+call void | glBlendFuncSeparate | GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha | GLBlendFuncSeparate(CTX, srcRGB, dstRGB, srcAlpha, dstAlpha)
+call GLboolean | glAreTexturesResident | GLsizei n, const GLuint *textures, GLboolean *residences | GLAreTexturesResident(CTX, n, textures, residences)
+call void | glEdgeFlag | GLboolean flag | GLEdgeFlag(CTX, flag)
+call void | glEdgeFlagPointer | GLsizei stride, const GLvoid *pointer | GLEdgeFlagPointer(CTX, stride, pointer)
+call void | glEdgeFlagv | const GLboolean *flag | GLEdgeFlagv(CTX, flag)
+call void | glGetDoublev | GLenum pname, GLdouble *params | GLGetDoublev(CTX, pname, params)
+call void | glGetPointerv | GLenum pname, GLvoid **params | GLGetPointerv(CTX, pname, params)
+call void | glIndexi | GLint c | GLIndexi(CTX, c)
+call void | glIndexiv | const GLint *c | GLIndexiv(CTX, c)
+call void | glIndexPointer | GLenum type, GLsizei stride, const GLvoid *pointer | GLIndexPointer(CTX, type, stride, pointer)
+call void | glPrioritizeTextures | GLsizei n, const GLuint *textures, const GLclampf *priorities | GLPrioritizeTextures(CTX, n, textures, priorities)
+call void | glReadBuffer | GLenum mode | GLReadBuffer(CTX, mode)
+call void | glLightf | GLenum light, GLenum pname, GLfloat param | GLLightf(CTX, light, pname, param)
+call void | glLightfv | GLenum light, GLenum pname, const GLfloat *params | GLLightfv(CTX, light, pname, params)
+call void | glMaterialf | GLenum face, GLenum pname, GLfloat param | GLMaterialf(CTX, face, pname, param)
+call void | glMaterialfv | GLenum face, GLenum pname, const GLfloat *params | GLMaterialfv(CTX, face, pname, params)
+call void | glLightModelf | GLenum pname, GLfloat param | GLLightModelf(CTX, pname, param)
+call void | glLightModelfv | GLenum pname, const GLfloat *params | GLLightModelfv(CTX, pname, params)
+call void | glGetLightfv | GLenum light, GLenum pname, GLfloat *params | GLGetLightfv(CTX, light, pname, params)
+call void | glGetMaterialfv | GLenum face, GLenum pname, GLfloat *params | GLGetMaterialfv(CTX, face, pname, params)
+call GLuint | glGenLists | GLsizei range | GLGenLists(CTX, range)
+call void | glDeleteLists | GLuint list, GLsizei range | GLDeleteLists(CTX, list, range)
+call GLboolean | glIsList | GLuint list | GLIsList(CTX, list)
+call void | glNewList | GLuint list, GLenum mode | GLNewList(CTX, list, mode)
+call void | glEndList | void | GLEndList(CTX)
+call void | glCallList | GLuint list | GLCallList(CTX, list)
+call GLint | gluBuild2DMipmaps | GLenum target, GLint internalFormat, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *data | GLUBuild2DMipmaps(CTX, target, internalFormat, width, height, format, type, data)
+call const GLubyte * | gluErrorString | GLenum errCode | GLUErrorString(errCode)
+call GLUquadricObj * | gluNewQuadric | void | GLUNewQuadric()
+call void | gluDeleteQuadric | GLUquadricObj *q | GLUDeleteQuadric(q)
+call void | gluQuadricNormals | GLUquadricObj *q, GLenum normals | GLUQuadricNormals(q, normals)
+call void | gluQuadricTexture | GLUquadricObj *q, GLboolean textureCoords | GLUQuadricTexture(q, textureCoords)
+call void | gluQuadricDrawStyle | GLUquadricObj *q, GLenum drawStyle | GLUQuadricDrawStyle(q, drawStyle)
+call void | gluQuadricOrientation | GLUquadricObj *q, GLenum orientation | GLUQuadricOrientation(q, orientation)
+call void | gluCylinder | GLUquadricObj *q, GLdouble base, GLdouble top, GLdouble height, GLint slices, GLint stacks | guard GLUCylinder(q, base, top, height, slices, stacks)
+call void | gluSphere | GLUquadricObj *q, GLdouble radius, GLint slices, GLint stacks | guard GLUSphere(q, radius, slices, stacks)
+call void | gluDisk | GLUquadricObj *q, GLdouble inner, GLdouble outer, GLint slices, GLint loops | guard GLUDisk(q, inner, outer, slices, loops)
+call void | glutInitDisplayMode | unsigned int mode | GLUTInitDisplayMode(mode)
+call void | glutInitWindowSize | int width, int height | GLUTInitWindowSize(width, height)
+call void | glutInitWindowPosition | int x, int y | GLUTInitWindowPosition(x, y)
+call int | glutCreateWindow | const char *title | GLUTCreateWindow(title)
+call void | glutMainLoop | void | GLUTMainLoop()
+call void | glutDisplayFunc | void (*func)(void) | GLUTDisplayFunc(func)
+call void | glutIdleFunc | void (*func)(void) | GLUTIdleFunc(func)
+call void | glutKeyboardFunc | void (*func)(unsigned char key, int x, int y) | GLUTKeyboardFunc(func)
+call void | glutReshapeFunc | void (*func)(int width, int height) | GLUTReshapeFunc(func)
+call void | glutSwapBuffers | void | GLUTSwapBuffers()
+call void | glutPostRedisplay | void | GLUTPostRedisplay()
+call int | glutGet | GLenum state | GLUTGet(state)
+call void | glutGameModeString | const char *string | GLUTGameModeString(string)
+call int | glutEnterGameMode | void | GLUTEnterGameMode()
+call void | glutLeaveGameMode | void | GLUTLeaveGameMode()
+call int | glutGameModeGet | GLenum query | GLUTGameModeGet(query)
+call void | glutSolidCube | GLdouble size | guard GLUTSolidCube(size)
+call void | glutSolidSphere | GLdouble radius, GLint slices, GLint stacks | guard GLUTSolidSphere(radius, slices, stacks)
+call void | glutSolidCone | GLdouble base, GLdouble height, GLint slices, GLint stacks | guard GLUTSolidCone(base, height, slices, stacks)
+call void | glutSolidTorus | GLdouble innerRadius, GLdouble outerRadius, GLint sides, GLint rings | guard GLUTSolidTorus(innerRadius, outerRadius, sides, rings)
+call void | glutSolidDodecahedron | void | guard GLUTSolidDodecahedron()
+call void | mglChoosePixelDepth | int depth | mglChoosePixelDepth(depth)
+call void | mglDeleteContext | void | delete
+call void | glutInit | int *argcp, char **argv | glutinit GLUTInit(argcp, argv)
