@@ -1,0 +1,26 @@
+us per call, best of N runs                      ortg-main (9)          ortg-new (9)
+RectFill 300x200                                          24.6                  21.6
+RectFill 300x200 COMPLEMENT                                9.8                   7.6
+RectFill 300x200 area pattern                             87.2                  79.5
+Text 40 characters JAM1                                   37.6                  33.3
+Text 40 characters JAM2                                   40.6                  36.7
+BltTemplate 128x64                                        37.5                  36.1
+ClipBlit 300x100 in the window                            28.6                  24.0
+ScrollRaster 300x200 by 8                                 56.1                  47.7
+BltBitMapRastPort planar 128x64                          891.3                 774.6
+20 lines across and down                                  63.3                  65.6
+20 lines at 45 degrees                                    55.0                  59.9
+20 slanted lines                                        1254.8                1138.5
+WritePixel 100 times                                      22.7                  30.9
+WriteChunkyPixels 128x128                                 43.2                  38.9
+WritePixelArray ARGB 128x128                              48.0                  45.8
+WritePixelArray LUT8 128x128                              34.8                  42.2
+ReadPixelArray ARGB 128x128                              173.1                 152.1
+FillPixelArray 300x200                                    25.0                  23.3
+InvertPixelArray 300x200                                   6.0                   7.5
+WritePixelArrayAlpha 128x128                             204.2                 175.7
+RectFill 8x8, x100                                       174.7                 162.6
+Text 1 character, x100                                   208.9                 207.6
+ReadPixel x100                                           559.3                 518.8
+BltBitMapRastPort 16x16, x100                           2620.6                2575.9
+RectFill 8x8 off screen, x100                             81.3                  75.3
