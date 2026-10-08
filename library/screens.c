@@ -44,6 +44,8 @@
 #include <proto/graphics.h>
 #include <proto/intuition.h>
 #include <proto/utility.h>
+#include <proto/opengpu.h>
+#include <opengpu/build.h>
 
 #include "modes.h"
 #include "screens.h"
@@ -54,6 +56,7 @@
 struct GfxBase *GfxBase;
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase;
+struct Library *OpenGPUBase;
 static struct Library *OpenGfxBase;
 static int ogfx_handoff;
 
@@ -310,6 +313,108 @@ UBYTE ortg_px_pen(const struct ortg_bitmap *o, ULONG px)
     return (UBYTE)best;
 }
 
+/* ---- OpenGPU v1.0 client ------------------------------------------------------------ */
+
+#define ORTG_OGPU_WORDS 64
+
+static int ogpu_format_of(const struct ortg_bitmap *bm)
+{
+    if (!bm) return 0;
+    if (bm->format == ORTG_CLUT8) return OGPU_FMT_CLUT8;
+    if (bm->format == ORTG_RGB16) return OGPU_FMT_RGB565;
+    if (bm->format == ORTG_ARGB32) return OGPU_FMT_ARGB32;
+    return 0;
+}
+
+static int ogpu_can(int op, const struct ortg_bitmap *bm)
+{
+    int fmt = ogpu_format_of(bm);
+    return OpenGPUBase && fmt && OGPU_ANSWER(OGPU_Query((ULONG)op, (ULONG)fmt)) != OGPU_NONE;
+}
+
+static int ogpu_submit_batch(struct OGPUBatch *b)
+{
+    ULONG fence = 0;
+    LONG rc;
+    if (!OpenGPUBase || !b || b->overflow || !b->words) return 0;
+    rc = OGPU_Submit((APTR)b->buf, (ULONG)b->words, &fence);
+    if (rc != OGPU_OK) return 0;
+    return OGPU_Wait(fence) == OGPU_OK;
+}
+
+static void ogpu_target_bitmap(struct OGPUBatch *b, int slot, const struct ortg_bitmap *bm)
+{
+    ogpu_surface(b, slot, (ULONG)bm->mem, bm->stride, bm->width, bm->height, ogpu_format_of(bm));
+}
+
+static int ogpu_fill_piece(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
+                           const struct ink *k)
+{
+    UBYTE stream[ORTG_OGPU_WORDS * 4];
+    struct OGPUBatch b;
+    int op;
+
+    if (!k || !k->mask || (k->bpp == 1 && k->mask != 0xFF)) return 0;
+    op = (k->mode & COMPLEMENT) ? OGPU_OP_INVERT : OGPU_OP_FILL;
+    if (!ogpu_can(op, bm)) return 0;
+
+    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
+    ogpu_target_bitmap(&b, 0, bm);
+    ogpu_target(&b, 0);
+    if (op == OGPU_OP_INVERT)
+        ogpu_invert(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, k->x);
+    else
+        ogpu_fill(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, k->a);
+    return ogpu_submit_batch(&b);
+}
+
+static int ogpu_template_piece(struct ortg_bitmap *bm,
+                               LONG x0, LONG y0, LONG x1, LONG y1,
+                               LONG dx, LONG dy, const struct tmpl_ctx *t,
+                               const struct ink *k)
+{
+    UBYTE stream[ORTG_OGPU_WORDS * 4];
+    struct OGPUBatch b;
+    LONG row, first;
+    const UBYTE *src;
+
+    if (!t || !k || !k->mask || (k->bpp == 1 && k->mask != 0xFF) || t->mod <= 0)
+        return 0;
+    if (!ogpu_can(OGPU_OP_TEMPLATE, bm)) return 0;
+
+    row = y0 - dy - t->at_y;
+    first = t->src_x + (x0 - dx - t->at_x);
+    if (row < 0 || first < 0) return 0;
+    src = t->src + row * t->mod;
+
+    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
+    ogpu_target_bitmap(&b, 0, bm);
+    ogpu_target(&b, 0);
+    ogpu_template(&b, (ULONG)src, (ULONG)t->mod, (ULONG)first,
+                  x0, y0, x1 - x0 + 1, y1 - y0 + 1,
+                  k->a, k->b, k->mode & ~INVERSVID);
+    return ogpu_submit_batch(&b);
+}
+
+static int ogpu_copy_rect(struct ortg_bitmap *src, LONG sx, LONG sy,
+                          struct ortg_bitmap *dst, LONG dx, LONG dy,
+                          LONG w, LONG h)
+{
+    UBYTE stream[ORTG_OGPU_WORDS * 4];
+    struct OGPUBatch b;
+
+    if (!src || !dst || src->format != dst->format || w <= 0 || h <= 0)
+        return 0;
+    if (!ogpu_can(OGPU_OP_COPY, dst)) return 0;
+
+    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
+    ogpu_target_bitmap(&b, 0, src);
+    ogpu_target_bitmap(&b, 1, dst);
+    ogpu_target(&b, 1);
+    ogpu_copy(&b, 0, sx, sy, dx, dy, w, h);
+    return ogpu_submit_batch(&b);
+}
+
 /* ---- clipping: an operation on every visible piece of a RastPort's box -------------- */
 
 /* fn gets the target bitmap, the box in it (inclusive), and dx, dy: the bitmap
@@ -390,6 +495,8 @@ static void fill_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
     struct fill_ctx *f = c;
     struct ink k;
     ink_of(&f->p, bm, &k);
+    if (!f->ptrn && ogpu_fill_piece(bm, x0, y0, x1, y1, &k))
+        return;
     for (LONG y = y0; y <= y1; y++) {
         if (!f->ptrn) {
             if (!(k.mode & COMPLEMENT) && (k.mask == 0xFF || (k.bpp != 1 && k.mask))) {
@@ -416,6 +523,8 @@ static void tmpl_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
     struct tmpl_ctx *t = c;
     struct ink k;
     ink_of(&t->p, bm, &k);
+    if (ogpu_template_piece(bm, x0, y0, x1, y1, dx, dy, t, &k))
+        return;
     for (LONG y = y0; y <= y1; y++) {
         const UBYTE *s = t->src + (y - dy - t->at_y) * t->mod;
         for (LONG x = x0; x <= x1; x++) {
@@ -496,10 +605,13 @@ static void blit(struct BitMap *src, LONG sx, LONG sy, struct BitMap *dst, LONG 
     int same = os && os == od;
     int down = !(same && sy < dy), right = !(same && sy == dy && sx < dx);
     if (os && od && os->bpp == od->bpp && !cookie && (m & 0xF0) == 0xC0 && (od->bpp == 1 ? mask == 0xFF : mask != 0)) {
-        /* a plain copy between bitmaps of one format: whole rows (the usual
-         * case: window moves, scrolling, tiles of a backdrop), as fast on a
-         * 68040 as the CPU's own moves (6 Oct 2026: a tiled backdrop drew a
-         * pixel at a time, slowly, without a JIT) */
+        /* v1.0's COPY is the preferred path for the common RTG move/copy.
+         * It is synchronous at the graphics.library boundary: future queued
+         * drivers are waited here before the call returns. */
+        if (ogpu_copy_rect(os, sx, sy, od, dx, dy, w, h))
+            return;
+        /* No OpenGPU, unsupported memory or a refused batch: keep the
+         * proven OpenRTG CPU copy as the exact fallback. */
         ULONG bytes = (ULONG)w * od->bpp;
         for (LONG j = 0; j < h; j++) {
             LONG yy = down ? j : h - 1 - j;
@@ -1601,6 +1713,11 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
     if (!(UtilityBase = OpenLibrary("utility.library", 39))) return 0;
     tables = t;
     for (int n = 1; n <= ORTG_MAX_MONITORS; n++) board[n] = boards[n];
+
+    /* OpenGPU v1.0/G1 is optional at boot. When present, the common RTG
+     * fill/template/copy paths above submit v1.0 batches; every refusal
+     * falls back to the existing OpenRTG CPU implementation. */
+    OpenGPUBase = OpenLibrary((CONST_STRPTR)OPENGPU_NAME, OPENGPU_VERSION);
 
     /* New stack: OpenGfx 1.1 owns Text, TextLength, TextExtent, TextFit,
      * RectFill, BltBitMap, BltTemplate and ScrollRaster. OpenRTG provides
