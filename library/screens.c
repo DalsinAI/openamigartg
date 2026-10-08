@@ -1495,9 +1495,12 @@ static BOOL closescreen_patch(REG(a0, struct Screen *s), REG(a6, struct Intuitio
 /* ---- OpenGfx handoff ---------------------------------------------------------------------- */
 
 /* These callbacks preserve OpenRTG's current chunky-bitmap semantics while
- * OpenGfx owns the four overlapping graphics.library vectors. A callback
+ * OpenGfx owns the eight drawing/text graphics.library vectors. A callback
  * returns 0 for a bitmap/call that is not ours, so OpenGfx can use its own
- * native path or chain to the original OS vector. */
+ * native path or chain to the original OS vector. TextLength/TextExtent/
+ * TextFit are deliberately left NULL below: OpenRTG does not change font
+ * metrics, so graphics.library remains the correct provider until OpenFont
+ * supplies shaped metrics through OpenGfx. */
 static LONG ogfx_rectfill_provider(APTR userdata, struct ortg_ogfx_rectfill *r)
 {
     (void)userdata;
@@ -1536,6 +1539,16 @@ static LONG ogfx_scroll_provider(APTR userdata, struct ortg_ogfx_scroll *r)
     return 1;
 }
 
+static LONG ogfx_blttemplate_provider(APTR userdata, struct ortg_ogfx_blttemplate *r)
+{
+    (void)userdata;
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    blttemplate_patch(r->source, (WORD)r->sx, r->source_modulo,
+                      r->rp, (WORD)r->dx, (WORD)r->dy,
+                      (WORD)r->width, (WORD)r->height, GfxBase);
+    return 1;
+}
+
 static struct ortg_ogfx_provider_v1 ogfx_provider;
 
 static int try_opengfx_handoff(void)
@@ -1554,6 +1567,10 @@ static int try_opengfx_handoff(void)
     ogfx_provider.text = ogfx_text_provider;
     ogfx_provider.bltbitmap = ogfx_bltbitmap_provider;
     ogfx_provider.scrollraster = ogfx_scroll_provider;
+    ogfx_provider.textlength = NULL;
+    ogfx_provider.textextent = NULL;
+    ogfx_provider.textfit = NULL;
+    ogfx_provider.blttemplate = ogfx_blttemplate_provider;
 
     if (!ORTG_OGFX_RegisterProvider(OpenGfxBase, &ogfx_provider))
         goto fail;
@@ -1585,9 +1602,10 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
     tables = t;
     for (int n = 1; n <= ORTG_MAX_MONITORS; n++) board[n] = boards[n];
 
-    /* New stack: OpenGfx owns Text/RectFill/BltBitMap/ScrollRaster. If it is
-     * not installed yet, retain the old OpenRTG patch path so standalone
-     * OpenRTG builds remain usable. */
+    /* New stack: OpenGfx 1.1 owns Text, TextLength, TextExtent, TextFit,
+     * RectFill, BltBitMap, BltTemplate and ScrollRaster. OpenRTG provides
+     * its RTG drawing implementations through the provider bridge. If
+     * OpenGfx is absent, retain the old standalone OpenRTG patch path. */
     ogfx_handoff = try_opengfx_handoff();
 
     Forbid();
@@ -1599,7 +1617,7 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
     old_writepixel = (writepixel_fn)SetFunction(gfx, -324, (APTR)writepixel_patch);
     old_readpixel = (readpixel_fn)SetFunction(gfx, -318, (APTR)readpixel_patch);
     if (!ogfx_handoff) old_text = (text_fn)SetFunction(gfx, -60, (APTR)text_patch);
-    old_blttemplate = (blttemplate_fn)SetFunction(gfx, -36, (APTR)blttemplate_patch);
+    if (!ogfx_handoff) old_blttemplate = (blttemplate_fn)SetFunction(gfx, -36, (APTR)blttemplate_patch);
     if (!ogfx_handoff) old_bltbitmap = (bltbitmap_fn)SetFunction(gfx, -30, (APTR)bltbitmap_patch);
     old_bltbmrp = (bltbmrp_fn)SetFunction(gfx, -606, (APTR)bltbmrp_patch);
     old_bltmaskbmrp = (bltmaskbmrp_fn)SetFunction(gfx, -636, (APTR)bltmaskbmrp_patch);

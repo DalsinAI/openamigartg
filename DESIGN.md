@@ -240,14 +240,17 @@ and intuition.library, which know only the chipset. OpenRTG does what
 Picasso96 and CyberGraphX do: it adds the boards' modes and takes over the
 calls that touch RTG bitmaps, passing everything else to the original code.
 
-**OpenGfx handoff (8 October 2026).** OpenGfx is now the sole owner of four
-overlapping `graphics.library` vectors: `Text`, `RectFill`, `BltBitMap`
-and `ScrollRaster`. When `opengfx.library` 1.0 is present, OpenRTG
-registers its RTG implementations through OpenGfx's provider ABI and asks
-OpenGfx to install those four patches. OpenRTG then does not install
-competing patches for them. If OpenGfx is absent, OpenRTG keeps its existing
-standalone patch path. All of OpenRTG's other RTG-specific hooks remain owned
-by OpenRTG.
+**OpenGfx handoff (8 October 2026).** OpenGfx 1.1 is now the sole owner of
+eight `graphics.library` vectors: `Text`, `TextLength`, `TextExtent`,
+`TextFit`, `RectFill`, `BltBitMap`, `BltTemplate` and
+`ScrollRaster`. OpenFont patches nothing. OpenRTG registers its RTG
+implementations through OpenGfx's size-compatible provider ABI and does not
+install competing patches for the overlapping drawing calls. OpenRTG provides
+`Text`, `RectFill`, `BltBitMap`, `BltTemplate` and
+`ScrollRaster` for OpenRTG bitmaps; the three measurement calls currently
+fall through to graphics.library because OpenRTG does not change font metrics.
+If OpenGfx is absent, OpenRTG keeps its existing standalone patch path. All
+other OpenRTG-specific hooks remain owned by OpenRTG.
 
 
 - **Display database:** NextDisplayInfo, FindDisplayInfo, GetDisplayInfoData,
@@ -293,32 +296,21 @@ by OpenRTG.
   in video RAM (CPU memory when the board is full); GetBitMapAttr reports it.
   RTG bitmaps are marked as CyberGraphX and AROS mark them (no planar planes),
   so programs that check for RTG before poking planes keep working.
-- **Drawing: OpenGfx owns the patches, OpenRTG provides the RTG side**
-  (decided by the Team, 8 October 2026; amigachrome
-  `docs/design/native-stack/Design-OS323-Platform-Integration.md`, section 4,
-  and `Design-Graphics-OpenRTG-OpenGfx-OpenGPU.md`). `opengfx.library` owns
-  every graphics.library drawing and text patch: BltBitMap,
-  BltBitMapRastPort, BltMaskBitMapRastPort, ClipBlit, BltClear, BltTemplate,
-  BltPattern, RectFill, SetRast, Draw and PolyDraw, area fills, WritePixel and
-  ReadPixel, the pixel line and array functions, Text, TextLength,
-  TextExtent, TextFit and ScrollRaster, drawing text with OpenFont's glyphs
-  and metrics. OpenFont patches nothing. One owner per call means two
-  patches never chain on the same function.
-  OpenRTG stops patching those calls and becomes the RTG provider OpenGfx
-  calls: for a bitmap that is OpenRTG's, OpenGfx asks `openrtg.library` to do
-  the work (fill, copy, template, line, invert, planar-to-chunky as OpenGPU
-  commands, or CPU code on the chunky bitmap) through a provider interface
-  `openrtg.library` exports; planar bitmaps go to the original
-  graphics.library as before. OpenRTG keeps everything that is not drawing:
-  its screens, bitmaps, display database, monitors, the pointer and the board
-  drivers.
-  **The way there:** `openrtg.library` 0.10 (in OpenUp, off unless picked)
-  still patches these calls itself, in `library/screens.c`. That stays until
-  `opengfx.library`'s glue is built (the native stack roadmap's close of M0).
-  Then OpenRTG's drawing patches become pass-through, since patches are never
-  taken out (section 4's patching rules), and the same code is reached through
-  the provider interface instead. A machine with OpenRTG and without OpenGfx
-  draws on the CPU through the original graphics.library: correct, slower.
+- **Drawing: OpenGfx owns the shared patch surface; OpenRTG provides the RTG side**
+  (Team decision, 8 October 2026). `opengfx.library` 1.1 owns exactly these
+  eight `graphics.library` vectors: `Text`, `TextLength`, `TextExtent`,
+  `TextFit`, `RectFill`, `BltBitMap`, `BltTemplate` and
+  `ScrollRaster`. OpenFont patches nothing.
+  OpenRTG registers a provider with OpenGfx. For OpenRTG bitmaps it supplies
+  `Text`, `RectFill`, `BltBitMap`, `BltTemplate` and
+  `ScrollRaster`; the three text-measurement entries stay NULL until
+  OpenFont-backed metrics are ready, so OpenGfx chains them to
+  graphics.library. OpenRTG keeps its other RTG-specific graphics hooks
+  (`BltPattern`, `Draw`, pixel arrays, display database, bitmap/screen
+  management and board drivers).
+  When OpenGfx is not installed, OpenRTG retains its standalone patch path so
+  the library remains usable independently.
+
 - **The pointer:** each monitor's front screen gets the board's hardware
   sprite (acrtg-v2), which Cradle shows as the PC's cursor.
 - **Boards:** a small driver interface (find, init, mode, pan, fill, copy,
