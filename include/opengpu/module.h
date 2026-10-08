@@ -47,17 +47,22 @@
  *   - It calls opengpu.library through args->OpenGPUBase, which stays open
  *     while the module is (the caller holds it).
  *
- * Residency (hari-scripts/opengpu-one-library-layout.md section 6). A module
- * is one of two kinds, told apart by its first code:
- *   - Shared (step 2): built -fbaserel32 -resident32, so its code reaches
- *     every global through A4. Its first code is a BRA.W over a header
- *     (struct OGPUModuleHeader, OGPU_MODULE_SHARED_MAGIC). opengpu.library
- *     loads the file once, however many programs open it, and keeps it until
- *     the last one closes. Each OGPU_ModuleOpen gets a copy of the data and
+ * Residency (DESIGN.md section 5, "Residency"). A module is one of two
+ * kinds, told apart by its first code:
+ *   - Shared: built -fbaserel32 -resident32, so its code reaches every
+ *     global through A4. Its first code is a BRA.W over a header (struct
+ *     OGPUModuleHeader, OGPU_MODULE_SHARED_MAGIC). opengpu.library loads the
+ *     file once, the first time a program opens it, and from 0.9 keeps it
+ *     loaded after the last program closes it, until the system resets or
+ *     memory runs short (the library's expunge unloads the shared modules
+ *     no program has open). Each OGPU_ModuleOpen gets a copy of the data and
  *     BSS, with the data-to-data relocations applied, and the module's entry
- *     runs (libnix's init list and the constructors) with A4 on that copy.
- *   - For each program (step 1): built without -fbaserel32; each open is a
- *     LoadSeg of its own, and the first code jumps to the entry.
+ *     runs (libnix's init list and the constructors) with A4 on that copy;
+ *     OGPU_ModuleClose frees that copy. GL.module and SDL2.module are shared.
+ *     A module file replaced while loaded is loaded anew at the next open.
+ *   - For each program: built without -fbaserel32; each open is a LoadSeg
+ *     of its own, the first code jumps to the entry, and the close unloads
+ *     it.
  *   A stub that loads a shared module itself (an opengpu.library older than
  *   0.5) calls its first code as before; the module then sets A4 on the
  *   data LoadSeg gave it, which is that program's alone.
