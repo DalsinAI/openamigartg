@@ -23,6 +23,29 @@ int gla_pthread_condattr_setclock(void *attr, int clock)
     return 0;
 }
 
+/* pthread_create (posix_shim.h): refused in a shared GL.module, where the
+ * stove's libpthread would start the thread without the program's A4. */
+#undef pthread_create
+#include <pthread.h>
+#include <stdio.h>
+int gla_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)(void *), void *arg);
+int gla_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)(void *), void *arg)
+{
+#ifdef __baserel32__
+    static int said;
+    (void)thread, (void)attr, (void)start, (void)arg;
+    if (!said) {
+        said = 1;
+        /* standard output: libnix's standard error is a console window of its own */
+        fputs("GL.module: Mesa asked for a thread, which a shared GL.module doesn't start\n", stdout);
+        fflush(stdout);
+    }
+    return EAGAIN;
+#else
+    return pthread_create(thread, attr, start, arg);
+#endif
+}
+
 /* Mesa's log file name; logging goes to stderr instead. */
 int mkstemps(char *tmpl, int suffixlen)
 {

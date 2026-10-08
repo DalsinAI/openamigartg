@@ -13,7 +13,8 @@
  * are carried out on the CPU as they are submitted, so a fence is done by
  * the time OGPU_Submit returns. OGPU_Wait gives a batch's first error.
  * OGPU_ModuleOpen loads a module from LIBS:OpenGPU/ (GL.module, SDL2.module)
- * for the calling program (include/opengpu/module.h).
+ * for the calling program (include/opengpu/module.h): a shared one once for
+ * every program, with data of each program's own (ogpu_module.c).
  * Built bare by library/build.sh.
  */
 #include <exec/types.h>
@@ -34,6 +35,7 @@
 #include "../../include/opengpu/opengpu.h"
 #include "../../include/opengpu/driver.h"
 #include "../../include/opengpu/module.h"
+#include "ogpu_module.h"
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
@@ -55,6 +57,7 @@ struct OpenGPUBase {
     struct OGPUDriver *drv;                     /* its table, or NULL: the CPU does everything */
     UBYTE drv_ok[256];                          /* opcodes the driver carries out (for some format) */
     unsigned long drv_last;                     /* the driver's last fence, before a batch runs on the CPU */
+    struct ogpu_modules modules;                /* shared modules loaded (ogpu_module.c) */
 };
 
 struct ExecBase *SysBase;
@@ -109,6 +112,7 @@ static struct Library *lib_init(REG(d0, struct OpenGPUBase *base), REG(a0, BPTR 
     base->lib.lib_Revision = LIB_REVISION;
     InitSemaphore(&base->lock);
     InitSemaphore(&base->drv_lock);
+    ogpu_modules_init(&base->modules);
     return &base->lib;
 }
 static struct Library *lib_open(REG(a6, struct OpenGPUBase *base))
@@ -404,68 +408,18 @@ static LONG OGPU_Wait(REG(d0, ULONG fence), REG(a6, struct OpenGPUBase *base))
     return r;
 }
 
-/* ---- modules (include/opengpu/module.h) ------------------------------------------ */
+/* ---- modules (include/opengpu/module.h, ogpu_module.c) --------------------------- */
 
-#define MODULE_MAGIC 0x4F474D44UL               /* "OGMD": a handle this library gave */
-
-struct ogpu_module {
-    ULONG magic;
-    BPTR seg;
-    struct OGPUModuleTable *table;
-};
-
-/* Step 1 of the residency plan: a copy of the module for each opener. */
 static APTR OGPU_ModuleOpen(REG(a0, CONST_STRPTR name), REG(d0, ULONG version), REG(a1, APTR *table), REG(a6, struct OpenGPUBase *base))
 {
-    static const char dir[] = OGPU_MODULE_DIR, ext[] = OGPU_MODULE_EXT;
-    char path[256];
-    int i = 0, j, is_path = 0;
-    struct ogpu_module *m;
-    struct OGPUModuleArgs args;
-    struct OGPUModuleTable *t;
     struct Task *me = FindTask(NULL);
     if (table) *table = NULL;
-    if (!name || !table || me->tc_Node.ln_Type != NT_PROCESS || !dos_open(base)) return NULL;
-    for (j = 0; name[j]; j++)
-        if (name[j] == ':' || name[j] == '/') is_path = 1;
-    if (!is_path)
-        for (j = 0; dir[j]; j++) path[i++] = dir[j];
-    for (j = 0; name[j] && i < (int)sizeof path - 8; j++) path[i++] = (char)name[j];
-    if (name[j]) { SetIoErr(ERROR_OBJECT_NOT_FOUND); return NULL; }
-    if (!is_path)
-        for (j = 0; ext[j]; j++) path[i++] = ext[j];
-    path[i] = 0;
-    if (!(m = AllocVec(sizeof *m, MEMF_ANY | MEMF_CLEAR))) { SetIoErr(ERROR_NO_FREE_STORE); return NULL; }
-    if (!(m->seg = LoadSeg((CONST_STRPTR)path))) {
-        LONG e = IoErr();
-        FreeVec(m);
-        SetIoErr(e ? e : ERROR_OBJECT_NOT_FOUND);
-        return NULL;
-    }
-    args.SysBase = SysBase;
-    args.DOSBase = &DOSBase->dl_lib;
-    args.OpenGPUBase = &base->lib;
-    args.version = version;
-    t = OGPU_MODULE_ENTRY(m->seg)(&args);
-    if (!t) {
-        UnLoadSeg(m->seg);
-        FreeVec(m);
-        SetIoErr(ERROR_OBJECT_WRONG_TYPE);
-        return NULL;
-    }
-    m->magic = MODULE_MAGIC;
-    m->table = t;
-    *table = t;
-    return m;
+    if (me->tc_Node.ln_Type != NT_PROCESS || !dos_open(base)) return NULL;
+    return ogpu_module_open(&base->modules, name, version, table, &base->lib);
 }
 
 /* After the module's own close call. */
 static void OGPU_ModuleClose(REG(a0, APTR handle), REG(a6, struct OpenGPUBase *base))
 {
-    struct ogpu_module *m = handle;
-    (void)base;
-    if (!m || m->magic != MODULE_MAGIC) return;
-    m->magic = 0;
-    UnLoadSeg(m->seg);
-    FreeVec(m);
+    ogpu_module_close(&base->modules, handle);
 }

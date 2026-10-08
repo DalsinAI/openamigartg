@@ -54,12 +54,28 @@ opengpu.library's `OGPU_ModuleOpen` (`include/opengpu/module.h`):
   build, and the 15 GLA calls (`stubs/gl/gla.names`). It is about 20 MB and
   opens in about a second on the AC090.
 - **libGL.a** has one entry per call, generated with the module's table from
-  the same list (`stubs/gl/gen_gl.py`). An entry jumps through its slot in a
-  table, so it works whatever the call's arguments. The first call loads the
-  module and binds the whole table by name in one pass. A call the installed
-  module doesn't have returns 0.
-- Each program gets its own copy of the module (step 1 of the residency
-  plan, DESIGN.md section 5), so Mesa's globals are its own.
+  the same list (`stubs/gl/gen_gl.py`). The first call loads the module and
+  binds the whole table by name in one pass. A call the installed module
+  doesn't have returns 0.
+- **Shared** (residency step 2, DESIGN.md section 5): Mesa is built
+  `-fbaserel32` (the cross file) and GL.module linked `-resident32`, so
+  opengpu.library loads its code once for every program and each program's
+  open gets its own copy of Mesa's data (about 200 KB with the BSS). An
+  entry of libGL.a sets A4 to the program's copy: it copies its arguments
+  (their size comes from Mesa's glapi XML, the GLA calls' from their
+  headers), calls, and gives the program its A4 back.
+  `gla_get_proc_address` answers with libGL.a's own entries, so calls
+  through what it gives set A4 too.
+- Each program has a virgl context of its own: the context id and the
+  resource handles are the addresses of the program's own winsys and
+  resources (`gla/gla_virgl.c`). They were 1 and a count from 1 for every
+  program, so two GL programs on virgl at once shared one context, and
+  their resources clashed.
+- `tools/baserel_check.py` checks GL.module reaches its data only through
+  A4; `module/baserel.allow` lists the reviewed exceptions. Mesa is built
+  without C++ exceptions (nothing in it catches one), and it starts no
+  threads here; a shared build refuses `pthread_create` (posix_shim.c), as
+  the stove's libpthread would start a thread without the program's A4.
 - GL runs on the program's stack: give `main` a big one (OpenDemos asks
   libnix for 1 MB).
 
@@ -106,3 +122,23 @@ virglrenderer 1.3.0 on the PC's graphics chip):
   4.2 → 342, 1.5 → 421, 0.3 → 512: the module costs nothing per call.
 - **ModuleCheck** (`tests/modules`) opens GL.module in 1,020 ms and finds
   its 1,315 calls.
+
+## Measured, residency step 2 (8 October 2026)
+
+On a scratch copy of the Showcase instance (AC090 68040, ACRTG, virgl):
+
+- **ModuleCheck:** the first open of GL.module takes 19,236 KB and about
+  860 ms; a second and third open, with the first still open, take 345 KB
+  and 1 ms each. Closing them all gives every byte back.
+- **Three OpenDemos Gears at once**, memory in use over idle: on softpipe
+  29.5, 39.6 and 49.8 MB for one, two and three (a copy each, before: 30.1,
+  50.8 and 71.4 MB); on virgl 25.2, 30.9 and 36.6 MB. All of it comes back
+  when they end.
+- **Frame rates** at 320x240, softpipe → virgl, as before within the PC's
+  variation: Boing 14.8 → 294 fps, Gears 5.9 → 340, Tunnel 0.4 → 581 (a
+  copy each: 14.2 → 329, 5.9 → 330, 0.4 → 579). Two at once on virgl, Gears
+  and Tunnel: 192 and 331 fps.
+- **A call through libGL.a** (CallCost, `tests/modules/call_cost.c`,
+  glGetError with no context): 1.3 to 1.6 µs, as before (1.5); Mesa's own
+  work is most of it.
+

@@ -20,6 +20,7 @@
  * for what each call must do. */
 #include "gla_virgl.h"
 
+#include <stdint.h>
 #include <string.h>
 
 #include "pipe/p_defines.h"
@@ -46,7 +47,21 @@
 #endif
 #define util_be32_to_cpu(x) util_cpu_to_be32(x)
 
-#define CTX_ID 1
+/* The ids the host knows a context and a resource by. virglrenderer has one
+ * namespace for all its clients, and every GL program on the Amiga is one,
+ * so a fixed context id (and handles counted from 1) made two programs at
+ * once share a context and clash on handles. With 32-bit pointers the id is
+ * the address of the program's own winsys or resource: unique while it
+ * lives, which is while the host knows it. Elsewhere (the host's own test,
+ * one program) a context 1 and a count. */
+#if UINTPTR_MAX == 0xffffffffu
+#define NEW_CTX_ID(w) ((uint32_t)(uintptr_t)(w))
+#define NEW_RES_HANDLE(w, res) ((uint32_t)(uintptr_t)(res))
+#else
+#define NEW_CTX_ID(w) 1u
+#define NEW_RES_HANDLE(w, res) ((w)->next_handle++)
+#endif
+#define CTX_ID (w->ctx_id)
 #define BLK_WORDS 64
 
 struct gv_ws {
@@ -56,6 +71,7 @@ struct gv_ws {
     uint32_t *blk;              /* the request block, in memory the host reaches */
     unsigned at;                /* words in it */
     uint32_t next_handle;
+    uint32_t ctx_id;
     mtx_t mutex;
 };
 
@@ -211,7 +227,7 @@ static struct virgl_hw_res *gv_resource_create(struct virgl_winsys *vws, enum pi
         return NULL;
     }
     mtx_lock(&w->mutex);
-    res->res_handle = w->next_handle++;
+    res->res_handle = NEW_RES_HANDLE(w, res);
     a[0] = res->res_handle; a[1] = target; a[2] = pipe_to_virgl_format(res->format); a[3] = bind;
     a[4] = width; a[5] = height; a[6] = depth; a[7] = array_size; a[8] = last_level; a[9] = nr_samples;
     a[10] = flags; a[11] = CTX_ID;
@@ -447,6 +463,7 @@ struct virgl_winsys *gla_virgl_winsys_create(struct sw_winsys *sws, const struct
     w->sws = sws;
     w->t = *t;
     w->next_handle = 1;
+    w->ctx_id = NEW_CTX_ID(w);
     (void)mtx_init(&w->mutex, mtx_plain);
     if (!(w->blk = w->t.alloc(w->t.user, BLK_WORDS * 4 + 64))) { FREE(w); return NULL; }
     nm = (char *)(w->blk + BLK_WORDS);

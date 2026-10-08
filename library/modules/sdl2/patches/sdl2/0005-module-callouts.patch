@@ -1,0 +1,132 @@
+--- a/src/audio/SDL_audio.c
++++ b/src/audio/SDL_audio.c
+@@ -24,6 +24,12 @@
+ 
+ #include "SDL.h"
+ #include "SDL_audio.h"
++#ifdef __AMIGAOS3__
++#include "../SDL_os3callout.h"
++#define SDL_OS3_AUDIO_CALLBACK(fn, u, d, n) SDL_OS3_CALL3V(fn, u, d, n)
++#else
++#define SDL_OS3_AUDIO_CALLBACK(fn, u, d, n) (fn)(u, d, n)
++#endif
+ #include "SDL_audio_c.h"
+ #include "SDL_sysaudio.h"
+ #include "../thread/SDL_systhread.h"
+@@ -739,7 +745,7 @@
+         if (SDL_AtomicGet(&device->paused)) {
+             SDL_memset(data, device->callbackspec.silence, data_len);
+         } else {
+-            callback(udata, data, data_len);
++            SDL_OS3_AUDIO_CALLBACK(callback, udata, data, data_len);
+         }
+         SDL_UnlockMutex(device->mixer_lock);
+ 
+@@ -898,7 +904,7 @@
+                 /* !!! FIXME: this should be LockDevice. */
+                 SDL_LockMutex(device->mixer_lock);
+                 if (!SDL_AtomicGet(&device->paused)) {
+-                    callback(udata, device->work_buffer, device->callbackspec.size);
++                    SDL_OS3_AUDIO_CALLBACK(callback, udata, device->work_buffer, device->callbackspec.size);
+                 }
+                 SDL_UnlockMutex(device->mixer_lock);
+             }
+@@ -906,7 +912,7 @@
+             /* !!! FIXME: this should be LockDevice. */
+             SDL_LockMutex(device->mixer_lock);
+             if (!SDL_AtomicGet(&device->paused)) {
+-                callback(udata, data, device->callbackspec.size);
++                SDL_OS3_AUDIO_CALLBACK(callback, udata, data, device->callbackspec.size);
+             }
+             SDL_UnlockMutex(device->mixer_lock);
+         }
+--- a/src/events/SDL_events.c
++++ b/src/events/SDL_events.c
+@@ -25,6 +25,12 @@
+ #include "SDL.h"
+ #include "SDL_events.h"
+ #include "SDL_thread.h"
++#ifdef __AMIGAOS3__
++#include "../SDL_os3callout.h"
++#define SDL_OS3_FILTER(fn, u, e) SDL_OS3_CALL2(int, fn, u, e)
++#else
++#define SDL_OS3_FILTER(fn, u, e) (fn)(u, e)
++#endif
+ #include "SDL_events_c.h"
+ #include "../SDL_hints_c.h"
+ #include "../timer/SDL_timer_c.h"
+@@ -1160,7 +1166,7 @@
+     if (SDL_EventOK.callback || SDL_event_watchers_count > 0) {
+         SDL_LockMutex(SDL_event_watchers_lock);
+         {
+-            if (SDL_EventOK.callback && !SDL_EventOK.callback(SDL_EventOK.userdata, event)) {
++            if (SDL_EventOK.callback && !SDL_OS3_FILTER(SDL_EventOK.callback, SDL_EventOK.userdata, event)) {
+                 SDL_UnlockMutex(SDL_event_watchers_lock);
+                 return 0;
+             }
+@@ -1172,7 +1178,7 @@
+                 SDL_event_watchers_dispatching = SDL_TRUE;
+                 for (i = 0; i < event_watchers_count; ++i) {
+                     if (!SDL_event_watchers[i].removed) {
+-                        SDL_event_watchers[i].callback(SDL_event_watchers[i].userdata, event);
++                        SDL_OS3_FILTER(SDL_event_watchers[i].callback, SDL_event_watchers[i].userdata, event);
+                     }
+                 }
+                 SDL_event_watchers_dispatching = SDL_FALSE;
+@@ -1285,7 +1291,7 @@
+         SDL_EventEntry *entry, *next;
+         for (entry = SDL_EventQ.head; entry; entry = next) {
+             next = entry->next;
+-            if (!filter(userdata, &entry->event)) {
++            if (!SDL_OS3_FILTER(filter, userdata, &entry->event)) {
+                 SDL_CutEvent(entry);
+             }
+         }
+--- a/src/thread/SDL_thread.c
++++ b/src/thread/SDL_thread.c
+@@ -23,6 +23,9 @@
+ /* System independent thread management routines for SDL */
+ 
+ #include "SDL_thread.h"
++#ifdef __AMIGAOS3__
++#include "../SDL_os3callout.h"
++#endif
+ #include "SDL_thread_c.h"
+ #include "SDL_systhread.h"
+ #include "SDL_hints.h"
+@@ -330,7 +333,11 @@
+     thread->threadid = SDL_ThreadID();
+ 
+     /* Run the function */
++#ifdef __AMIGAOS3__
++    *statusloc = SDL_OS3_CALL1(int, userfunc, userdata);
++#else
+     *statusloc = userfunc(userdata);
++#endif
+ 
+     /* Clean up thread-local storage */
+     SDL_TLSCleanup();
+--- a/src/timer/SDL_timer.c
++++ b/src/timer/SDL_timer.c
+@@ -21,6 +21,9 @@
+ #include "../SDL_internal.h"
+ 
+ #include "SDL_timer.h"
++#ifdef __AMIGAOS3__
++#include "../SDL_os3callout.h"
++#endif
+ #include "SDL_timer_c.h"
+ #include "SDL_atomic.h"
+ #include "SDL_cpuinfo.h"
+@@ -164,7 +167,11 @@
+             if (SDL_AtomicGet(&current->canceled)) {
+                 interval = 0;
+             } else {
++#ifdef __AMIGAOS3__
++                interval = SDL_OS3_CALL2(Uint32, current->callback, current->interval, current->param);
++#else
+                 interval = current->callback(current->interval, current->param);
++#endif
+             }
+ 
+             if (interval > 0) {
