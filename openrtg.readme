@@ -23,7 +23,8 @@ Planned, as the design in DESIGN.md sets out:
 
 Status: this archive is the design and LibCount, the measuring tool of phase 0
 (also on Aminet as dev/debug/libcount). openrtg.library is in development;
-AmigaChrome (an Amiga for the PC) runs the first several-monitor setup today.
+AmigaChrome (an Amiga on x86 and ARM64 cores) runs the first several-monitor
+setup today.
 
 Free software under the MIT licence, Copyright (c) 2026 Dalsin Limited. Use
 it, change it, fork it and ship it; keep the copyright notice and the licence
