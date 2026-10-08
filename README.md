@@ -3,7 +3,7 @@
 Our own RTG system for AmigaOS 3.x: `openrtg.library`, OpenGPU, Warp3D,
 several monitors, the window look and one prefs app. It is for real Amigas
 and PiStorms as well as AmigaChrome, where its board (ACRTG) and OpenGPU's
-host driver make the desktop fast without emulating drawing loops.
+driver on the x86 and ARM64 cores make the desktop fast without emulating drawing loops.
 
 The design is `DESIGN.md`: the parts, several monitors, AGA as a pseudo card,
 the drivers (named the OS 4 way), `openrtg.library`, OpenGPU, Warp3D, the OS 4
@@ -51,7 +51,7 @@ that it is based on OpenRTG by Dalsin Limited.
   `libcount_report.py` reads the NDK's FD files; give their folder with `--fd`.
 - `library/modes.c`, `library/modes.h`: phase 2's first part, the display
   database's mode table. It builds each monitor's modes once (Standard: the
-  popular PC sizes; All: with the Amiga-shaped ones), each in 8, 16 and
+  popular monitor sizes; All: with the Amiga-shaped ones), each in 8, 16 and
   32-bit, and gives their ModeIDs. The library answers NextDisplayInfo,
   FindDisplayInfo and BestModeIDA from it. Plain C, with no Amiga headers.
 - `library/openrtg_lib.c`: `openrtg.library` 0.1. It finds the ACRTG
@@ -87,7 +87,7 @@ that it is based on OpenRTG by Dalsin Limited.
   (`OpenGPU-SDK-0.6`): SDL 2 and its satellites, OpenGL, GLES and GLA,
   Warp3D, MiniGL and opengpu.library's headers and link libraries,
   `sdl2-config`, pkg-config and CMake files, examples and every notice, as a
-  `.tar.gz` for the PC and an `.lha` for the Amiga. Run after
+  `.tar.gz` for x86 and ARM64 cores and an `.lha` for the Amiga. Run after
   `library/build.sh` and the GL module's build:
   `tools/make_sdk.py --build build --gl build/gl OUT_DIR --archives`.
   `sdk/README` is the kit's readme and `sdk/AutoDocs-OpenGPU.md` its
