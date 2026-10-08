@@ -25,6 +25,10 @@ Build a program the usual way:
 
     m68k-amigaos-gcc -m68040 -m68881 -noixemul -Ibuild/include/SDL2 game.c -Lbuild -lSDL2 -lm -lamiga
 
+or, with the OpenGPU developer kit (`tools/make_sdk.py`, `sdk/README`):
+
+    m68k-amigaos-gcc game.c -o Game $(sdl2-config --cflags --libs)
+
 ## How a program reaches SDL
 
 - `libSDL2.a` is SDL's own dynamic API, cut down to the caller's half. Every
@@ -73,6 +77,8 @@ Build a program the usual way:
 | Threads, timers | Exec processes and semaphores. `SDL_Delay`, timed semaphore and condition waits use timer.device's UNIT_MICROHZ, so `SDL_Delay(1)` is a millisecond, not dos.library's 20 ms tick. |
 | Input | Keyboard and mouse from Intuition; relative mouse mode with IDCMP_DELTAMOVE; Ctrl-C quits. Joysticks and CD32 pads through lowlevel.library. |
 | Clipboard | clipboard.device unit 0, IFF FTXT, converted between UTF-8 and Latin-1. On AmigaChrome, ACClip carries it to the PC. |
+| OpenGL | GL.module, through the program's own libGL.a (below). |
+| Haptic | SDL's dummy driver: `SDL_Init(SDL_INIT_HAPTIC)` succeeds with no devices, as games that ask for it expect. |
 | Environment | `SDL_getenv` reads the Shell's local and global variables (SetEnv, ENV:) as well as the program's own. |
 
 Settings, with `SetEnv` or `SDL_SetHint`:
@@ -82,6 +88,35 @@ Settings, with `SetEnv` or `SDL_SetHint`:
 - `SDL_OPENGPU_STATS=1` logs, when a renderer closes, how many commands
   OpenGPU drew and how many the CPU drew.
 - `SDL_AUDIODRIVER=paula` picks Paula.
+- `SDL_OPENGPU_GL=cpu` draws SDL's GL with softpipe even where the PC's
+  graphics chip is there.
+
+### SDL_GL on GL.module
+
+SDL2.module 3 (8 October 2026) gives `SDL_WINDOW_OPENGL`,
+`SDL_GL_CreateContext`, `SDL_GL_SwapWindow` and the rest on OpenGPU's GL
+module (`src/video/amigaos3/SDL_os3gl.c`, `patches/amigaos3/0006`):
+
+- A program has one copy of GL, the one its `libGL.a` opens, so SDL uses
+  that copy: `libSDL2.a`'s `SDL2_gl.o` (`stubs/sdl2/SDL2_gl.c`) hands the
+  module the program's GLA calls (`struct SDL2GLBridge`,
+  `stubs/sdl2/sdl2_module.h`), and the module calls them with the
+  program's A4. SDL's context and the program's `gl` calls are then the
+  same GL.
+- `SDL2_gl.o` is a member of its own: only a program that calls an
+  `SDL_GL_` function links it, and then needs `-lGL`. The Makefile splits
+  `SDL_dynapi_procs.h` for that; SDL's tests, which call `SDL_GL_` through
+  the test framework, link `tests/sdl2/nogl.c` instead of `libGL.a`.
+- A stub asks for module version 2 and calls `set_gl` only on version 3, so
+  programs run on a version 2 module too, without OpenGL.
+- Each window gets a GL buffer the size of its inside, drawn into the
+  window's RastPort by GL.module's present; `SDL_GL_SwapWindow` follows the
+  window's size. Swap intervals are kept but not waited for.
+- `libSDL2_static.a` has no OpenGL: there is no stub to hand it GL.
+
+Measured on a scratch copy of Instance-11 (AC090 68040, virgl), 8 October
+2026: the kit's GLSpin (a lit cube, 320x240) at 1,268 to 1,394 fps on
+virgl and 52.6 fps on softpipe; GLA's own triangle at 680 and 39.6.
 
 ### The opengpu renderer
 
@@ -152,7 +187,7 @@ the AC090); testsprite2 runs at 504 to 539 fps, as before (525 to 553).
 
 ## Next
 
-- `SDL_GL_*` on GL.module, when it is there.
+- `SDL_GL_*` in `libSDL2_static.a`.
 - Remove the stub's own LoadSeg once every install has opengpu.library 0.5.
 - The GCC 16 stove's FPCR clash (`fpcr_check.py`): three satellite files are
   built at -O0 until the stove is fixed, and the build checks everything.

@@ -39,7 +39,7 @@ OGPU_BUILD3D := $(wildcard $(OGPU_SRC)/ogpu_build3d.c)
 
 CFLAGS_BASE = -std=gnu11 $(OPT) $(CPU) -noixemul -Wall -Wno-unused-parameter \
          -Wno-sign-compare -Wno-unused-but-set-variable \
-         -I$(SDL)/include -I$(SDL)/src -I$(SDK_INC) -I$(ROOT)/include \
+         -I$(SDL)/include -I$(SDL)/src -I$(SDK_INC) -I$(ROOT)/include -I$(ROOT)/stubs/sdl2 \
          -DSDL_VIDEO_RENDER_OPENGPU=1 -D__AMIGAOS3__
 
 SRCS_CORE = \
@@ -90,7 +90,7 @@ SRCS_AMIGA = \
 	video/amigaos3/SDL_os3video.c video/amigaos3/SDL_os3window.c \
 	video/amigaos3/SDL_os3framebuffer.c video/amigaos3/SDL_os3events.c \
 	video/amigaos3/SDL_os3mouse.c video/amigaos3/SDL_os3aga.c \
-	video/amigaos3/SDL_os3clipboard.c video/amigaos3/SDL_os3gpu.c \
+	video/amigaos3/SDL_os3clipboard.c video/amigaos3/SDL_os3gpu.c video/amigaos3/SDL_os3gl.c \
 	audio/amigaos3/SDL_os3audio.c audio/amigaos3/SDL_os3paula.c \
 	thread/amigaos3/SDL_systhread.c thread/amigaos3/SDL_sysmutex.c \
 	thread/amigaos3/SDL_syscond.c thread/amigaos3/SDL_syssem.c thread/amigaos3/SDL_systls.c \
@@ -132,10 +132,13 @@ $(INLINE): $(OGPU_SRC)/opengpu_lib.sfd
 	@mkdir -p $(dir $@)
 	$(SFDC) --quiet --mode=macros --output=$@ $<
 
-$(STATIC_DIR)/%.o: $(SDL)/src/%.c $(INLINE)
+# Every object depends on the configuration (build.sh copies it keeping its
+# time, so a change to it rebuilds SDL; SDL's own files keep the tarball's).
+CONFIG_H := $(SDL)/include/SDL_config_amigaos.h
+$(STATIC_DIR)/%.o: $(SDL)/src/%.c $(INLINE) $(CONFIG_H)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_BASE) -c $< -o $@
-$(CORE_DIR)/%.o: $(SDL)/src/%.c $(INLINE)
+$(CORE_DIR)/%.o: $(SDL)/src/%.c $(INLINE) $(CONFIG_H)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_BASE) $(MODULE_CFLAGS) -DSDL_OPEN_LIBRARY_BUILD=1 -c $< -o $@
 $(STATIC_DIR)/ogpu_%.o: $(OGPU_SRC)/ogpu_%.c
@@ -177,10 +180,27 @@ $(OUT)/SDL2.module: $(CORE_DIR)/module_start.o $(CORE_DIR)/module_rt.o $(CORE_DI
 	@echo "built $@ ($$(wc -c < $@) bytes)"
 
 # -ffixed-a4: the stub sets A4 around each call into the module (OGPU_A4).
-$(STUB_DIR)/SDL2_stub.o: $(ROOT)/stubs/sdl2/SDL2_stub.c $(ROOT)/stubs/sdl2/sdl2_module.h $(INLINE)
+# The window GL calls (SDL_GL_LoadLibrary to SDL_GL_ResetAttributes) are a
+# member of their own, SDL2_gl.o, so only a program that calls them needs
+# -lGL: SDL_dynapi_procs.h is split into SDL2_stub_procs.h (without them)
+# and SDL2_gl_procs.h (only them; every other line that isn't a function).
+GL_PROCS := SDL_GL_(LoadLibrary|GetProcAddress|UnloadLibrary|ExtensionSupported|SetAttribute|GetAttribute|CreateContext|MakeCurrent|GetCurrentWindow|GetCurrentContext|GetDrawableSize|SetSwapInterval|GetSwapInterval|SwapWindow|DeleteContext|ResetAttributes)
+GLA_INC := -I$(ROOT)/library/modules/gl/gla
+STUB_CFLAGS = $(CFLAGS_BASE) -ffixed-a4 -I$(SDL)/src/dynapi -I$(STUB_DIR)
+$(STUB_DIR)/SDL2_stub_procs.h: $(SDL)/src/dynapi/SDL_dynapi_procs.h
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS_BASE) -ffixed-a4 -I$(SDL)/src/dynapi -c $< -o $@
-$(OUT)/libSDL2.a: $(STUB_DIR)/SDL2_stub.o
+	grep -Ev '^SDL_DYNAPI_PROC\([^,]*,$(GL_PROCS),' $< > $@
+$(STUB_DIR)/SDL2_gl_procs.h: $(SDL)/src/dynapi/SDL_dynapi_procs.h
+	@mkdir -p $(dir $@)
+	grep -E '^SDL_DYNAPI_PROC\([^,]*,$(GL_PROCS),|^#' $< > $@
+	test "$$(grep -c '^SDL_DYNAPI_PROC' $@)" = 16
+$(STUB_DIR)/SDL2_stub.o: $(ROOT)/stubs/sdl2/SDL2_stub.c $(ROOT)/stubs/sdl2/SDL2_stub.h $(ROOT)/stubs/sdl2/sdl2_module.h $(STUB_DIR)/SDL2_stub_procs.h $(INLINE)
+	@mkdir -p $(dir $@)
+	$(CC) $(STUB_CFLAGS) -c $< -o $@
+$(STUB_DIR)/SDL2_gl.o: $(ROOT)/stubs/sdl2/SDL2_gl.c $(ROOT)/stubs/sdl2/SDL2_stub.h $(ROOT)/stubs/sdl2/sdl2_module.h $(STUB_DIR)/SDL2_gl_procs.h $(INLINE)
+	@mkdir -p $(dir $@)
+	$(CC) $(STUB_CFLAGS) $(GLA_INC) -c $< -o $@
+$(OUT)/libSDL2.a: $(STUB_DIR)/SDL2_stub.o $(STUB_DIR)/SDL2_gl.o
 	@rm -f $@; $(AR) rcs $@ $^; $(RANLIB) $@; echo "built $@"
 
 # SDL's tests, unchanged, under tests/sdl2/sdltest_run.c (their log on
@@ -197,6 +217,9 @@ tests: $(STATIC_TESTS) $(MODULE_TESTS)
 SDLTEST_OBJS = $(addprefix $(TEST_DIR)/obj/,$(addsuffix .o,$(TESTS)))
 OWNTEST_OBJS = $(addprefix $(TEST_DIR)/obj/,$(addsuffix .o,$(OWN_TESTS)))
 TEST_RUN = $(TEST_DIR)/obj/testutils.o $(TEST_DIR)/obj/sdltest_run.o
+# On the module, SDL's test framework brings in libSDL2.a's SDL_GL_ calls;
+# with no libGL.a here, tests/sdl2/nogl.c answers for GL.
+NOGL = $(TEST_DIR)/obj/nogl.o
 
 $(SDLTEST_OBJS): $(TEST_DIR)/obj/%.o: $(SDL)/test/%.c
 	@mkdir -p $(dir $@)
@@ -207,14 +230,17 @@ $(OWNTEST_OBJS): $(TEST_DIR)/obj/%.o: $(ROOT)/tests/sdl2/%.c
 $(TEST_DIR)/obj/testutils.o: $(SDL)/test/testutils.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_BASE) -c $< -o $@
+$(NOGL): $(ROOT)/tests/sdl2/nogl.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_BASE) -c $< -o $@
 $(TEST_DIR)/obj/sdltest_run.o: $(ROOT)/tests/sdl2/sdltest_run.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_BASE) -c $< -o $@
 
 $(addprefix $(TEST_DIR)/,$(TESTS)): $(TEST_DIR)/%: $(TEST_DIR)/obj/%.o $(TEST_RUN) $(OUT)/libSDL2_static.a $(OUT)/libSDL2_test.a
 	$(CC) $(CPU) -noixemul -o $@ $< $(TEST_RUN) -L$(OUT) -lSDL2_test -lSDL2_static -lm -lamiga
-$(addsuffix .m,$(addprefix $(TEST_DIR)/,$(TESTS))): $(TEST_DIR)/%.m: $(TEST_DIR)/obj/%.o $(TEST_RUN) $(OUT)/libSDL2.a $(OUT)/libSDL2_test.a
-	$(CC) $(CPU) -noixemul -o $@ $< $(TEST_RUN) -L$(OUT) -lSDL2_test -lSDL2 -lm -lamiga
+$(addsuffix .m,$(addprefix $(TEST_DIR)/,$(TESTS))): $(TEST_DIR)/%.m: $(TEST_DIR)/obj/%.o $(TEST_RUN) $(NOGL) $(OUT)/libSDL2.a $(OUT)/libSDL2_test.a
+	$(CC) $(CPU) -noixemul -o $@ $< $(TEST_RUN) -L$(OUT) -lSDL2_test -lSDL2 $(NOGL) -lm -lamiga
 $(addprefix $(TEST_DIR)/,$(OWN_TESTS)): $(TEST_DIR)/%: $(TEST_DIR)/obj/%.o $(OUT)/libSDL2_static.a
 	$(CC) $(CPU) -noixemul -o $@ $< -L$(OUT) -lSDL2_static -lm -lamiga
 $(addsuffix .m,$(addprefix $(TEST_DIR)/,$(OWN_TESTS))): $(TEST_DIR)/%.m: $(TEST_DIR)/obj/%.o $(OUT)/libSDL2.a

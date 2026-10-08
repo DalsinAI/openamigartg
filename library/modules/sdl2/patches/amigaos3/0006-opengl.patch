@@ -1,0 +1,50 @@
+--- a/src/video/amigaos3/SDL_os3video.c
++++ b/src/video/amigaos3/SDL_os3video.c
+@@ -26,6 +26,7 @@
+ #include "SDL_os3events.h"
+ #include "SDL_os3mouse.h"
+ #include "SDL_os3clipboard.h"
++#include "SDL_os3gl.h"
+ #include "../SDL_sysvideo.h"
+ #include "../../events/SDL_events_c.h"
+ 
+@@ -113,6 +114,19 @@
+     device->GetClipboardText = OS3_GetClipboardText;
+     device->HasClipboardText = OS3_HasClipboardText;
+ 
++#ifdef SDL_VIDEO_OPENGL
++    /* OpenGL (Open): OpenGPU's GL module, through the program's libGL.a */
++    device->GL_LoadLibrary    = OS3_GL_LoadLibrary;
++    device->GL_GetProcAddress = OS3_GL_GetProcAddress;
++    device->GL_UnloadLibrary  = OS3_GL_UnloadLibrary;
++    device->GL_CreateContext  = OS3_GL_CreateContext;
++    device->GL_MakeCurrent    = OS3_GL_MakeCurrent;
++    device->GL_SetSwapInterval = OS3_GL_SetSwapInterval;
++    device->GL_GetSwapInterval = OS3_GL_GetSwapInterval;
++    device->GL_SwapWindow     = OS3_GL_SwapWindow;
++    device->GL_DeleteContext  = OS3_GL_DeleteContext;
++#endif
++
+     return device;
+ }
+ 
+--- a/src/video/amigaos3/SDL_os3window.c
++++ b/src/video/amigaos3/SDL_os3window.c
+@@ -23,6 +23,7 @@
+ #endif
+ #include "SDL_os3video.h"
+ #include "SDL_os3window.h"
++#include "SDL_os3gl.h"
+ #include "SDL_os3framebuffer.h"
+ #include "../../events/SDL_windowevents_c.h"
+ #include "../../events/SDL_keyboard_c.h"
+@@ -476,6 +477,9 @@
+ 
+     /* Destroy framebuffer surface first */
+     OS3_DestroyWindowFramebuffer(_this, window);
++#ifdef SDL_VIDEO_OPENGL
++    OS3_GL_DestroyWindow(_this, window);    /* its GL buffer (Open) */
++#endif
+ 
+     /* Close window before screen -- mandatory order per ADCD */
+     OS3_CloseWindowAndScreen(data);
