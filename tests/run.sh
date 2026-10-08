@@ -42,3 +42,7 @@ if [ -x "$CC68K" ]; then
 else
     echo "no m68k compiler; the 68k check is skipped"
 fi
+# The module loader's test (Test.module and ModuleCheck, run on an Amiga), when both stoves are there.
+if [ -x "${STOVE16:-$HOME/AmigaChrome/stoves/os32-gcc16/prefix}/bin/m68k-amigaos-gcc" ] && [ -x "$CC68K" ]; then
+    sh "$HERE/modules/build.sh" "$OUT/modules" >/dev/null && echo "tests/modules build (ModuleCheck runs on an Amiga)"
+fi
