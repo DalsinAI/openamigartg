@@ -193,7 +193,7 @@ static ULONG run(ULONG type)
         arr[i * 5 + 3] = v[i].u; arr[i * 5 + 4] = v[i].v;
     }
     CHECK(W3D_VertexPointer(c, arr, 20, W3D_VERTEX_F_F_F, 0) == W3D_SUCCESS, "W3D_VertexPointer");
-    CHECK(W3D_TexCoordPointer(c, arr + 3, 20, 0, 4, -1, 0) == W3D_SUCCESS, "W3D_TexCoordPointer");
+    CHECK(W3D_TexCoordPointer(c, arr + 3, 20, 0, 4, -4, 0) == W3D_SUCCESS, "W3D_TexCoordPointer");
     CHECK(W3D_ColorPointer(c, 0, 0, W3D_COLOR_FLOAT, W3D_CMODE_RGBA, 0) == W3D_SUCCESS, "W3D_ColorPointer");
     CHECK(W3D_BindTexture(c, 0, t) == W3D_SUCCESS, "W3D_BindTexture");
     CHECK(W3D_DrawArray(c, W3D_PRIMITIVE_TRIFAN, 0, 4) == W3D_SUCCESS, "W3D_DrawArray");

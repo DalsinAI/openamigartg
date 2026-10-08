@@ -88,6 +88,8 @@ LIBCALL W3D_Context *LIB_W3D_CreateContext(REG(a0, ULONG *error), REG(a1, struct
     if (GetTagData(W3D_CC_W3DBM, FALSE, tags)) e = w3d_open_area(x, 0, (W3D_Bitmap *)bm, (int)GetTagData(W3D_CC_YOFFSET, 0, tags));
     else e = w3d_open_area(x, bm, 0, (int)GetTagData(W3D_CC_YOFFSET, 0, tags));
     if (e != W3D_SUCCESS) goto fail;
+    w3d_trace("CreateContext %lx route %ld %ldx%ld fmt %lx direct %ld", (unsigned long)c, (long)x->route, (long)c->width, (long)c->height,
+              (unsigned long)c->format, (long)x->direct);
     return c;
 fail:
     w3d_close_area(x);
@@ -118,6 +120,7 @@ LIBCALL ULONG LIB_W3D_SetState(REG(a0, W3D_Context *c), REG(d0, ULONG state), RE
 {
     struct w3dctx *x = CTX(c);
     ULONG old = c->state;
+    w3d_trace("SetState %lx %ld", (unsigned long)state, (long)action);
     if (action == W3D_ENABLE) {
         if (state & ~CAN_ENABLE) return W3D_UNSUPPORTEDSTATE;
         c->state |= state;
@@ -139,12 +142,14 @@ LIBCALL ULONG LIB_W3D_CheckDriver(REG(a6, struct W3DBase *libbase))
 
 LIBCALL ULONG LIB_W3D_LockHardware(REG(a0, W3D_Context *c), REG(a6, struct W3DBase *libbase))
 {
+    w3d_trace("LockHardware");
     c->HWlocked = W3D_TRUE;
     return W3D_SUCCESS;
 }
 
 LIBCALL void LIB_W3D_UnLockHardware(REG(a0, W3D_Context *c), REG(a6, struct W3DBase *libbase))
 {
+    w3d_trace("UnLockHardware");
     w3d_flush(CTX(c));
     c->HWlocked = W3D_FALSE;
 }
@@ -162,6 +167,7 @@ LIBCALL ULONG LIB_W3D_SetDrawRegion(REG(a0, W3D_Context *c), REG(a1, struct BitM
 {
     struct w3dctx *x = CTX(c);
     ULONG e;
+    w3d_trace("SetDrawRegion bm %lx y %ld scissor %lx", (unsigned long)bm, (long)yoffset, (unsigned long)scissor);
     if (bm == c->drawregion && !c->w3dbitmap && x->direct) {
         w3d_flush(x);                           /* double buffering in one bitmap: only the offset moves */
         c->yoffset = yoffset;
@@ -396,6 +402,7 @@ static ULONG z_to_u32(double z)
 LIBCALL ULONG LIB_W3D_ClearZBuffer(REG(a0, W3D_Context *c), REG(a1, W3D_Double *value), REG(a6, struct W3DBase *libbase))
 {
     struct w3dctx *x = CTX(c);
+    w3d_trace("ClearZBuffer %lx", (unsigned long)z_to_u32(value ? *value : 1.0));
     if (!x->zbuf) return W3D_NOZBUFFER;
     w3d_clear_buffer(x, OGPU_KIND_DEPTH, z_to_u32(value ? *value : 1.0));
     w3d_maybe_flush(x);

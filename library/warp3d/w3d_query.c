@@ -139,7 +139,7 @@ LIBCALL ULONG LIB_W3D_BestModeID(REG(a0, struct TagItem *tags), REG(a6, struct W
     ULONG w = GetTagData(W3D_BMI_WIDTH, 640, tags), h = GetTagData(W3D_BMI_HEIGHT, 480, tags);
     ULONG d = GetTagData(W3D_BMI_DEPTH, 16, tags), id;
     if (!CyberGfxBase) return (ULONG)INVALID_ID;
-    if (d < 15) d = 16;
+    if (d <= 16) d = 16;                        /* 15 too: R5G6B5 is drawn in place, 15-bit modes through a copy */
     id = BestCModeIDTags(CYBRBIDTG_NominalWidth, w, CYBRBIDTG_NominalHeight, h, CYBRBIDTG_Depth, d, TAG_DONE);
     return usable(id) ? id : (ULONG)INVALID_ID;
 }

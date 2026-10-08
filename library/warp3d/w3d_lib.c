@@ -16,6 +16,7 @@
 #include <dos/var.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include <stdarg.h>
 
 #include "w3d_internal.h"
 #include "w3d_calls.h"
@@ -203,6 +204,30 @@ void w3d_read_prefs(struct W3DBase *base)
     base->no_persp = !envflag("Warp3D/Perspective", 1);
     base->no_filter = !envflag("Warp3D/Filtering", 1);
     base->no_light = !envflag("Warp3D/Lighting", 1);
+    base->trace = GetVar("Warp3D/Trace", v, sizeof v, GVF_GLOBAL_ONLY) > 0 ? StrToLong((STRPTR)v, &base->trace) > 0 ? base->trace : 0 : 0;
+}
+
+/* Tracing, for finding out what a program asks of Warp3D: ENV:Warp3D/Trace
+ * set to a count sends that many lines to the serial port, written straight
+ * to the chip so it works from any task and inside any lock. Integers,
+ * strings and hexadecimal (%ld %lx %s), no floats: RawDoFmt formats them. */
+static void serput(REG(d0, UBYTE c), REG(a3, void *data))
+{
+    volatile UWORD *serdatr = (volatile UWORD *)0xDFF018, *serdat = (volatile UWORD *)0xDFF030;
+    long spin = 100000;
+    (void)data;
+    if (!c) c = '\n';
+    while (!(*serdatr & 0x2000) && --spin) ;         /* the transmit buffer is empty */
+    *serdat = (UWORD)(0x100 | c);
+}
+void w3d_trace(const char *fmt, ...)
+{
+    va_list ap;
+    if (W3DBase->trace <= 0) return;
+    W3DBase->trace--;
+    va_start(ap, fmt);
+    RawDoFmt((STRPTR)fmt, (APTR)ap, (void (*)())serput, 0);
+    va_end(ap);
 }
 
 /* ---- helpers ------------------------------------------------------------------------------ */

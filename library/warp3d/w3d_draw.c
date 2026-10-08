@@ -70,6 +70,9 @@ static void convert(struct w3dctx *x, const W3D_Vertex *v, float su, float sv, s
     o->z = z <= 0.0 ? 0 : z >= 1.0 ? 0xFFFFFFFFUL : (ULONG)w3d_f2l((float)z * 1073741823.0f) << 2;
     if (!(w > 0.0f)) w = 1e-6f;                 /* w must be positive */
     o->w = w3d_fbits(w);
+    if (W3DBase->trace > 100000)
+        w3d_trace("  v %ld %ld z %lx w %lx u %ld v %ld argb %lx", (long)o->x >> 16, (long)o->y >> 16, (unsigned long)o->z,
+                  (unsigned long)o->w, (long)o->u, (long)o->v, (unsigned long)o->argb);
     o->spec = (vertex_fog(x, v, fogc, have_fogc) << 24)
             | ((c->state & W3D_SPECULAR) ? (clampf255(v->spec.r) << 16) | (clampf255(v->spec.g) << 8) | clampf255(v->spec.b) : 0);
 }
@@ -89,10 +92,18 @@ static int culled(struct w3dctx *x, const struct ovtx *a, const struct ovtx *b, 
     return ctx->FrontFaceOrder == W3D_CW ? area < 0.0f : area > 0.0f;
 }
 
+/* The texture a primitive names, when texture mapping is on and the
+ * texture is one of this context's: a pointer a program left stale or
+ * never set draws untextured instead of reading wild memory. */
 static W3D_Texture *use_tex(struct w3dctx *x, W3D_Texture *tex)
 {
-    if (!(x->ctx->state & W3D_TEXMAPPING)) return 0;
-    return tex;
+    struct Node *n;
+    if (!tex || !(x->ctx->state & W3D_TEXMAPPING)) return 0;
+    if (tex == x->known_tex) return tex;
+    for (n = (struct Node *)x->ctx->tex.mlh_Head; n->ln_Succ; n = n->ln_Succ)
+        if (n == &tex->link) { x->known_tex = tex; return tex; }
+    w3d_trace("not a texture of this context: %lx", (unsigned long)tex);
+    return 0;
 }
 
 /* The polygon stipple of a primitive (W3D_POLYGON_STIPPLE), kept in the
@@ -134,6 +145,7 @@ static ULONG draw(struct w3dctx *x, W3D_Texture *tex, const struct vsrc *src, UL
     if (n < 3) return W3D_ILLEGALINPUT;
     tex = use_tex(x, tex);
     t = tex ? TEX(tex) : 0;
+    w3d_trace("draw prim %ld n %ld tex %lx state %lx", (long)prim, (long)n, (unsigned long)tex, (unsigned long)x->ctx->state);
     stipple(x, pat);
     m = cull && prim != OGPU_LAY_LIST ? (n - 2) * 3 : n;
     o = w3d_vspace(x, m);
@@ -465,7 +477,7 @@ static void array_vertex(struct w3dctx *x, ULONG i, struct w3dtex *t, struct ovt
         const UBYTE *q = (const UBYTE *)c->TexCoordPointer[0] + (LONG)i * c->TPStride[0];
         v.u = *(const float *)q;
         v.v = *(const float *)(q + c->TPVOffs[0]);
-        if (c->TPWOffs[0] >= 0) v.w = *(const float *)(q + c->TPWOffs[0]);
+        v.w = *(const float *)(q + c->TPWOffs[0]);      /* off_w may be negative: w before u, as MiniGL keeps it */
     }
     if (c->ColorPointer) colour_at((const UBYTE *)c->ColorPointer + (LONG)i * c->CPStride, c->CPMode, &v.color);
     else v.color = x->current;
@@ -501,6 +513,10 @@ static ULONG arrays(struct w3dctx *x, ULONG prim, ULONG base, ULONG count, ULONG
     struct w3dtex *t = tex ? TEX(tex) : 0;
     ULONG i;
     if (!c->VertexPointer) return W3D_ILLEGALINPUT;
+    w3d_trace("arrays prim %ld base %ld count %ld type %ld idx %lx vp %lx stride %ld mode %ld cp %lx cmode %lx tp %lx tstride %ld voff %ld woff %ld tflags %ld tex %lx",
+              (long)prim, (long)base, (long)count, (long)type, (unsigned long)ix, (unsigned long)c->VertexPointer, (long)c->VPStride,
+              (long)c->VPMode, (unsigned long)c->ColorPointer, (unsigned long)c->CPMode, (unsigned long)c->TexCoordPointer[0],
+              (long)c->TPStride[0], (long)c->TPVOffs[0], (long)c->TPWOffs[0], (long)c->TPFlags[0], (unsigned long)tex);
     switch (prim) {
     case W3D_PRIMITIVE_TRIANGLES: case W3D_PRIMITIVE_TRIFAN: case W3D_PRIMITIVE_TRISTRIP: {
         ULONG ntri = prim == W3D_PRIMITIVE_TRIANGLES ? count / 3 : count >= 3 ? count - 2 : 0, k = 0, done = 0;
