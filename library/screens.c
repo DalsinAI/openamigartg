@@ -60,6 +60,7 @@ struct Library *UtilityBase;
 struct Library *OpenGPUBase;
 static struct Library *OpenGfxBase;
 static int ogfx_handoff;
+static int ogfx_all;     /* OpenGfx 1.4: it patches every drawing call, and OpenRTG provides all of them */
 
 /* ---- tracing to the serial port (ORTG_TRACE) ---- */
 
@@ -2046,7 +2047,113 @@ static LONG ogfx_blttemplate_provider(APTR userdata, struct ortg_ogfx_blttemplat
     return 1;
 }
 
-static struct ortg_ogfx_provider_v1 ogfx_provider;
+/* OpenGfx 1.4 (opengpu.library 0.8): the fourteen other drawing calls.
+ * Each takes the call for an OpenRTG bitmap, the same code as the
+ * standalone patch above, and says "not mine" (0) for any other, so OpenGfx
+ * goes on to graphics.library. */
+static LONG ogfx_bltpattern_provider(APTR u, struct ortg_ogfx_bltpattern *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    bltpattern_patch(r->rp, r->mask, (WORD)r->x0, (WORD)r->y0, (WORD)r->x1, (WORD)r->y1, (ULONG)r->mask_bpr, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_setrast_provider(APTR u, struct ortg_ogfx_setrast *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    setrast_patch(r->rp, r->pen, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_draw_provider(APTR u, struct ortg_ogfx_draw *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    draw_patch(r->rp, (WORD)r->x, (WORD)r->y, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_polydraw_provider(APTR u, struct ortg_ogfx_polydraw *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    polydraw_patch(r->rp, (WORD)r->count, r->array, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_writepixel_provider(APTR u, struct ortg_ogfx_pixel *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    r->result = writepixel_patch(r->rp, (WORD)r->x, (WORD)r->y, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_readpixel_provider(APTR u, struct ortg_ogfx_pixel *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    r->result = (LONG)readpixel_patch(r->rp, (WORD)r->x, (WORD)r->y, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_bltbmrp_provider(APTR u, struct ortg_ogfx_bltbmrp *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    bltbmrp_patch(r->src, (WORD)r->sx, (WORD)r->sy, r->rp, (WORD)r->dx, (WORD)r->dy, (WORD)r->width, (WORD)r->height,
+                  r->minterm, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_bltmaskbmrp_provider(APTR u, struct ortg_ogfx_bltbmrp *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    bltmaskbmrp_patch(r->src, (WORD)r->sx, (WORD)r->sy, r->rp, (WORD)r->dx, (WORD)r->dy, (WORD)r->width, (WORD)r->height,
+                      r->minterm, r->mask, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_clipblit_provider(APTR u, struct ortg_ogfx_clipblit *r)
+{
+    if (!r || !r->rp || !r->src_rp || (!ortg_is(r->rp->BitMap) && !ortg_is(r->src_rp->BitMap))) return 0;
+    clipblit_patch(r->src_rp, (WORD)r->sx, (WORD)r->sy, r->rp, (WORD)r->dx, (WORD)r->dy, (WORD)r->width, (WORD)r->height,
+                   r->minterm, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_wcp_provider(APTR u, struct ortg_ogfx_array *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    wcp_patch(r->rp, (WORD)r->x0, (WORD)r->y0, (WORD)r->x1, (WORD)r->y1, r->array, r->bytes_per_row, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_wpa8_provider(APTR u, struct ortg_ogfx_array *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    r->result = wpa8_patch(r->rp, (WORD)r->x0, (WORD)r->y0, (WORD)r->x1, (WORD)r->y1, r->array, r->temp_rp, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_rpa8_provider(APTR u, struct ortg_ogfx_array *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    r->result = rpa8_patch(r->rp, (WORD)r->x0, (WORD)r->y0, (WORD)r->x1, (WORD)r->y1, r->array, r->temp_rp, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_wpl8_provider(APTR u, struct ortg_ogfx_array *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    r->result = wpl8_patch(r->rp, (WORD)r->x0, (WORD)r->y0, (UWORD)r->width, r->array, r->temp_rp, GfxBase);
+    return 1;
+}
+
+static LONG ogfx_rpl8_provider(APTR u, struct ortg_ogfx_array *r)
+{
+    if (!r || !r->rp || !ortg_is(r->rp->BitMap)) return 0;
+    r->result = rpl8_patch(r->rp, (WORD)r->x0, (WORD)r->y0, (UWORD)r->width, r->array, r->temp_rp, GfxBase);
+    return 1;
+}
+
+static struct ortg_ogfx_provider_all ogfx_all_provider;
+#define ogfx_provider (ogfx_all_provider.v1)
 
 static int try_opengfx_handoff(void)
 {
@@ -2067,11 +2174,33 @@ static int try_opengfx_handoff(void)
 
     /* opengpu.library 0.6 and later carries OpenGfx itself: the one library
      * that does all the drawing. OpenRTG registers there, and doesn't look
-     * for opengfx.library (by now a stub that forwards to it). */
+     * for opengfx.library (by now a stub that forwards to it). From 0.8
+     * (OpenGfx 1.4) OpenGfx patches every drawing call, so OpenRTG registers
+     * the whole record and patches none of them itself. */
     if (OpenGPUBase && (OpenGPUBase->lib_Version > 0 || OpenGPUBase->lib_Revision >= ORTG_OPENGPU_OGFX_REVISION)) {
-        if (!ORTG_OGPU_OGFX_RegisterProvider(OpenGPUBase, &ogfx_provider)) return 0;
+        if (ORTG_OGPU_OGFX_Version(OpenGPUBase) >= ORTG_OGFX_ALL_INTERFACE) {
+            struct ortg_ogfx_provider_all *a = &ogfx_all_provider;
+            a->bltpattern = ogfx_bltpattern_provider;
+            a->setrast = ogfx_setrast_provider;
+            a->draw = ogfx_draw_provider;
+            a->polydraw = ogfx_polydraw_provider;
+            a->writepixel = ogfx_writepixel_provider;
+            a->readpixel = ogfx_readpixel_provider;
+            a->bltbitmaprastport = ogfx_bltbmrp_provider;
+            a->bltmaskbitmaprastport = ogfx_bltmaskbmrp_provider;
+            a->clipblit = ogfx_clipblit_provider;
+            a->writechunkypixels = ogfx_wcp_provider;
+            a->writepixelarray8 = ogfx_wpa8_provider;
+            a->writepixelline8 = ogfx_wpl8_provider;
+            a->readpixelline8 = ogfx_rpl8_provider;
+            a->readpixelarray8 = ogfx_rpa8_provider;
+            ogfx_provider.size = sizeof *a;
+            ogfx_all = 1;
+        }
+        if (!ORTG_OGPU_OGFX_RegisterProvider(OpenGPUBase, &ogfx_provider)) { ogfx_all = 0; return 0; }
         if (ORTG_OGPU_OGFX_InstallPatches(OpenGPUBase)) return 1;
         (void)ORTG_OGPU_OGFX_UnregisterProvider(OpenGPUBase, (APTR)&ogfx_provider);
+        ogfx_all = 0;
         return 0;
     }
 
@@ -2123,23 +2252,26 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
      * opengfx.library 1.1) owns Text, TextLength, TextExtent, TextFit,
      * RectFill, BltBitMap, BltTemplate and ScrollRaster. OpenRTG provides
      * its RTG drawing implementations through the provider bridge. If
-     * OpenGfx is absent, retain the old standalone OpenRTG patch path. */
+     * OpenGfx is absent, retain the old standalone OpenRTG patch path.
+     * OpenGfx 1.4 (opengpu.library 0.8) owns the fourteen other drawing
+     * calls too (ogfx_all); OpenRTG keeps the bitmap, display, palette,
+     * sprite and screen calls, which aren't drawing. */
     ogfx_handoff = try_opengfx_handoff();
 
     Forbid();
     if (!ogfx_handoff) old_rectfill = (rectfill_fn)SetFunction(gfx, -306, (APTR)rectfill_patch);
-    old_bltpattern = (bltpattern_fn)SetFunction(gfx, -312, (APTR)bltpattern_patch);
-    old_setrast = (setrast_fn)SetFunction(gfx, -234, (APTR)setrast_patch);
-    old_draw = (draw_fn)SetFunction(gfx, -246, (APTR)draw_patch);
-    old_polydraw = (polydraw_fn)SetFunction(gfx, -336, (APTR)polydraw_patch);
-    old_writepixel = (writepixel_fn)SetFunction(gfx, -324, (APTR)writepixel_patch);
-    old_readpixel = (readpixel_fn)SetFunction(gfx, -318, (APTR)readpixel_patch);
+    if (!ogfx_all) old_bltpattern = (bltpattern_fn)SetFunction(gfx, -312, (APTR)bltpattern_patch);
+    if (!ogfx_all) old_setrast = (setrast_fn)SetFunction(gfx, -234, (APTR)setrast_patch);
+    if (!ogfx_all) old_draw = (draw_fn)SetFunction(gfx, -246, (APTR)draw_patch);
+    if (!ogfx_all) old_polydraw = (polydraw_fn)SetFunction(gfx, -336, (APTR)polydraw_patch);
+    if (!ogfx_all) old_writepixel = (writepixel_fn)SetFunction(gfx, -324, (APTR)writepixel_patch);
+    if (!ogfx_all) old_readpixel = (readpixel_fn)SetFunction(gfx, -318, (APTR)readpixel_patch);
     if (!ogfx_handoff) old_text = (text_fn)SetFunction(gfx, -60, (APTR)text_patch);
     if (!ogfx_handoff) old_blttemplate = (blttemplate_fn)SetFunction(gfx, -36, (APTR)blttemplate_patch);
     if (!ogfx_handoff) old_bltbitmap = (bltbitmap_fn)SetFunction(gfx, -30, (APTR)bltbitmap_patch);
-    old_bltbmrp = (bltbmrp_fn)SetFunction(gfx, -606, (APTR)bltbmrp_patch);
-    old_bltmaskbmrp = (bltmaskbmrp_fn)SetFunction(gfx, -636, (APTR)bltmaskbmrp_patch);
-    old_clipblit = (clipblit_fn)SetFunction(gfx, -552, (APTR)clipblit_patch);
+    if (!ogfx_all) old_bltbmrp = (bltbmrp_fn)SetFunction(gfx, -606, (APTR)bltbmrp_patch);
+    if (!ogfx_all) old_bltmaskbmrp = (bltmaskbmrp_fn)SetFunction(gfx, -636, (APTR)bltmaskbmrp_patch);
+    if (!ogfx_all) old_clipblit = (clipblit_fn)SetFunction(gfx, -552, (APTR)clipblit_patch);
     if (!ogfx_handoff) old_scroll = (scroll_fn)SetFunction(gfx, -396, (APTR)scroll_patch);
     old_allocbm = (allocbm_fn)SetFunction(gfx, -918, (APTR)allocbm_patch);
     old_freebm = (freebm_fn)SetFunction(gfx, -924, (APTR)freebm_patch);
@@ -2151,11 +2283,11 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
     old_setrgb32 = (setrgb32_fn)SetFunction(gfx, -852, (APTR)setrgb32_patch);
     old_loadrgb4 = (loadrgb4_fn)SetFunction(gfx, -192, (APTR)loadrgb4_patch);
     old_setrgb4 = (setrgb4_fn)SetFunction(gfx, -288, (APTR)setrgb4_patch);
-    old_wcp = (wcp_fn)SetFunction(gfx, -1056, (APTR)wcp_patch);
-    old_wpa8 = (wpa8_fn)SetFunction(gfx, -786, (APTR)wpa8_patch);
-    old_rpl8 = (line8_fn)SetFunction(gfx, -768, (APTR)rpl8_patch);
-    old_wpl8 = (line8_fn)SetFunction(gfx, -774, (APTR)wpl8_patch);
-    old_rpa8 = (wpa8_fn)SetFunction(gfx, -780, (APTR)rpa8_patch);
+    if (!ogfx_all) old_wcp = (wcp_fn)SetFunction(gfx, -1056, (APTR)wcp_patch);
+    if (!ogfx_all) old_wpa8 = (wpa8_fn)SetFunction(gfx, -786, (APTR)wpa8_patch);
+    if (!ogfx_all) old_rpl8 = (line8_fn)SetFunction(gfx, -768, (APTR)rpl8_patch);
+    if (!ogfx_all) old_wpl8 = (line8_fn)SetFunction(gfx, -774, (APTR)wpl8_patch);
+    if (!ogfx_all) old_rpa8 = (wpa8_fn)SetFunction(gfx, -780, (APTR)rpa8_patch);
     old_movesprite = (movesprite_fn)SetFunction(gfx, -426, (APTR)movesprite_patch);
     old_changeext = (changeext_fn)SetFunction(gfx, -1026, (APTR)changeext_patch);
     old_rethink = (remake_fn)SetFunction((struct Library *)IntuitionBase, -390, (APTR)rethink_patch);

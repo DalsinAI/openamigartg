@@ -52,6 +52,8 @@ The old library is kept in amigachrome-guest, archived in place (`libraries/open
 
 - **opengpu.library 0.7 (8 October 2026): the look hook.** `OGFX_RegisterLook` and `OGFX_UnregisterLook` (LVOs 150 and 156, `struct OGFXLookV1` in `include/opengpu/gfx.h`). A look is asked first on `RectFill` and `Text`, so OpenLook draws window frames here instead of patching the two calls on top of OpenGfx. The state's new fields come after the patch entries, so `old[]` stays where it was. `OGFX_Version` answers 1.3; `OGFX_Status` adds `OGFX_STATUS_LOOK` and `OGFX_STATUS_LOOK_BUSY`. OpenGfxCheck checks the hook when no other look is in.
 
+- **opengpu.library 0.8 (8 October 2026): every drawing call.** OpenGfx 1.4 patches 22 `graphics.library` calls: the eight, then `BltPattern`, `SetRast`, `Draw`, `PolyDraw`, `WritePixel`, `ReadPixel`, `BltBitMapRastPort`, `BltMaskBitMapRastPort`, `ClipBlit`, `WriteChunkyPixels`, `WritePixelArray8`, `WritePixelLine8`, `ReadPixelLine8` and `ReadPixelArray8`. Each asks the provider (a `struct OGFXProviderAll`, which starts with the v1 record) and otherwise calls `graphics.library`'s code with the registers as they came; there is no native path for them yet, and no LVOs. `old[]` and the entries grow to 22, `old[]` still just before the entries. openrtg.library 0.13 provides the fourteen and stops patching them when `OGFX_Version()` is 1.4 or later.
+
 ## Compatibility
 
 - **`opengfx.library` 1.2, the stub** (amigachrome-guest `libraries/opengfx/stub`, 1.7 KB): opening it opens opengpu.library; each of its six calls jumps to the same LVO there. With no opengpu.library, or one older than 0.6, opening it fails, as when it is not installed, so programs fall back as they always have.

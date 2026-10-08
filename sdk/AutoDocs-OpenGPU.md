@@ -200,7 +200,8 @@ without SDL.
   OpenGfx's calls. From opengpu.library 0.7, `OGFX_RegisterLook` and
   `OGFX_UnregisterLook` (`gfx.h`) let a program draw the system's look on
   RectFill and Text (OpenLook's window frames) without patching them: OpenGfx
-  asks the look first. The stream's commands are in `include/opengpu/stream.h`
+  asks the look first. From 0.8 OpenGfx patches every graphics.library drawing
+  call (22); an RTG system provides them through `struct OGFXProviderAll`. The stream's commands are in `include/opengpu/stream.h`
   and `stream3d.h`; `build.h` and `build3d.h` write them.
 - **SFD files** (`sfd/`) for opengpu.library, openrtg.library and
   Warp3D.library, for other compilers' stubs and pragmas.
