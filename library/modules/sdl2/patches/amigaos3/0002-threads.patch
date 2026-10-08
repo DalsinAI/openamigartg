@@ -1,0 +1,155 @@
+diff -ruN a/src/thread/amigaos3/SDL_syscond.c b/src/thread/amigaos3/SDL_syscond.c
+--- a/src/thread/amigaos3/SDL_syscond.c	2026-10-08 05:33:48.386309518 +0100
++++ b/src/thread/amigaos3/SDL_syscond.c	2026-10-08 05:33:48.388664973 +0100
+@@ -13,6 +13,7 @@
+ 
+ #include "SDL_mutex.h"
+ #include "SDL_thread.h"
++#include "../../timer/amigaos3/SDL_os3timer.h"
+ 
+ #ifdef WARPUP
+ #pragma pack(push,2)
+@@ -131,22 +132,17 @@
+     /* Release the mutex before waiting (standard condvar protocol) */
+     SDL_UnlockMutex(mutex);
+ 
+-    /* Wait for signal or timeout */
++    /* Wait for the signal or the timeout. Open (2026): a finite wait
++       sleeps on timer.device too; upstream waited for ever. */
+     if (ms == SDL_MUTEX_MAXWAIT) {
+         received = Wait(wait_mask);
+     } else {
+-        /* For timeout, we'd need timer.device.
+-           Phase 0: just wait without timeout (treat as infinite). */
+-        received = Wait(wait_mask);
+-        /* TODO Phase 4: implement timed wait via timer.device */
++        received = SDL_OS3_WaitSignals(wait_mask, ms);
+     }
+ 
+-    /* Re-acquire the mutex (standard condvar protocol) */
+-    SDL_LockMutex(mutex);
+-
+-    /* Check if we timed out (signal not received) */
+     if (!(received & wait_mask)) {
+-        /* Remove ourselves from wait list */
++        /* Timed out, unless a signal took us off the list meanwhile. */
++        int still_waiting = 0;
+         ObtainSemaphore(&cond->lock);
+         {
+             int i;
+@@ -157,14 +153,22 @@
+                         SDL_memmove(&cond->waiters[i], &cond->waiters[i + 1],
+                                     (cond->num_waiters - i) * sizeof(cond->waiters[0]));
+                     }
++                    still_waiting = 1;
+                     break;
+                 }
+             }
+         }
+         ReleaseSemaphore(&cond->lock);
+-        retval = SDL_MUTEX_TIMEDOUT;
++        if (still_waiting) {
++            retval = SDL_MUTEX_TIMEDOUT;
++        } else {
++            Wait(wait_mask);
++        }
+     }
+ 
++    /* Re-acquire the mutex (standard condvar protocol) */
++    SDL_LockMutex(mutex);
++
+     FreeSignal(sig);
+     return retval;
+ }
+diff -ruN a/src/thread/amigaos3/SDL_syssem.c b/src/thread/amigaos3/SDL_syssem.c
+--- a/src/thread/amigaos3/SDL_syssem.c	2026-10-08 05:33:48.407814039 +0100
++++ b/src/thread/amigaos3/SDL_syssem.c	2026-10-08 05:33:48.410329854 +0100
+@@ -12,6 +12,7 @@
+ #if SDL_THREAD_AMIGAOS3
+ 
+ #include "SDL_mutex.h"
++#include "../../timer/amigaos3/SDL_os3timer.h"
+ 
+ #ifdef WARPUP
+ #pragma pack(push,2)
+@@ -78,6 +79,25 @@
+     return SDL_SemWaitTimeout(sem, SDL_MUTEX_MAXWAIT);
+ }
+ 
++/* Remove this task's entry from the waiter list. Returns 1 if it was
++   still there (nobody posted to it), 0 if a post already took it off.
++   Call with sem->lock held. */
++static int OS3_SemRemoveWaiter(SDL_sem *sem, struct Task *me, BYTE sig)
++{
++    int i;
++    for (i = 0; i < sem->num_waiters; i++) {
++        if (sem->waiters[i].task == me && sem->waiters[i].signal_bit == sig) {
++            sem->num_waiters--;
++            if (i < sem->num_waiters) {
++                SDL_memmove(&sem->waiters[i], &sem->waiters[i + 1],
++                            (sem->num_waiters - i) * sizeof(sem->waiters[0]));
++            }
++            return 1;
++        }
++    }
++    return 0;
++}
++
+ int SDL_SemWaitTimeout(SDL_sem *sem, Uint32 timeout)
+ {
+     struct Task *me;
+@@ -102,27 +122,10 @@
+         return SDL_MUTEX_TIMEDOUT;
+     }
+ 
+-    /* Finite timeout: poll with SDL_Delay instead of blocking forever.
+-     * A proper implementation would use timer.device combined with Wait(),
+-     * but polling at 1ms granularity is sufficient for SDL_AddTimer. */
+-    if (timeout != SDL_MUTEX_MAXWAIT) {
+-        Uint32 start = SDL_GetTicks();
+-        ReleaseSemaphore(&sem->lock);
+-
+-        while ((SDL_GetTicks() - start) < timeout) {
+-            SDL_Delay(1);
+-            ObtainSemaphore(&sem->lock);
+-            if (sem->count > 0) {
+-                sem->count--;
+-                ReleaseSemaphore(&sem->lock);
+-                return 0;
+-            }
+-            ReleaseSemaphore(&sem->lock);
+-        }
+-        return SDL_MUTEX_TIMEDOUT;
+-    }
+-
+-    /* Infinite wait: block on signal */
++    /* Open (2026): finite and infinite waits both queue as a waiter and
++       sleep on a signal; a finite wait also sleeps on a timer.device
++       request. Upstream polled finite waits with SDL_Delay(1), which was
++       20 ms a turn, so SDL_AddTimer callbacks ran late. */
+     me = FindTask(NULL);
+     sig = AllocSignal(-1);
+     if (sig == -1) {
+@@ -142,7 +145,21 @@
+     sem->num_waiters++;
+     ReleaseSemaphore(&sem->lock);
+ 
+-    Wait(wait_mask);
++    if (timeout == SDL_MUTEX_MAXWAIT) {
++        Wait(wait_mask);
++    } else if (!SDL_OS3_WaitSignals(wait_mask, timeout)) {
++        int timed_out;
++        ObtainSemaphore(&sem->lock);
++        timed_out = OS3_SemRemoveWaiter(sem, me, sig);
++        ReleaseSemaphore(&sem->lock);
++        if (timed_out) {
++            FreeSignal(sig);
++            return SDL_MUTEX_TIMEDOUT;
++        }
++        /* A post took this waiter off the list as the timer ran out:
++           its signal is on its way, so the wait succeeded. */
++        Wait(wait_mask);
++    }
+ 
+     FreeSignal(sig);
+     return 0;

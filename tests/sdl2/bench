@@ -1,0 +1,29 @@
+; SDL 2 on AmigaOS 3.2: the bench (an AmigaDOS script).
+; Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+;
+; Copy build/tests/sdl2/ to a directory with SDL's icon.bmp and sample.bmp
+; (SDL2-2.32.10/test), SDL2.module to LIBS:OpenGPU/, then run
+;   Execute bench
+; Each line's output lands in results/. SDL's testsprite2 and
+; testrendercopyex run 20 s each (SDLTEST_SECONDS) on SDL2.module (.m):
+;   -cpu   no OpenGPU at all (SDL_OPENGPU=0): the software renderer, and the
+;          window shown with WritePixelArray
+;   -ogpu  the opengpu renderer, and the window shown by OpenGPU
+; then the static builds once, rendercompare, sdlcheck and satcheck.
+Stack 200000
+MakeDir results >NIL:
+SetEnv SDL_OPENGPU_STATS 1
+SetEnv SDLTEST_SECONDS 20
+SetEnv SDL_OPENGPU 0
+testsprite2.m >results/sprite-cpu.txt --renderer software
+testrendercopyex.m >results/copyex-cpu.txt --renderer software
+UnSetEnv SDL_OPENGPU
+testsprite2.m >results/sprite-ogpu.txt --info render
+testrendercopyex.m >results/copyex-ogpu.txt --info render
+testsprite2 >results/sprite-static.txt
+testrendercopyex >results/copyex-static.txt
+UnSetEnv SDLTEST_SECONDS
+rendercompare.m >results/rendercompare.txt
+sdlcheck.m >results/sdlcheck.txt
+satcheck.m >results/satcheck.txt
+Echo "bench done" >results/done.txt

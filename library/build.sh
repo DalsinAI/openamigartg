@@ -32,3 +32,4 @@ echo "$OUT/OpenRTG ($(wc -c < "$OUT/OpenRTG") bytes)"
 "$CC" -m68020 -O2 -Wall -Werror -Wno-pointer-sign -noixemul -I"$ROOT/include" -o "$OUT/OpenRTG-Monitor" "$ROOT/tools/openrtg_monitor.c"
 echo "$OUT/OpenRTG-Monitor ($(wc -c < "$OUT/OpenRTG-Monitor") bytes)"
 "$HERE/warp3d/build.sh" "$OUT"        # Warp3D.library, its tools and checks
+[ ! -x "${SDL2_STOVE:-$HOME/AmigaChrome/stoves/os32-gcc16/prefix}/bin/m68k-amigaos-gcc" ] || STOVE="${SDL2_STOVE:-$HOME/AmigaChrome/stoves/os32-gcc16/prefix}" "$HERE/modules/sdl2/build.sh" "$OUT"   # SDL 2 (library/modules/sdl2), with the GCC 16 stove
