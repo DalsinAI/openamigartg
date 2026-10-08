@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * opengpu.library 0.4 (G2 with stream v1.2, DESIGN.md section 5): the library, its
+ * opengpu.library 0.5 (G2 with stream v1.2, DESIGN.md section 5): the library, its
  * built-in CPU back end, which runs ogpu_core.c on the Amiga's own 68k, and
  * the drivers in LIBS:OpenGPU/ (include/opengpu/driver.h). The first time a
  * DOS process asks anything, the library opens the drivers there and keeps
@@ -12,6 +12,8 @@
  * if the driver says its hardware has gone. Without a driver, batches
  * are carried out on the CPU as they are submitted, so a fence is done by
  * the time OGPU_Submit returns. OGPU_Wait gives a batch's first error.
+ * OGPU_ModuleOpen loads a module from LIBS:OpenGPU/ (GL.module, SDL2.module)
+ * for the calling program (include/opengpu/module.h).
  * Built bare by library/build.sh.
  */
 #include <exec/types.h>
@@ -31,10 +33,11 @@
 #endif
 #include "../../include/opengpu/opengpu.h"
 #include "../../include/opengpu/driver.h"
+#include "../../include/opengpu/module.h"
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 4
+#define LIB_REVISION 5
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -62,9 +65,9 @@ struct DosLibrary *DOSBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.4 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
+static const char lib_id[] = "opengpu.library 0.5 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.4 (8.10.2026) OpenGPU, Dalsin Limited";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.5 (8.10.2026) OpenGPU, Dalsin Limited";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";
@@ -80,11 +83,14 @@ static ULONG OGPU_Query(REG(d0, ULONG op), REG(d1, ULONG format), REG(a6, struct
 static STRPTR OGPU_BackEndName(REG(d0, ULONG index), REG(a6, struct OpenGPUBase *base));
 static LONG OGPU_Submit(REG(a0, APTR stream), REG(d0, ULONG words), REG(a1, ULONG *fence), REG(a6, struct OpenGPUBase *base));
 static LONG OGPU_Wait(REG(d0, ULONG fence), REG(a6, struct OpenGPUBase *base));
+static APTR OGPU_ModuleOpen(REG(a0, CONST_STRPTR name), REG(d0, ULONG version), REG(a1, APTR *table), REG(a6, struct OpenGPUBase *base));
+static void OGPU_ModuleClose(REG(a0, APTR handle), REG(a6, struct OpenGPUBase *base));
 static void drivers_close(struct OpenGPUBase *base);
 
 static const APTR lib_vectors[] = {
     (APTR)lib_open, (APTR)lib_close, (APTR)lib_expunge, (APTR)lib_null,
-    (APTR)OGPU_Query, (APTR)OGPU_BackEndName, (APTR)OGPU_Submit, (APTR)OGPU_Wait, (APTR)-1,
+    (APTR)OGPU_Query, (APTR)OGPU_BackEndName, (APTR)OGPU_Submit, (APTR)OGPU_Wait,
+    (APTR)OGPU_ModuleOpen, (APTR)OGPU_ModuleClose, (APTR)-1,
 };
 static const struct { ULONG size; const APTR *vectors; APTR data; APTR init; } lib_inittable = {
     sizeof(struct OpenGPUBase), lib_vectors, NULL, (APTR)lib_init,
@@ -180,6 +186,18 @@ static LONG cpu_run(APTR stream, ULONG words)
 
 /* ---- the drivers in LIBS:OpenGPU/ ------------------------------------------------ */
 
+/* dos.library, opened by the first process that needs it (the library may
+ * start from ROM, before dos.library is there). */
+static int dos_open(struct OpenGPUBase *base)
+{
+    if (!DOSBase) {
+        ObtainSemaphore(&base->drv_lock);
+        if (!DOSBase) DOSBase = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)dos_name, 36);
+        ReleaseSemaphore(&base->drv_lock);
+    }
+    return DOSBase != NULL;
+}
+
 /* A driver's first call: its table, or NULL. */
 static struct OGPUDriver *driver_get(struct Library *lib)
 {
@@ -248,7 +266,7 @@ static void drivers_load(struct OpenGPUBase *base)
     if (me->tc_Node.ln_Type != NT_PROCESS) return;
     ObtainSemaphore(&base->drv_lock);
     if (base->drv_tried) { ReleaseSemaphore(&base->drv_lock); return; }
-    if (!DOSBase) DOSBase = (struct DosLibrary *)OpenLibrary((CONST_STRPTR)dos_name, 36);
+    dos_open(base);
     if (DOSBase && (fib = AllocDosObject(DOS_FIB, NULL)) != NULL) {
         struct Process *pr = (struct Process *)me;
         APTR win = pr->pr_WindowPtr;
@@ -384,4 +402,70 @@ static LONG OGPU_Wait(REG(d0, ULONG fence), REG(a6, struct OpenGPUBase *base))
         ReleaseSemaphore(&base->drv_lock);
     }
     return r;
+}
+
+/* ---- modules (include/opengpu/module.h) ------------------------------------------ */
+
+#define MODULE_MAGIC 0x4F474D44UL               /* "OGMD": a handle this library gave */
+
+struct ogpu_module {
+    ULONG magic;
+    BPTR seg;
+    struct OGPUModuleTable *table;
+};
+
+/* Step 1 of the residency plan: a copy of the module for each opener. */
+static APTR OGPU_ModuleOpen(REG(a0, CONST_STRPTR name), REG(d0, ULONG version), REG(a1, APTR *table), REG(a6, struct OpenGPUBase *base))
+{
+    static const char dir[] = OGPU_MODULE_DIR, ext[] = OGPU_MODULE_EXT;
+    char path[256];
+    int i = 0, j, is_path = 0;
+    struct ogpu_module *m;
+    struct OGPUModuleArgs args;
+    struct OGPUModuleTable *t;
+    struct Task *me = FindTask(NULL);
+    if (table) *table = NULL;
+    if (!name || !table || me->tc_Node.ln_Type != NT_PROCESS || !dos_open(base)) return NULL;
+    for (j = 0; name[j]; j++)
+        if (name[j] == ':' || name[j] == '/') is_path = 1;
+    if (!is_path)
+        for (j = 0; dir[j]; j++) path[i++] = dir[j];
+    for (j = 0; name[j] && i < (int)sizeof path - 8; j++) path[i++] = (char)name[j];
+    if (name[j]) { SetIoErr(ERROR_OBJECT_NOT_FOUND); return NULL; }
+    if (!is_path)
+        for (j = 0; ext[j]; j++) path[i++] = ext[j];
+    path[i] = 0;
+    if (!(m = AllocVec(sizeof *m, MEMF_ANY | MEMF_CLEAR))) { SetIoErr(ERROR_NO_FREE_STORE); return NULL; }
+    if (!(m->seg = LoadSeg((CONST_STRPTR)path))) {
+        LONG e = IoErr();
+        FreeVec(m);
+        SetIoErr(e ? e : ERROR_OBJECT_NOT_FOUND);
+        return NULL;
+    }
+    args.SysBase = SysBase;
+    args.DOSBase = &DOSBase->dl_lib;
+    args.OpenGPUBase = &base->lib;
+    args.version = version;
+    t = OGPU_MODULE_ENTRY(m->seg)(&args);
+    if (!t) {
+        UnLoadSeg(m->seg);
+        FreeVec(m);
+        SetIoErr(ERROR_OBJECT_WRONG_TYPE);
+        return NULL;
+    }
+    m->magic = MODULE_MAGIC;
+    m->table = t;
+    *table = t;
+    return m;
+}
+
+/* After the module's own close call. */
+static void OGPU_ModuleClose(REG(a0, APTR handle), REG(a6, struct OpenGPUBase *base))
+{
+    struct ogpu_module *m = handle;
+    (void)base;
+    if (!m || m->magic != MODULE_MAGIC) return;
+    m->magic = 0;
+    UnLoadSeg(m->seg);
+    FreeVec(m);
 }
