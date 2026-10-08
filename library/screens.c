@@ -277,6 +277,7 @@ static void pens_of(struct RastPort *rp, struct pens *p)
  * the byte; on 16 and 32-bit a pen is its colour, the mask only switches
  * drawing off (0) or on, and COMPLEMENT inverts the colour. */
 struct ink { ULONG a, b, x; UBYTE mode, mask; UBYTE bpp; };
+struct tmpl_ctx { struct pens p; const UBYTE *src; LONG src_x, mod; LONG at_x, at_y; };
 
 static void ink_of(const struct pens *p, const struct ortg_bitmap *o, struct ink *k)
 {
@@ -516,8 +517,6 @@ static void fill_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
 }
 
 /* A one-bit template: bit set, the A pen; clear, the B pen in JAM2. */
-struct tmpl_ctx { struct pens p; const UBYTE *src; LONG src_x, mod; LONG at_x, at_y; };
-
 static void tmpl_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct tmpl_ctx *t = c;
