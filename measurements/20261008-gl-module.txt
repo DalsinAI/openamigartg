@@ -1,0 +1,49 @@
+GL.module and libGL.a, 8 October 2026
+=====================================
+
+Where: a scratch copy of the AmigaChrome Showcase instance (OS 3.2.3,
+AC090 68040, ACRTG, ACRTG.gpu 1.1, opengpu.library 0.5), the runtime from
+amigachrome #292 with virglrenderer 1.3.0 on the PC's graphics chip.
+
+Built: library/modules/gl/module/build.sh (GCC 16 stove).
+  GL.module   20,842,948 bytes (Mesa 26.2.4 softpipe and virgl, the GLA core,
+              its OS 3 parts); 1,315 calls by name (1,300 GL/GLES, 15 GLA)
+  libGL.a     the generated entries and the loader
+  OpenDemos   100,100 bytes linked with libGL.a (Mesa inside: about 20 MB)
+
+ModuleCheck (tests/modules), 18 of 18 checks passed:
+  GL opens (1,020 ms); GL hands out 1,315 calls by name
+  SDL2 opens (52 ms); the rest as in 20261008-opengpu-modules.txt
+
+OpenDemos 320x240, SECONDS 20, GL from LIBS:OpenGPU/GL.module:
+  boing  OpenGPU (virgl)   356.6 fps over 7133 frames
+  boing  CPU (softpipe)      4.0 fps over 81 frames
+  gears  OpenGPU (virgl)   426.9 fps over 8539 frames
+  gears  CPU (softpipe)      1.5 fps over 30 frames
+  tunnel OpenGPU (virgl)   738.3 fps over 14765 frames
+  tunnel CPU (softpipe)      0.3 fps over 7 frames
+
+A second run after the FPCR fix below (GL.module rebuilt), the same
+setup: boing 442.4 / 4.1, gears 555.9 / 1.5, tunnel 1204.5 / 0.3 fps
+(virgl / softpipe). virgl's rate follows the PC's load, which other work
+on it changes; softpipe's doesn't move.
+
+test_gla on the 68040 from the same build: softpipe's pictures b6a1c876,
+a670987e, 209db179; virgl's c3c62778, 34e0c2fd, 1a30012c (the host's), 100%
+of softpipe's within the allowance. All tests passed.
+
+GCC 16's FPCR clash (tools/fpcr_check.py): at -m68040, a float-to-int
+store sometimes goes through the register FPCR was saved in. Scanned:
+  Mesa's 833 objects: one, feedback.c's update_hit_record (selection hit
+    records' depth values would be written to the wrong place); built
+    again at -m68020 -m68881 by mesa/fpcr_fix.py and linked ahead of
+    the libraries
+  GL.module, test_gla, OpenDemos (both links): none after the fix
+  opengpu.library, openrtg.library, cybergraphics.library, OpenRTG,
+    the tools, Test.module, ModuleCheck: none
+mesa/build.sh, module/build.sh, library/build.sh, tools/build.sh and
+tests/modules/build.sh run the check on what they build.
+
+With Mesa linked into the program (openamigamesa #4's first build):
+boing 4.2 / 342, gears 1.5 / 421, tunnel 0.3 / 512. The entries cost
+nothing that shows.
