@@ -223,9 +223,10 @@ int main(int argc, char *argv[])
         }
         SDL_snprintf(line, sizeof(line), "%d added, %d removed", gc_added, gc_removed);
         report("controllers", gc_added > 0, line);
-        SDL_snprintf(line, sizeof(line), "%d of %d buttons seen (bits %06lx)", nbuttons,
+        /* Every pad has A to the d-pad (0-14); Misc, the paddles and the touchpad only some. */
+        SDL_snprintf(line, sizeof(line), "%d of %d buttons seen (bits %06lx); A to d-pad right needed", nbuttons,
                      (int)SDL_CONTROLLER_BUTTON_MAX, (unsigned long)buttons_seen);
-        report("buttons", nbuttons == SDL_CONTROLLER_BUTTON_MAX, line);
+        report("buttons", (buttons_seen & 0x7FFF) == 0x7FFF, line);
         for (naxes = 0, i = 0; i < SDL_CONTROLLER_AXIS_MAX; ++i) {
             printf("  axis %-12s %6d .. %6d\n",
                    SDL_GameControllerGetStringForAxis((SDL_GameControllerAxis)i), axis_min[i], axis_max[i]);
