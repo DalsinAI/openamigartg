@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: MIT
  *
  * GLATriangle: OpenGL with GLA, OpenGPU's own GL interface, in an
- * Intuition window, with no SDL. GLA gives a display (virgl on the PC's
- * graphics chip, else softpipe on the 68k), a context, and a buffer whose
+ * Intuition window, with no SDL. GLA gives a display (virgl on the GPU,
+ * else softpipe on the 68k), a context, and a buffer whose
  * frames gla_swap shows in the window. A spinning triangle; Esc or the
  * close gadget quits.
  *   GLATriangle [CPU] [SECONDS n]

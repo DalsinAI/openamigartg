@@ -80,7 +80,7 @@ int OS3_GL_LoadLibrary(_THIS, const char *path)
     LONG cpu_only;
 
     if (!OS3_gl) {
-        return SDL_SetError("OpenGL: link the program with -lGL after -lSDL2 (`sdl2-config --libs` does), and use SDL2.module 3 or later");
+        return SDL_SetError("OpenGL: link the program with -lGL after -lSDL2 (`sdl2-config --libs --gl` does), and use SDL2.module 3 or later");
     }
     if (_this->gl_data) {
         return 0;

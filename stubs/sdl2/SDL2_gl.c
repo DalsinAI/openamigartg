@@ -4,8 +4,8 @@
  * libSDL2.a's SDL_GL_ functions, and the program's GL for SDL2.module.
  *
  * This member is linked only when the program calls an SDL_GL_ function,
- * and it then needs libGL.a (-lGL after -lSDL2; `sdl2-config --libs` gives
- * both). Its SDL_GL_ functions jump through the table like every other SDL
+ * and it then needs libGL.a (-lGL after -lSDL2; `sdl2-config --libs --gl`
+ * gives both). Its SDL_GL_ functions jump through the table like every other SDL
  * function (SDL2_stub.h). Before main runs, it hands the stub the calls
  * below, which reach GL through the program's own libGL.a; the stub gives
  * them to the module (set_gl, sdl2_module.h), whose SDL_GL_CreateContext,

@@ -42,8 +42,8 @@ One set of libraries serves both compilers: the GCC 16 builds link with
 GCC 6.5 too (the same libnix, objects and FPU calling convention).
 
 
-On the PC
----------
+With a cross-compiler
+---------------------
 
 Unpack OpenGPU-SDK-0.6.tar.gz anywhere, and put its bin/ on PATH beside the
 compiler's:
@@ -56,7 +56,9 @@ On AmigaChrome, ACKitchen's stoves can carry the kit (scripts/os32_stove.py
 --kit): then sdl2-config is in the stove's bin/, the headers and libraries
 are in its m68k-amigaos/, so no -I or -L is needed:
 
-  m68k-amigaos-gcc -noixemul -m68040 -m68881 game.c -o Game -lSDL2 -lGL -lm
+  m68k-amigaos-gcc -noixemul -m68040 -m68881 game.c -o Game -lSDL2 -lm
+
+(and -lGL after -lSDL2 for a program that calls SDL_GL_ functions)
 
 finds <SDL2/SDL.h> and the libraries by itself (a program that includes
 "SDL.h" adds -I for include/SDL2, as `sdl2-config --cflags` does). Keep
@@ -91,7 +93,7 @@ Building the examples
 Each has its build command at its top:
 
   examples/sprite     m68k-amigaos-gcc -O2 sprite.c -o Sprite $(sdl2-config --cflags --libs)
-  examples/sdl_gl     m68k-amigaos-gcc -O2 glspin.c -o GLSpin $(sdl2-config --cflags --libs)
+  examples/sdl_gl     m68k-amigaos-gcc -O2 glspin.c -o GLSpin $(sdl2-config --cflags --libs --gl)
   examples/gla        m68k-amigaos-gcc -O2 glatriangle.c -o GLATriangle $(pkg-config --cflags --libs gl)
 
 Copy the program to the Amiga and run it from a Shell. Each takes
@@ -104,9 +106,9 @@ Things to know
 - GL runs on the program's stack. A GL program asks libnix for a big one:
   unsigned long __stack = 1024 * 1024;  (the examples do).
 - A program that calls any SDL_GL_ function links libGL.a too:
-  `sdl2-config --libs` gives -lSDL2 -lGL. A program that never calls one
-  links no GL.
-- GL on AmigaChrome is the PC's graphics chip (virgl, GL 4.3, GLES 3.1); on
+  `sdl2-config --libs --gl` gives -lSDL2 -lGL (pkg-config: sdl2 gl).
+  `sdl2-config --libs` alone gives no -lGL, for programs that never call one.
+- GL on AmigaChrome runs on the GPU (virgl, GL 4.3, GLES 3.1); on
   other Amigas it is softpipe on the 68k (GL 3.3, GLES 3.1). SetEnv
   SDL_OPENGPU_GL cpu picks softpipe for SDL programs.
 - With GCC 16, run tools/fpcr_check.py (openamigartg) on what you build:

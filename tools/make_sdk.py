@@ -116,6 +116,8 @@ SDL2_CONFIG = r'''#!/bin/sh
 # Copyright (c) 2026 Dalsin Limited. MIT licence (Licences/OpenGPU.txt).
 # Prints the flags m68k-amigaos-gcc needs for SDL 2:
 #   m68k-amigaos-gcc game.c -o Game $(sdl2-config --cflags --libs)
+# A program that calls SDL_GL_ functions asks for GL too, and gets -lGL:
+#   m68k-amigaos-gcc glgame.c -o GLGame $(sdl2-config --cflags --libs --gl)
 # It finds the kit from where it is: the kit's own bin/, or a stove's
 # prefix/bin/ with the kit in prefix/m68k-amigaos/. For GCC 16 (the
 # os32-gcc16 stove) --cflags adds -fno-tree-loop-distribute-patterns.
@@ -143,10 +145,13 @@ case $("$cc" -dumpversion 2>/dev/null) in
     1[0-9]*) extra=" -fno-tree-loop-distribute-patterns" ;;
 esac
 usage() {
-    echo "Usage: sdl2-config [--prefix[=DIR]] [--exec-prefix[=DIR]] [--version] [--cflags] [--libs] [--static-libs]"
+    echo "Usage: sdl2-config [--prefix[=DIR]] [--exec-prefix[=DIR]] [--version] [--cflags] [--libs] [--static-libs] [--gl]"
     exit $1
 }
 [ $# -eq 0 ] && usage 1 1>&2
+# --gl (anywhere on the line) adds GL to --libs, for programs that call SDL_GL_.
+gl=
+for a in "$@"; do [ "$a" = --gl ] && gl=" -lGL"; done
 out=
 while [ $# -gt 0 ]; do
     case $1 in
@@ -154,7 +159,8 @@ while [ $# -gt 0 ]; do
     --prefix|--exec-prefix) out="$out $prefix" ;;
     --version) out="$out @VERSION@" ;;
     --cflags) out="$out -I$includedir/SDL2 $runtime $cpu$extra" ;;
-    --libs|--static-libs) out="$out $runtime $cpu -L$libdir -lSDL2 -lGL -lm" ;;
+    --libs|--static-libs) out="$out $runtime $cpu -L$libdir -lSDL2$gl -lm" ;;
+    --gl) ;;
     *) usage 1 1>&2 ;;
     esac
     shift
@@ -164,7 +170,7 @@ echo $out
 
 PC = {
     "sdl2": ("sdl2", "Simple DirectMedia Layer 2 on OpenGPU (AmigaOS 3.2, LIBS:OpenGPU/SDL2.module)",
-             SDL_VERSION, "", "-L${libdir} -lSDL2 -lGL -lm", "-I${includedir}/SDL2"),
+             SDL_VERSION, "", "-L${libdir} -lSDL2 -lm", "-I${includedir}/SDL2"),
     "SDL2_image": ("SDL2_image", "Image loading for SDL 2", SAT_VERSIONS["SDL2_image"], "sdl2",
                    "-L${libdir} -lSDL2_image", "-I${includedir}/SDL2"),
     "SDL2_mixer": ("SDL2_mixer", "Sound and music mixing for SDL 2", SAT_VERSIONS["SDL2_mixer"], "sdl2",
