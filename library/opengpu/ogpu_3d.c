@@ -190,15 +190,20 @@ static o3_s32 o3_f2fix(o3_u32 bits, int shift, o3_s32 lim) {
     return (bits >> 31) ? -(o3_s32)r : (o3_s32)r;
 }
 
-/* log2(x) in 8.8 fixed point, x > 0; the fraction from the next 8 bits. */
+/* log2(x) in 8.8 fixed point, x > 0; the fraction from the next 8 bits.
+ * No loops: GCC 6.5 for the 68k let a spill clobber the flags its loop
+ * version tested, and with a power of two that loop never ended. */
 static int o3_log2_88(o3_s64 x) {
-    unsigned long long y = (unsigned long long)x;
-    o3_u32 v;
-    int b = 63;
-    if (!y) return 0;
-    while (!(y >> 56)) { y <<= 8; b -= 8; }                 /* whole bytes, then bits */
-    v = (o3_u32)(y >> 32);
-    while (!(v & 0x80000000u)) { v <<= 1; b--; }
+    o3_u32 hi = (o3_u32)((unsigned long long)x >> 32), lo = (o3_u32)x, v, e;
+    int b;
+    if (hi) { v = hi; e = lo; b = 63; }
+    else if (lo) { v = lo; e = 0; b = 31; }
+    else return 0;
+    if (!(v & 0xFFFF0000u)) { v = (v << 16) | (e >> 16); e <<= 16; b -= 16; }
+    if (!(v & 0xFF000000u)) { v = (v << 8) | (e >> 24); e <<= 8; b -= 8; }
+    if (!(v & 0xF0000000u)) { v = (v << 4) | (e >> 28); e <<= 4; b -= 4; }
+    if (!(v & 0xC0000000u)) { v = (v << 2) | (e >> 30); e <<= 2; b -= 2; }
+    if (!(v & 0x80000000u)) { v = (v << 1) | (e >> 31); b -= 1; }
     return b * 256 + (int)((v >> 23) & 255);
 }
 
