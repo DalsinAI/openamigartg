@@ -151,10 +151,12 @@ PX_FN void st(ogpu_u8 *p, int f, unsigned a, unsigned r, unsigned g, unsigned b)
 }
 
 /* A raw value of the target's format (FILL's colour, a pen, INVERT's mask)
- * as the bytes it is stored as. */
+ * as the bytes it is stored as. All four bytes are set (the ones a 1- or
+ * 2-byte pixel doesn't use are 0), so a caller may read all four. */
 static void raw_bytes(ogpu_u32 v, int f, ogpu_u8 *b) {
     ogpu_u8 w[4];
     bytes_of(v, w);
+    b[1] = b[2] = b[3] = 0;
     switch (bytes_per_pixel(f)) {
     case 4: b[0] = w[0]; b[1] = w[1]; b[2] = w[2]; b[3] = w[3]; return;
     case 2:

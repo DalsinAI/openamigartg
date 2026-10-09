@@ -51,7 +51,7 @@ static struct MonitorSpec mspec[ORTG_MAX_MONITORS + 1];
 static struct SpecialMonitor mspecial[ORTG_MAX_MONITORS + 1];
 
 /* A board's monitor has nothing of the chipset's to program. */
-static LONG do_monitor(struct MonitorSpec *ms) { (void)ms; return 0; }
+static LONG __STDARGS__ do_monitor(struct MonitorSpec *ms) { (void)ms; return 0; }   /* the field is __stdargs */
 static char mspec_name[ORTG_MAX_MONITORS + 1][20];
 
 static struct ortg_mode_table *table_for(ULONG id)
@@ -347,7 +347,7 @@ int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
             /* as Picasso96's: a special monitor, whose do_monitor programs nothing */
             mspec[n].ms_Flags = MSF_REQUEST_SPECIAL;
             mspecial[n].spm_Node.xln_Type = NT_GRAPHICS;
-            mspecial[n].do_monitor = (LONG (*)())do_monitor;
+            mspecial[n].do_monitor = do_monitor;
             mspec[n].DeniseMaxDisplayColumn = mspec[n].BeamCon0 = mspec[n].min_row = 0;
             mspec[n].DeniseMinDisplayColumn = 0;
             mspec[n].ms_Special = &mspecial[n];

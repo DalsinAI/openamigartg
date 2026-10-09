@@ -9,3 +9,27 @@ diff -ruN a/src/audio/amigaos3/SDL_os3paula.c b/src/audio/amigaos3/SDL_os3paula.
  #include <exec/memory.h>
  #ifdef WARPUP
  #pragma pop
+@@ -115,9 +116,8 @@
+ {
+     struct Process *me;
+     APTR oldwin;
+-    struct Task *task = FindTask(NULL);
+ 
+-    DLOG("LazyOpen: task=%p (%s)", (void *)task, task->tc_Node.ln_Name);
++    DLOG("LazyOpen: task=%p (%s)", (void *)FindTask(NULL), FindTask(NULL)->tc_Node.ln_Name);   /* only with DEBUG */
+ 
+     data->port = CreateMsgPort();
+     if (!data->port) {
+@@ -182,11 +182,10 @@
+ static int OS3PAULA_OpenDevice(_THIS, const char *devname)
+ {
+     struct OS3PaulaData *data = NULL;
+-    struct Task *task = FindTask(NULL);
+ 
+     (void)devname;
+ 
+-    DLOG("OpenDevice: task=%p (%s)", (void *)task, task->tc_Node.ln_Name);
++    DLOG("OpenDevice: task=%p (%s)", (void *)FindTask(NULL), FindTask(NULL)->tc_Node.ln_Name);   /* only with DEBUG */
+ 
+     data = (struct OS3PaulaData *)SDL_malloc(sizeof(struct OS3PaulaData));
+     if (!data) return SDL_OutOfMemory();
