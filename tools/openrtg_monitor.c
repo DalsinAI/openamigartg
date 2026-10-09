@@ -14,7 +14,7 @@
 #include <proto/exec.h>
 #include <proto/openrtg.h>
 
-static const char version[] = "$VER: OpenRTG-Monitor 0.7 (6.10.2026) Dalsin Limited";
+static const char version[] __attribute__((used)) = "$VER: OpenRTG-Monitor 0.7 (6.10.2026) Dalsin Limited";
 struct Library *OpenRTGBase;
 
 int main(void)

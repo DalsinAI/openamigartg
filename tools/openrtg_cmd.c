@@ -21,7 +21,7 @@
 #include <graphics/modeid.h>
 #include <proto/openrtg.h>
 
-static const char version[] = "$VER: OpenRTG 0.3 (8.10.2026) Dalsin Limited";
+static const char version[] __attribute__((used)) = "$VER: OpenRTG 0.3 (8.10.2026) Dalsin Limited";
 struct Library *OpenRTGBase;
 
 int main(void)
