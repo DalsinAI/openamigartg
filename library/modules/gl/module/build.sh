@@ -84,3 +84,17 @@ echo "built $OUT/libGL.a ($(wc -l < "$W/gl.names") GL calls, $(wc -l < "$STUBS/g
 mkdir -p "$OUT/include/gla/os3"
 cp "$GL/gla/gla_core.h" "$OUT/include/gla/"
 cp "$GL/gla/os3/gla_present_os3.h" "$GL/gla/os3/gla_virgl_os3.h" "$OUT/include/gla/os3/"
+
+# GLArrays (tests/glarrays.c): vertex and index data in every width, through
+# libGL.a, with this stove and the GCC 6.5 one (STOVE) when it is there;
+# run on an Amiga (virgl, then CPU for softpipe).
+mkdir -p "$OUT/tests"
+$CC -O2 -noixemul -m68040 -m68881 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -I"$SRC/include" -I"$OUT/include" \
+    -o "$OUT/tests/GLArrays" "$GL/tests/glarrays.c" -L"$OUT" -lGL -lm
+CC65=$STOVE/prefix/bin/m68k-amigaos-gcc
+if [ -x "$CC65" ]; then
+    "$CC65" -O2 -noixemul -m68040 -m68881 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -I"$SRC/include" -I"$OUT/include" \
+        -o "$OUT/tests/GLArrays-gcc65" "$GL/tests/glarrays.c" -L"$OUT" -lGL -lm
+fi
+python3 "$REPO/tools/fpcr_check.py" "${CC%gcc}objdump" "$OUT/tests/"GLArrays*
+echo "built $OUT/tests/GLArrays (run it on an Amiga: GLArrays, then GLArrays CPU)"

@@ -1,0 +1,93 @@
+--- a/src/gallium/include/pipe/p_defines.h
++++ b/src/gallium/include/pipe/p_defines.h
+@@ -1178,6 +1178,11 @@
+    float conservative_raster_dilate_granularity;
+ 
+    struct pipe_mesh_caps mesh;
++
++   /* Vertex data reaches the hardware as 32-bit words (virgl on a big-endian
++    * CPU): u_vbuf widens every narrower vertex format as it draws, while
++    * is_format_supported still says what the hardware itself takes. */
++   bool vertex_buffer_32bit_words;
+ };
+ 
+ /**
+--- a/src/gallium/drivers/virgl/virgl_screen.c
++++ b/src/gallium/drivers/virgl/virgl_screen.c
+@@ -26,6 +26,7 @@
+ #include "util/u_screen.h"
+ #include "util/u_video.h"
+ #include "util/u_math.h"
++#include "util/u_endian.h"
+ #include "util/u_inlines.h"
+ #include "util/os_time.h"
+ #include "util/xmlconfig.h"
+@@ -348,6 +349,13 @@
+    caps->depth_clip_disable_separate = false;
+    caps->compute = vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_COMPUTE_SHADER;
+    caps->user_vertex_buffers = false;
++#if UTIL_ARCH_BIG_ENDIAN
++   /* A big-endian CPU (the 68k on AmigaOS): a buffer's words reach the host
++    * turned round 32 bits at a time, right for 32-bit values and wrong for
++    * narrower ones (unsigned-byte colours arrive as ABGR, two shorts in a
++    * word change places), so u_vbuf widens those as it draws. */
++   caps->vertex_buffer_32bit_words = true;
++#endif
+    caps->constant_buffer_offset_alignment =
+       vscreen->caps.caps.v2.uniform_buffer_offset_alignment;
+    caps->stream_output_pause_resume =
+--- a/src/gallium/auxiliary/util/u_vbuf.c
++++ b/src/gallium/auxiliary/util/u_vbuf.c
+@@ -274,8 +274,42 @@
+    { PIPE_FORMAT_R8G8_SSCALED,         PIPE_FORMAT_R32G32_FLOAT },
+    { PIPE_FORMAT_R8G8B8_SSCALED,       PIPE_FORMAT_R32G32B32_FLOAT },
+    { PIPE_FORMAT_R8G8B8A8_SSCALED,     PIPE_FORMAT_R32G32B32A32_FLOAT },
++   /* For a screen that takes vertex data only as 32-bit words
++    * (vertex_buffer_32bit_words): BGRA colours, and narrow integers. */
++   { PIPE_FORMAT_B8G8R8A8_UNORM,       PIPE_FORMAT_R32G32B32A32_FLOAT },
++   { PIPE_FORMAT_R8_UINT,              PIPE_FORMAT_R32_UINT },
++   { PIPE_FORMAT_R8G8_UINT,            PIPE_FORMAT_R32G32_UINT },
++   { PIPE_FORMAT_R8G8B8_UINT,          PIPE_FORMAT_R32G32B32_UINT },
++   { PIPE_FORMAT_R8G8B8A8_UINT,        PIPE_FORMAT_R32G32B32A32_UINT },
++   { PIPE_FORMAT_R8_SINT,              PIPE_FORMAT_R32_SINT },
++   { PIPE_FORMAT_R8G8_SINT,            PIPE_FORMAT_R32G32_SINT },
++   { PIPE_FORMAT_R8G8B8_SINT,          PIPE_FORMAT_R32G32B32_SINT },
++   { PIPE_FORMAT_R8G8B8A8_SINT,        PIPE_FORMAT_R32G32B32A32_SINT },
++   { PIPE_FORMAT_R16_UINT,             PIPE_FORMAT_R32_UINT },
++   { PIPE_FORMAT_R16G16_UINT,          PIPE_FORMAT_R32G32_UINT },
++   { PIPE_FORMAT_R16G16B16A16_UINT,    PIPE_FORMAT_R32G32B32A32_UINT },
++   { PIPE_FORMAT_R16_SINT,             PIPE_FORMAT_R32_SINT },
++   { PIPE_FORMAT_R16G16_SINT,          PIPE_FORMAT_R32G32_SINT },
++   { PIPE_FORMAT_R16G16B16A16_SINT,    PIPE_FORMAT_R32G32B32A32_SINT },
+ };
+ 
++/* A vertex format the hardware reads right when it takes only 32-bit words:
++ * 32-bit channels, or everything packed into one 32-bit word. */
++static bool
++u_vbuf_format_is_32bit_words(enum pipe_format format)
++{
++   const struct util_format_description *d = util_format_description(format);
++   unsigned i;
++   if (!d || d->layout != UTIL_FORMAT_LAYOUT_PLAIN)
++      return false;
++   if (!d->is_array)
++      return d->block.bits == 32;
++   for (i = 0; i < d->nr_channels; i++)
++      if (d->channel[i].type != UTIL_FORMAT_TYPE_VOID && d->channel[i].size != 32)
++         return false;
++   return true;
++}
++
+ void u_vbuf_get_caps(struct pipe_screen *screen, struct u_vbuf_caps *caps,
+                      bool needs64b)
+ {
+@@ -299,7 +333,8 @@
+          continue;
+ 
+       if (!screen->is_format_supported(screen, format, PIPE_BUFFER, 0, 0,
+-                                       PIPE_BIND_VERTEX_BUFFER)) {
++                                       PIPE_BIND_VERTEX_BUFFER) ||
++          (screen->caps.vertex_buffer_32bit_words && !u_vbuf_format_is_32bit_words(format))) {
+          caps->format_translation[format] = vbuf_format_fallbacks[i].to;
+          caps->fallback_always = true;
+       }
