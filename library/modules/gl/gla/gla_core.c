@@ -183,16 +183,37 @@ static int fs_get_param(struct pipe_frontend_screen *fs, enum st_manager_param p
     return param == ST_MANAGER_BROKEN_INVALIDATE;
 }
 
-static void visual_from(struct st_visual *v, const struct gla_config *cfg)
+/* The first of the formats (ending NONE) the screen can make a depth or
+ * stencil buffer of: a depth buffer in a format the driver can't make
+ * leaves the frame buffer unusable, and nothing is drawn. */
+static enum pipe_format depth_format(struct pipe_screen *screen, const enum pipe_format *f)
 {
+    for (; *f != PIPE_FORMAT_NONE; f++)
+        if (!screen || screen->is_format_supported(screen, *f, PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_DEPTH_STENCIL))
+            return *f;
+    return PIPE_FORMAT_NONE;
+}
+
+static void visual_from(struct st_visual *v, const struct gla_config *cfg, struct pipe_screen *screen)
+{
+    static const enum pipe_format with_stencil[] = {
+        PIPE_FORMAT_Z24_UNORM_S8_UINT, PIPE_FORMAT_S8_UINT_Z24_UNORM, PIPE_FORMAT_Z32_FLOAT_S8X24_UINT, PIPE_FORMAT_NONE
+    };
+    static const enum pipe_format depth24[] = {
+        PIPE_FORMAT_Z24X8_UNORM, PIPE_FORMAT_X8Z24_UNORM, PIPE_FORMAT_Z24_UNORM_S8_UINT, PIPE_FORMAT_S8_UINT_Z24_UNORM,
+        PIPE_FORMAT_Z32_UNORM, PIPE_FORMAT_Z32_FLOAT, PIPE_FORMAT_NONE
+    };
+    static const enum pipe_format depth16[] = {
+        PIPE_FORMAT_Z16_UNORM, PIPE_FORMAT_Z24X8_UNORM, PIPE_FORMAT_X8Z24_UNORM, PIPE_FORMAT_Z32_FLOAT, PIPE_FORMAT_NONE
+    };
     memset(v, 0, sizeof *v);
     v->color_format = cfg->alpha ? FMT_ALPHA : FMT_NOALPHA;
     if (cfg->stencil)
-        v->depth_stencil_format = PIPE_FORMAT_Z24_UNORM_S8_UINT;
+        v->depth_stencil_format = depth_format(screen, with_stencil);
     else if (cfg->depth > 16)
-        v->depth_stencil_format = PIPE_FORMAT_Z24X8_UNORM;
+        v->depth_stencil_format = depth_format(screen, depth24);
     else if (cfg->depth)
-        v->depth_stencil_format = PIPE_FORMAT_Z16_UNORM;
+        v->depth_stencil_format = depth_format(screen, depth16);
     else
         v->depth_stencil_format = PIPE_FORMAT_NONE;
     v->accum_format = PIPE_FORMAT_NONE;
@@ -280,7 +301,7 @@ struct gla_context *gla_context_create(struct gla_display *d, const struct gla_c
     a.minor = cfg->major ? cfg->minor : (cfg->profile == GLA_CORE ? 2 : 0);
     if (cfg->profile == GLA_CORE)
         a.flags |= ST_CONTEXT_FLAG_FORWARD_COMPATIBLE;
-    visual_from(&a.visual, cfg);
+    visual_from(&a.visual, cfg, d->fscreen.screen);
     c->d = d;
     c->st = st_api_create_context(&d->fscreen, &a, &err, share ? share->st : NULL);
     if (!c->st) {
@@ -374,7 +395,7 @@ struct gla_buffer *gla_buffer_create(struct gla_display *d, const struct gla_con
     struct gla_buffer *b = CALLOC_STRUCT(gla_buffer);
     if (!b)
         return NULL;
-    visual_from(&b->visual, cfg);
+    visual_from(&b->visual, cfg, d->fscreen.screen);
     b->d = d;
     if (p)
         b->present = *p;
