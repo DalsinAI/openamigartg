@@ -13,6 +13,13 @@
 # and it lives as long as the module is loaded.
 write: ^write of \.bss\._ZL\d+gl_\w+_fields\+0x[0-9a-f]+ of libglsl\.a\(builtin_types\.cpp\.o\), from the code at .*\(\.text\S* of libglsl\.a\(builtin_types\.cpp\.o\)\)$
 ^address of \.bss\._ZL\d+gl_\w+_fields\+0x[0-9a-f]+ of libglsl\.a\(builtin_types\.cpp\.o\), from the code at .*\(\.text\S* of libglsl\.a\(builtin_types\.cpp\.o\)\)$
+# The same references, read as "table": the constructor has no symbol, so
+# the check disassembles from the start of the file's .text, which opens
+# with string data, and whether objdump falls into step again before the
+# constructor depends on the bytes of the addresses (a build whose layout
+# moved them by 0xb4 read the first write as a table). Same tables, same
+# review (9 October 2026).
+^table of \.bss\._ZL\d+gl_\w+_fields\+0x[0-9a-f]+ of libglsl\.a\(builtin_types\.cpp\.o\), from the code at .*\(\.text\S* of libglsl\.a\(builtin_types\.cpp\.o\)\)$
 # glsl's ir_print_visitor.cpp: visit(ir_variable)'s static const tables of
 # names (mode, interpolation, precision), only read.
 ^address of \.data\+0x0 of libglsl\.a\(ir_print_visitor\.cpp\.o\), from the code at __ZN16ir_print_visitor5visitEP11ir_variable\+
