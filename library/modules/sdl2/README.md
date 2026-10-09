@@ -313,6 +313,13 @@ The Team's files are MIT, Copyright (c) 2026 Dalsin Limited. Files that
 alter SDL's (the stub, the renderer patch) keep SDL's Zlib notice and say
 they are altered.
 
+On the GCC 16.2 stove the build gives one warning, in SDL's own
+`src/video/SDL_surface.c` (`SDL_UpperBlitScaled`: `r`, `g`, `b` and
+`alpha` "may be used uninitialized"). It is a false alarm, left as it is:
+`SDL_GetSurfaceColorMod` and `SDL_GetSurfaceAlphaMod` set them for the
+surface just checked, and the Team doesn't patch SDL's code for GCC's
+sake. Any other warning is new and wants looking at.
+
 ## Measured
 
 `measurements/20261008-sdl2-opengpu.txt`: SDL's testsprite2 and

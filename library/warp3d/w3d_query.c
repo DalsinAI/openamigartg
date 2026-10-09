@@ -157,7 +157,11 @@ LIBCALL ULONG LIB_W3D_RequestMode(REG(a0, struct TagItem *tags), REG(a6, struct 
     ULONG id = (ULONG)INVALID_ID;
     if (!AslBase) AslBase = OpenLibrary("asl.library", 39);
     if (!AslBase) return (ULONG)INVALID_ID;
-    hook.h_Entry = (ULONG (*)())filter;
+    /* h_Entry is the NDK's generic ULONG (*)(): ASL calls it with the hook in
+     * A0, the requester in A2 and the mode in A1, as filter() takes them. The
+     * cast goes through void (*)(void), C's "any function" type, because the
+     * types differ by design (GCC 16, C23: -Wcast-function-type). */
+    hook.h_Entry = (ULONG (*)())(void (*)(void))filter;
     hook.h_SubEntry = 0;
     hook.h_Data = 0;
     r = AllocAslRequestTags(ASL_ScreenModeRequest, ASLSM_FilterFunc, (ULONG)&hook, ASLSM_TitleText, (ULONG)"Warp3D screen mode",
