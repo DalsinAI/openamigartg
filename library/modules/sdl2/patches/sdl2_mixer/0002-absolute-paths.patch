@@ -1,0 +1,29 @@
+--- a/src/music.c
++++ b/src/music.c
+@@ -45,6 +45,10 @@
+ 
+ #include "utils.h"
+ 
++#ifdef OGPU_MIXER_SERVICE
++#include "sat_path.h"
++#endif
++
+ /* Check to make sure we are building with a new enough SDL */
+ #if SDL_COMPILEDVERSION < SDL_VERSIONNUM(2, 0, 7)
+ #error You need SDL 2.0.7 or newer from http://www.libsdl.org
+@@ -661,6 +665,15 @@
+     char *ext;
+     Mix_MusicType type;
+     SDL_RWops *src;
++#ifdef OGPU_MIXER_SERVICE
++    char ogpu_path[512];
++
++    /* Altered for OpenGPU by Dalsin Limited, 2026: the file by its full path,
++       made here in the caller's process. A decoder that reads a piece ahead
++       in SDL's audio thread, the cores, a CreateFromFile that opens the name
++       itself: none of them knows what PROGDIR: or a relative name means. */
++    file = sat_abspath(file, ogpu_path, sizeof(ogpu_path));
++#endif
+ 
+     for (i = 0; i < SDL_arraysize(s_music_interfaces); ++i) {
+         Mix_MusicInterface *interface = s_music_interfaces[i];

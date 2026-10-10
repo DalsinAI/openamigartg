@@ -1,0 +1,83 @@
+--- a/src/thread/amigaos3/SDL_systhread.c
++++ b/src/thread/amigaos3/SDL_systhread.c
+@@ -96,6 +96,10 @@
+     OS3_ThreadData *td;
+     char name[64];
+     BYTE sigbit;
++    struct TagItem tags[12];
++    struct Process *parent;
++    BPTR home = 0, cwd = 0;
++    int nt = 0;
+ 
+     /* Allocate a signal bit in the PARENT task for the child to signal us.
+      * Per ADCD ch.22: signals are task-relative, allocated in calling task. */
+@@ -118,6 +122,40 @@
+ 
+     SDL_snprintf(name, sizeof(name), "SDL_%s", thread->name ? thread->name : "thread");
+ 
++    /* Open (2026): the thread keeps its parent's home folder (what PROGDIR:
++       means) and current directory. OS 3.2 does that by default; earlier
++       versions start a process with neither, and a file asked for by
++       "PROGDIR:..." or a relative name there makes AmigaDOS ask for a volume.
++       The locks are the thread's own copies, which DOS frees when it ends.
++       They are made before Forbid(): DupLock waits for the file system.
++       The thread has no window for requesters (-1): a path that fails fails
++       quietly, as a thread's should. */
++    parent = (struct Process *)td->parent_task;
++    if (parent->pr_Task.tc_Node.ln_Type == NT_PROCESS) {
++        if (parent->pr_HomeDir) {
++            home = DupLock(parent->pr_HomeDir);
++        }
++        if (parent->pr_CurrentDir) {
++            cwd = DupLock(parent->pr_CurrentDir);
++        }
++    }
++    tags[nt].ti_Tag = NP_Entry;         tags[nt++].ti_Data = (ULONG)OS3_ThreadEntry;
++    tags[nt].ti_Tag = NP_Name;          tags[nt++].ti_Data = (ULONG)name;
++    tags[nt].ti_Tag = NP_StackSize;     tags[nt++].ti_Data = (ULONG)(thread->stacksize ? thread->stacksize : 32768);
++    tags[nt].ti_Tag = NP_Priority;      tags[nt++].ti_Data = 0;
++    tags[nt].ti_Tag = NP_Input;         tags[nt++].ti_Data = 0;     /* No I/O for threads */
++    tags[nt].ti_Tag = NP_Output;        tags[nt++].ti_Data = 0;
++    tags[nt].ti_Tag = NP_CloseInput;    tags[nt++].ti_Data = FALSE;
++    tags[nt].ti_Tag = NP_CloseOutput;   tags[nt++].ti_Data = FALSE;
++    tags[nt].ti_Tag = NP_WindowPtr;     tags[nt++].ti_Data = (ULONG)-1L;
++    if (home) {
++        tags[nt].ti_Tag = NP_HomeDir;   tags[nt++].ti_Data = (ULONG)home;
++    }
++    if (cwd) {
++        tags[nt].ti_Tag = NP_CurrentDir; tags[nt++].ti_Data = (ULONG)cwd;
++    }
++    tags[nt].ti_Tag = TAG_DONE;         tags[nt].ti_Data = 0;
++
+     /* Forbid() prevents task switching so the new process cannot run
+        OS3_ThreadEntry before we set tc_UserData. Without this, the new
+        process may read tc_UserData as NULL and exit immediately, causing
+@@ -125,20 +163,17 @@
+        See ADCD ch.22: signals are task-relative. */
+     Forbid();
+ 
+-    proc = CreateNewProcTags(
+-        NP_Entry, (ULONG)OS3_ThreadEntry,
+-        NP_Name, (ULONG)name,
+-        NP_StackSize, (ULONG)(thread->stacksize ? thread->stacksize : 32768),
+-        NP_Priority, 0,
+-        NP_Input, 0,     /* No I/O for threads */
+-        NP_Output, 0,
+-        NP_CloseInput, FALSE,
+-        NP_CloseOutput, FALSE,
+-        TAG_DONE
+-    );
++    proc = CreateNewProc(tags);
+ 
+     if (proc == NULL) {
+         Permit();
++        /* A failed CreateNewProc leaves the locks to the caller (dos.doc). */
++        if (home) {
++            UnLock(home);
++        }
++        if (cwd) {
++            UnLock(cwd);
++        }
+         FreeSignal(sigbit);
+         SDL_free(td);
+         thread->handle = NULL;

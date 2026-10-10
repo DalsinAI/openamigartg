@@ -87,7 +87,7 @@ static void sat_init(void)
     sat_OpenGPUBase = OpenLibrary((CONST_STRPTR) "opengpu.library", 0);
     if (sat_OpenGPUBase && (sat_OpenGPUBase->lib_Version > 0 ||
                             sat_OpenGPUBase->lib_Revision >= OGPU_MODULE_LIB_REVISION)) {
-        sat_handle = OGPU_ModuleOpen((CONST_STRPTR)SAT_NAME, SAT_MODULE_VERSION, (APTR *)&sat_module);
+        sat_handle = OGPU_ModuleOpen((CONST_STRPTR)SAT_NAME, SAT_MODULE_OPEN_VERSION, (APTR *)&sat_module);
         if (!sat_handle && IoErr() == ERROR_OBJECT_NOT_FOUND) {
             sat_fail("this program needs " SAT_FILE " (OpenGPU), which isn't installed.");
         }
@@ -101,7 +101,7 @@ static void sat_init(void)
         args.SysBase = SysBase;
         args.DOSBase = (struct Library *)DOSBase;
         args.OpenGPUBase = sat_OpenGPUBase;
-        args.version = SAT_MODULE_VERSION;
+        args.version = SAT_MODULE_OPEN_VERSION;
         sat_module = (struct SatModuleTable *)OGPU_MODULE_ENTRY(sat_seg)(&args);
     }
     if (!sat_module) {

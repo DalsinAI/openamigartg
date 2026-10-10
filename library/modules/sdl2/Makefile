@@ -42,7 +42,7 @@ OGPU_BUILD3D := $(wildcard $(OGPU_SRC)/ogpu_build3d.c)
 # in place of the access.
 CFLAGS_BASE = -std=gnu11 $(OPT) $(CPU) -fno-delete-null-pointer-checks -noixemul -Wall -Wno-unused-parameter \
          -Wno-sign-compare -Wno-unused-but-set-variable \
-         -I$(SDL)/include -I$(SDL)/src -I$(SDK_INC) -I$(ROOT)/include -I$(ROOT)/stubs/sdl2 -I$(HERE)include/openinput \
+         -I$(SDL)/include -I$(SDL)/src -I$(SDK_INC) -I$(ROOT)/include -I$(ROOT)/stubs/sdl2 -I$(COMMON) -I$(HERE)include/openinput \
          -DSDL_VIDEO_RENDER_OPENGPU=1 -D__AMIGAOS3__
 
 SRCS_CORE = \
@@ -99,7 +99,7 @@ SRCS_AMIGA = \
 	thread/amigaos3/SDL_syscond.c thread/amigaos3/SDL_syssem.c thread/amigaos3/SDL_systls.c \
 	timer/amigaos3/SDL_systimer.c \
 	joystick/amigaos3/SDL_sysjoystick.c \
-	filesystem/amigaos3/SDL_sysfilesystem.c \
+	filesystem/amigaos3/SDL_sysfilesystem.c filesystem/amigaos3/SDL_os3path.c \
 	render/opengpu/SDL_render_opengpu.c
 
 C2P_SRC = video/amigaos3/c2p1x1_8_c5_gen.s

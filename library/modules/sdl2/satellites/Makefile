@@ -57,7 +57,7 @@ CFLAGS = -std=gnu11 $(OPT) $(CPU) -fno-delete-null-pointer-checks -fno-tree-loop
          -I$(SDLINC) -D__AMIGAOS3__
 # The Team's files: warnings on; the ladders' includes.
 OWN_CFLAGS = $(filter-out -w,$(CFLAGS)) -Wall -Wno-unused-parameter -Wno-pointer-sign \
-         -I$(MODDIR) -I$(HERE)include -I$(ROOT)/include
+         -I$(COMMON) -I$(MODDIR) -I$(HERE)include -I$(ROOT)/include
 # In a module: every global through A4 (include/opengpu/module.h).
 MODFLAGS = -fbaserel32 -DOGPU_SAT_MODULE -I$(COMMON) -I$(MODDIR) -I$(HERE)include -I$(ROOT)/include
 IMG_LADDER = -DOGPU_IMAGE_LADDER -I$(MODDIR) -I$(HERE)include
@@ -70,7 +70,7 @@ IMG_SRCS = IMG.c IMG_bmp.c IMG_gif.c IMG_jpg.c IMG_lbm.c IMG_pcx.c IMG_png.c IMG
 IMG_DEFS = -DUSE_STBIMAGE -DLOAD_BMP -DLOAD_GIF -DLOAD_JPG -DLOAD_LBM -DLOAD_PCX -DLOAD_PNG \
            -DLOAD_PNM -DLOAD_QOI -DLOAD_SVG -DLOAD_TGA -DLOAD_XCF -DLOAD_XPM -DLOAD_XV \
            -DSDL_IMAGE_SAVE_PNG=1 -DSDL_IMAGE_SAVE_JPG=1
-IMG_OBJS = $(addprefix $(OBJ)/img/,$(IMG_SRCS:.c=.o)) $(OBJ)/img/ogpu_image.o $(OBJ)/img/sat_service.o
+IMG_OBJS = $(addprefix $(OBJ)/img/,$(IMG_SRCS:.c=.o)) $(OBJ)/img/ogpu_image.o $(OBJ)/img/sat_service.o $(OBJ)/img/sat_path.o
 IMG_MOBJS = $(addprefix $(OBJ)/mimg/,$(IMG_SRCS:.c=.o)) $(OBJ)/mimg/ogpu_image.o
 $(OBJ)/img/%.o: $(IMG)/src/%.c
 	@mkdir -p $(dir $@)
@@ -78,10 +78,10 @@ $(OBJ)/img/%.o: $(IMG)/src/%.c
 $(OBJ)/mimg/%.o: $(IMG)/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(MODFLAGS) $(IMG_DEFS) $(IMG_LADDER) -I$(IMG)/include -c $< -o $@
-$(OBJ)/img/%.o: $(MODDIR)/%.c $(MODDIR)/ogpu_image.h $(MODDIR)/sat_service.h
+$(OBJ)/img/%.o: $(MODDIR)/%.c $(MODDIR)/ogpu_image.h $(MODDIR)/sat_service.h $(MODDIR)/sat_path.h $(COMMON)/ogpu_path.h
 	@mkdir -p $(dir $@)
 	$(CC) $(OWN_CFLAGS) -c $< -o $@
-$(OBJ)/mimg/%.o: $(MODDIR)/%.c $(MODDIR)/ogpu_image.h $(MODDIR)/sat_service.h
+$(OBJ)/mimg/%.o: $(MODDIR)/%.c $(MODDIR)/ogpu_image.h $(MODDIR)/sat_service.h $(MODDIR)/sat_path.h $(COMMON)/ogpu_path.h
 	@mkdir -p $(dir $@)
 	$(CC) $(OWN_CFLAGS) $(MODFLAGS) -c $< -o $@
 # The GCC 16 stove's -m68040 float-to-int can save FPCR in the register a
@@ -122,7 +122,7 @@ MIX_SRCS = src/mixer.c src/music.c src/utils.c src/effects_internal.c src/effect
 MIX_DEFS = -DMUSIC_WAV -DMUSIC_OGG -DOGG_USE_STB -DMUSIC_FLAC_DRFLAC -DMUSIC_MP3_MINIMP3 \
            -DMUSIC_MOD_XMP -DLIBXMP_STATIC -DMUSIC_MID_TIMIDITY
 MIX_INC = -I$(MIX)/include -I$(MIX)/src -I$(MIX)/src/codecs -I$(XMP)/include
-MIX_OBJS = $(addprefix $(OBJ)/mix/,$(MIX_SRCS:.c=.o)) $(OBJ)/mix/ogpu_mixer.o $(OBJ)/mix/sat_service.o
+MIX_OBJS = $(addprefix $(OBJ)/mix/,$(MIX_SRCS:.c=.o)) $(OBJ)/mix/ogpu_mixer.o $(OBJ)/mix/sat_service.o $(OBJ)/mix/sat_path.o
 MIX_MOBJS = $(addprefix $(OBJ)/mmix/,$(MIX_SRCS:.c=.o)) $(OBJ)/mmix/ogpu_mixer.o
 $(OBJ)/mix/%.o: $(MIX)/%.c
 	@mkdir -p $(dir $@)
@@ -130,10 +130,10 @@ $(OBJ)/mix/%.o: $(MIX)/%.c
 $(OBJ)/mmix/%.o: $(MIX)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(MODFLAGS) $(MIX_DEFS) $(MIX_LADDER) $(MIX_INC) -c $< -o $@
-$(OBJ)/mix/%.o: $(MODDIR)/%.c $(MODDIR)/sat_service.h
+$(OBJ)/mix/%.o: $(MODDIR)/%.c $(MODDIR)/sat_service.h $(MODDIR)/sat_path.h $(COMMON)/ogpu_path.h
 	@mkdir -p $(dir $@)
 	$(CC) $(OWN_CFLAGS) $(MIX_INC) -c $< -o $@
-$(OBJ)/mmix/%.o: $(MODDIR)/%.c $(MODDIR)/sat_service.h
+$(OBJ)/mmix/%.o: $(MODDIR)/%.c $(MODDIR)/sat_service.h $(MODDIR)/sat_path.h $(COMMON)/ogpu_path.h
 	@mkdir -p $(dir $@)
 	$(CC) $(OWN_CFLAGS) $(MODFLAGS) $(MIX_INC) -c $< -o $@
 $(OBJ)/mix/src/codecs/timidity/mix.o $(OBJ)/mix/src/codecs/timidity/playmidi.o: $(OBJ)/mix/%.o: $(MIX)/%.c
@@ -177,7 +177,8 @@ $(OBJ)/net/%.o: $(NET)/src/%.c $(HERE)Makefile
 satellites: headers abi $(OUT)/SDL2_image.module $(OUT)/SDL2_mixer.module \
             $(OUT)/libSDL2_image.a $(OUT)/libSDL2_mixer.a \
             $(OUT)/libSDL2_image_static.a $(OUT)/libSDL2_mixer_static.a $(OUT)/libSDL2_ttf.a $(OUT)/libSDL2_net.a \
-            $(OUT)/tests/sdl2/satcheck $(OUT)/tests/sdl2/satcheck.m $(OUT)/tests/sdl2/satladder.m
+            $(OUT)/tests/sdl2/satcheck $(OUT)/tests/sdl2/satcheck.m $(OUT)/tests/sdl2/satladder.m \
+            $(OUT)/tests/sdl2/progdir $(OUT)/tests/sdl2/progdir.m
 
 # Their headers beside SDL's, as programs include them: <SDL2/SDL_image.h>
 headers:
@@ -194,7 +195,7 @@ abi:
 # (module/sat_sdl.c, through the program's SDL), the library. A shared
 # module reaches its data only through A4 (tools/baserel_check.py).
 MCOMMON = $(OBJ)/mcommon/module_start.o $(OBJ)/mcommon/module_rt.o $(OBJ)/mcommon/sat_sdl.o \
-          $(OBJ)/mcommon/sat_entry.o $(OBJ)/mcommon/sat_service.o
+          $(OBJ)/mcommon/sat_entry.o $(OBJ)/mcommon/sat_service.o $(OBJ)/mcommon/sat_path.o
 $(OBJ)/mcommon/module_start.o: $(COMMON)/module_start.S
 	@mkdir -p $(dir $@)
 	$(CC) $(CPU) $(MODFLAGS) -c $< -o $@
@@ -208,6 +209,9 @@ $(OBJ)/mcommon/sat_sdl.o: $(MODDIR)/sat_sdl.c $(MODDIR)/sat_rt.h
 	@mkdir -p $(dir $@)
 	$(CC) $(OWN_CFLAGS) $(MODFLAGS) -I$(SDLSRC)/src/dynapi -c $< -o $@
 $(OBJ)/mcommon/sat_service.o: $(MODDIR)/sat_service.c $(MODDIR)/sat_service.h
+	@mkdir -p $(dir $@)
+	$(CC) $(OWN_CFLAGS) $(MODFLAGS) -c $< -o $@
+$(OBJ)/mcommon/sat_path.o: $(MODDIR)/sat_path.c $(MODDIR)/sat_path.h $(COMMON)/ogpu_path.h
 	@mkdir -p $(dir $@)
 	$(CC) $(OWN_CFLAGS) $(MODFLAGS) -c $< -o $@
 $(OBJ)/mimg/sdl2_image_module.o: $(MODDIR)/sdl2_image_module.c $(MODDIR)/sat_module_body.h $(HERE)abi/SDL_image_procs.h
@@ -254,6 +258,13 @@ $(OUT)/tests/sdl2/satcheck.m: $(OBJ)/satcheck.o $(OUT)/libSDL2_image.a $(OUT)/li
 	@mkdir -p $(dir $@)
 	$(CC) $(CPU) -noixemul -o $@ $< -L$(OUT) $(SAT_MODULES) -lSDL2 -lsocket -lm -lamiga
 $(OUT)/tests/sdl2/satladder.m: $(OBJ)/satladder.o $(OUT)/libSDL2_image.a $(OUT)/libSDL2_mixer.a
+	@mkdir -p $(dir $@)
+	$(CC) $(CPU) -noixemul -o $@ $< -L$(OUT) -lSDL2_image -lSDL2_mixer -lSDL2 -lm -lamiga
+# progdir.c: file names in every process (PROGDIR:, relative, full path; in an SDL thread).
+$(OUT)/tests/sdl2/progdir: $(OBJ)/progdir.o $(OUT)/libSDL2_image_static.a $(OUT)/libSDL2_mixer_static.a $(OUT)/libSDL2_static.a
+	@mkdir -p $(dir $@)
+	$(CC) $(CPU) -noixemul -o $@ $< -L$(OUT) -lSDL2_image_static -lSDL2_mixer_static -lSDL2_static -lm -lamiga
+$(OUT)/tests/sdl2/progdir.m: $(OBJ)/progdir.o $(OUT)/libSDL2_image.a $(OUT)/libSDL2_mixer.a
 	@mkdir -p $(dir $@)
 	$(CC) $(CPU) -noixemul -o $@ $< -L$(OUT) -lSDL2_image -lSDL2_mixer -lSDL2 -lm -lamiga
 
