@@ -354,6 +354,14 @@ to put its patches in.
 
 - **The pointer:** each monitor's front screen gets the board's hardware
   sprite (acrtg-v2), which Cradle shows as the PC's cursor.
+- **The mouse's range (0.13.1, 10 October 2026):** OS 3.2's Intuition keeps
+  the pointer in a 16-bit range of ticks and stops it at 30000. A mode's
+  ticks per pixel (18, as Picasso96 gives them) made a 1920-wide screen end
+  at x = 1666: the screen bar's network, speaker and cog could not be clicked
+  and a window's right edge could not be reached. Each mode now gets as many
+  ticks (at most 18) as keep its larger side under 29900: 15 for 1920 x 1080,
+  18 up to 1661 pixels. `ticks_of()` in `library/displaydb.c`; the monitor's
+  ratio stays at 18.
 - **Boards:** a small driver interface (find, init, mode, pan, fill, copy,
   template, line, sprite, 3D) with the ACRTG driver built in.
 
