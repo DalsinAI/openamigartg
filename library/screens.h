@@ -30,10 +30,12 @@ struct ortg_bitmap {
     UBYTE pal_index;            /* which pen table its pens use (16 and 32-bit) */
 };
 
-/* 16 and 32-bit bitmaps draw a pen as the colour the pen stands for: each
- * monitor's screens share one table of 256 colours (0x00RRGGBB), set from
- * the front screen's palette whenever it changes (OpenRTG 0.5). */
-extern ULONG ortg_pen_rgb[][256];
+/* 16 and 32-bit bitmaps draw a pen as the colour the pen stands for, from a
+ * table of 256 colours (0x00RRGGBB): each screen its own, set from its palette
+ * whenever it changes, whether it is in front or not, and its friends share it
+ * (0.14.2); a monitor's shared table when the screens outnumber the tables. */
+#define ORTG_PEN_TABLES 16
+extern ULONG ortg_pen_rgb[ORTG_PEN_TABLES][256];
 
 /* 1 when any monitor shows an OpenRTG screen. */
 int ortg_any_shown(void);
