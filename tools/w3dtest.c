@@ -4,8 +4,12 @@
  * W3DTest: a Warp3D program that draws a textured, Z-buffered, fogged
  * scene (a floor into the fog, two turning cubes, a see-through pane) and
  * reports frames a second, so drivers can be compared on the same pictures:
- *   W3DTest [CPU|GPU|AUTO] [W n] [H n] [DEPTH 16|32] [FRAMES n] [SNAP file]
- * CPU asks for W3D_DRIVER_CPU, GPU for W3D_DRIVER_3DHW (OpenGPU), AUTO lets
+ *   W3DTest [CPU|GPU|AUTO] [W n] [H n] [DEPTH 16|32] [FRAMES n] [SECONDS n] [SNAP file]
+ * Started plainly (a Shell name, or the Workbench icon) it runs until Esc, a
+ * mouse button or Ctrl-C ends it (its screen has no title bar to hold a close
+ * gadget), then frees everything and exits. FRAMES n draws n frames and
+ * SECONDS n draws for n seconds, each printing the frame rate as it always
+ * has, for measuring; SNAP alone keeps the old run of 100 frames. CPU asks for W3D_DRIVER_CPU, GPU for W3D_DRIVER_3DHW (OpenGPU), AUTO lets
  * Warp3D choose. SNAP writes the first frame as raw ARGB (8-byte header:
  * width, height) and prints its checksum: the same frame from two drivers
  * should match within the 3D tolerance. Uses only the Warp3D API, as a
@@ -21,11 +25,18 @@
 #include <proto/graphics.h>
 #include <proto/cybergraphics.h>
 #include <proto/Warp3D.h>
+#include <dos/dos.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 struct Library *Warp3DBase, *CyberGfxBase;
+
+/* Started from Workbench (argc 0) the C library's output window would open on the
+ * first line and stay (WAIT) after the program had gone, so the report is only
+ * printed from a Shell; failures still print, and show that window. */
+static int quiet;
+#define INFO(...) do { if (!quiet) printf(__VA_ARGS__); } while (0)
 
 static float fsin(float x)
 {
@@ -150,15 +161,34 @@ static W3D_Texture *texture(int w, int h, ULONG fmt, void *img, ULONG mips)
     return t;
 }
 
+/* True once the user has asked to leave: Esc, a mouse button, or Ctrl-C. The
+ * window is the screen's backdrop, with no border, only there to get the input. */
+static int wants_out(struct Window *win)
+{
+    struct IntuiMessage *m;
+    int out = 0;
+    if (SetSignal(0, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C) out = 1;
+    while (win && (m = (struct IntuiMessage *)GetMsg(win->UserPort))) {
+        if (m->Class == IDCMP_CLOSEWINDOW || (m->Class == IDCMP_VANILLAKEY && m->Code == 27) ||
+            (m->Class == IDCMP_MOUSEBUTTONS && (m->Code == SELECTDOWN || m->Code == MENUDOWN)))
+            out = 1;
+        ReplyMsg((struct Message *)m);
+    }
+    return out;
+}
+
 int main(int argc, char **argv)
 {
     struct Screen *scr;
+    struct Window *win = 0;
+    int secs = 0, timed = 0;
     ULONG type = W3D_DRIVER_BEST, err = 0, mode, depth = 16;
-    int frames = 100, i, rc = 0;
+    int frames = 0, i, rc = 0;
     const char *snap = 0, *tname = "AUTO";
     static ULONG brickimg[128 * 128];
     static UWORD checkimg[64 * 64];
     W3D_Fog fog;
+    quiet = argc == 0;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "CPU")) { type = W3D_DRIVER_CPU; tname = "CPU"; }
         else if (!strcmp(argv[i], "GPU")) { type = W3D_DRIVER_3DHW; tname = "GPU"; }
@@ -166,27 +196,33 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "W") && i + 1 < argc) W = atoi(argv[++i]);
         else if (!strcmp(argv[i], "H") && i + 1 < argc) H = atoi(argv[++i]);
         else if (!strcmp(argv[i], "DEPTH") && i + 1 < argc) depth = (ULONG)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "FRAMES") && i + 1 < argc) frames = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "FRAMES") && i + 1 < argc) { frames = atoi(argv[++i]); timed = 1; }
+        else if (!strcmp(argv[i], "SECONDS") && i + 1 < argc) { secs = atoi(argv[++i]); timed = 1; }
         else if (!strcmp(argv[i], "SNAP") && i + 1 < argc) snap = argv[++i];
     }
+    if (snap && !timed) { frames = 100; timed = 1; }       /* SNAP alone: as before */
     Warp3DBase = OpenLibrary("Warp3D.library", 4);
     CyberGfxBase = OpenLibrary("cybergraphics.library", 40);
     if (!Warp3DBase || !CyberGfxBase) { printf("W3DTest: needs Warp3D.library 4 and cybergraphics.library\n"); return 20; }
-    printf("W3DTest: %s %d.%d, driver %s, %dx%d, %lu bits\n", Warp3DBase->lib_Node.ln_Name, Warp3DBase->lib_Version,
+    INFO("W3DTest: %s %d.%d, driver %s, %dx%d, %lu bits\n", Warp3DBase->lib_Node.ln_Name, Warp3DBase->lib_Version,
            Warp3DBase->lib_Revision, tname, W, H, (unsigned long)depth);
     {
         W3D_Driver **d = W3D_GetDrivers();
-        while (d && *d) { printf("  driver: %s%s\n", (*d)->name, (*d)->swdriver ? " (CPU)" : ""); d++; }
+        while (d && *d) { INFO("  driver: %s%s\n", (*d)->name, (*d)->swdriver ? " (CPU)" : ""); d++; }
     }
     mode = W3D_BestModeIDTags(W3D_BMI_WIDTH, W, W3D_BMI_HEIGHT, H, W3D_BMI_DEPTH, depth, TAG_DONE);
     if (mode == (ULONG)INVALID_ID) { printf("W3DTest: no %dx%d %lu-bit mode\n", W, H, (unsigned long)depth); rc = 20; goto out0; }
     scr = OpenScreenTags(0, SA_DisplayID, mode, SA_Width, W, SA_Height, H, SA_Depth, depth, SA_Quiet, TRUE,
                          SA_ShowTitle, FALSE, SA_Type, CUSTOMSCREEN, SA_Title, (ULONG)"W3DTest", TAG_DONE);
     if (!scr) { printf("W3DTest: no screen\n"); rc = 20; goto out0; }
+    win = OpenWindowTags(0, WA_CustomScreen, (ULONG)scr, WA_Left, 0, WA_Top, 0, WA_Width, W, WA_Height, H, WA_Backdrop, TRUE,
+                         WA_Borderless, TRUE, WA_Activate, TRUE, WA_RMBTrap, TRUE, WA_SimpleRefresh, TRUE, WA_NoCareRefresh, TRUE,
+                         WA_IDCMP, IDCMP_VANILLAKEY | IDCMP_MOUSEBUTTONS | IDCMP_CLOSEWINDOW, TAG_DONE);
+    if (!win) printf("W3DTest: no window for the keyboard and mouse (Ctrl-C still ends it)\n");
     ctx = W3D_CreateContextTags(&err, W3D_CC_BITMAP, (ULONG)scr->RastPort.BitMap, W3D_CC_YOFFSET, 0,
                                 W3D_CC_DRIVERTYPE, type, TAG_DONE);
     if (!ctx) { printf("W3DTest: W3D_CreateContext: error %ld\n", (long)err); rc = 20; goto out1; }
-    printf("  context: %s driver, %dx%d, format %08lx\n", ctx->drivertype == W3D_DRIVER_CPU ? "CPU" : "3D hardware",
+    INFO("  context: %s driver, %dx%d, format %08lx\n", ctx->drivertype == W3D_DRIVER_CPU ? "CPU" : "3D hardware",
            ctx->width, ctx->height, (unsigned long)ctx->format);
     if (W3D_AllocZBuffer(ctx) != W3D_SUCCESS) printf("W3DTest: no Z buffer\n");
     /* a brick texture with mip levels (ARGB32) and a checker (R5G6B5) */
@@ -232,25 +268,36 @@ int main(int argc, char **argv)
             ReadPixelArray(buf + 2, 0, 0, (UWORD)(W * 4), &rp, 0, 0, (UWORD)W, (UWORD)H, RECTFMT_ARGB);
             for (p = (UBYTE *)(buf + 2), i = 0; i < W * H * 4; i++) h = (h ^ p[i]) * 16777619UL;
             if ((f = Open((STRPTR)snap, MODE_NEWFILE))) { Write(f, buf, (LONG)W * H * 4 + 8); Close(f); }
-            printf("  first frame: checksum %08lx, written to %s\n", (unsigned long)h, snap);
+            INFO("  first frame: checksum %08lx, written to %s\n", (unsigned long)h, snap);
             FreeVec(buf);
         }
     }
     {
         long t0 = ticks(), t1;
-        for (i = 1; i <= frames; i++) frame(i);
+        int n = 0;
+        if (timed) {
+            /* the measured run, as before: FRAMES n, or SECONDS n of them */
+            if (secs) { while (ticks() - t0 < secs * 50L) { frame(++n); } }
+            else for (n = 1; n <= frames; n++) frame(n);
+            if (!secs) n = frames;
+        } else {
+            /* the demo: until Esc, a mouse button or Ctrl-C */
+            while (!wants_out(win)) frame(++n);
+        }
         t1 = ticks();
+        frames = n;
         if (t1 > t0) {
             long fps100 = (long)frames * 5000L / (t1 - t0);     /* frames a second, times 100 */
-            printf("  %d frames in %ld.%02ld s: %ld.%02ld frames a second\n", frames, (t1 - t0) / 50, ((t1 - t0) % 50) * 2,
+            INFO("  %d frames in %ld.%02ld s: %ld.%02ld frames a second\n", frames, (t1 - t0) / 50, ((t1 - t0) % 50) * 2,
                    fps100 / 100, fps100 % 100);
-        } else printf("  %d frames in under a tick\n", frames);
+        } else INFO("  %d frames in under a tick\n", frames);
     }
 out2:
     if (brick) W3D_FreeTexObj(ctx, brick);
     if (checker) W3D_FreeTexObj(ctx, checker);
     W3D_DestroyContext(ctx);
 out1:
+    if (win) CloseWindow(win);
     CloseScreen(scr);
 out0:
     CloseLibrary(CyberGfxBase);

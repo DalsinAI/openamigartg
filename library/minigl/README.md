@@ -103,6 +103,8 @@ Not offered, as MiniGL never had them:
 
 All runs were on a scratch copy of Instance-11 (OS 3.2.3, AC090 68040, OpenRTG) on 8 October 2026. The OpenGPU route ran on a lab runtime and `ACRTG.gpu` built with the 3D core: the PC's CPU, not yet its GPU.
 
+MGLTest, started plainly (its Workbench icon, or the name in a Shell), shows the scene in a Workbench window until its close gadget, Esc or Ctrl-C ends it, then frees everything and exits. `MGLTest CPU FRAMES 100` (or `SECONDS 10`, or the older `MGLTest CPU 320 240 16 100`) is the measuring run: full screen, printing the frame rate.
+
 These MGLTest rows come from one boot, on a busy host. W3DTest on the 68k, run in the same boot, gave 31.9 frames a second; on a quiet host it gives 42.7.
 
 | MGLTest, 320x240 (frames a second) | |

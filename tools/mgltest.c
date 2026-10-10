@@ -5,6 +5,11 @@
  * for comparing drivers and libraries. Built against the minigl.library 29
  * table, so it runs on OpenRTG's minigl.library and on the classic one.
  *   MGLTest [CPU|GPU|AUTO] [W] [H] [DEPTH] [FRAMES] [SNAP]
+ *           (FRAMES n, SECONDS n and SNAP file also work by name)
+ * Started plainly (a Shell name, or the Workbench icon) it shows the scene in
+ * a Workbench window, until its close gadget, Esc or Ctrl-C ends it, then
+ * frees everything and exits. Giving FRAMES or SECONDS (or SNAP) makes it the
+ * measuring run, as it always was, full screen, printing the frame rate.
  * CPU or GPU sets ENV:MiniGL/Driver for this run (OpenRTG's library reads
  * it; the classic library draws through Warp3D whatever it says). The first
  * frame (t = 0) is read back and its checksum printed (and written as a PPM
@@ -55,38 +60,71 @@ static ULONG ticks(void)
     return (ULONG)ds.ds_Days * 4320000UL + (ULONG)ds.ds_Minute * 3000UL + (ULONG)ds.ds_Tick;
 }
 
+static int framecount, quiet;
+
+/* Started from Workbench (argc 0) the C library's output window would open on the
+ * first line and stay (WAIT) after the program had gone, so the report is only
+ * printed from a Shell; failures still print, and show that window. */
+#define INFO(...) do { if (!quiet) printf(__VA_ARGS__); } while (0)
+
+/* mglMainLoop's callbacks: one frame each time round, and Esc leaves. */
+static void idle(void)
+{
+    scene_frame(++framecount / 30.0f);
+    mglSwitchDisplay();
+}
+static void key(char k)
+{
+    if (k == 27) mglExit();
+}
+
 int main(int argc, char **argv)
 {
-    const char *drv = argc > 1 ? argv[1] : "AUTO", *snap = argc > 6 ? argv[6] : 0;
-    int w = argc > 2 ? atoi(argv[2]) : 320, h = argc > 3 ? atoi(argv[3]) : 240;
-    int depth = argc > 4 ? atoi(argv[4]) : 16, frames = argc > 5 ? atoi(argv[5]) : 100, i, had = 0;
+    const char *drv = "AUTO", *snap = 0;
+    int w = 320, h = 240, depth = 16, frames = 0, secs = 0, timed = 0, i, had = 0, pos = 0;
     char old[32];
     unsigned char *px;
     unsigned long sum = 2166136261UL;
     ULONG t0, t1;
+    quiet = argc == 0;
+    for (i = 1; i < argc; i++) {
+        if (!stricmp(argv[i], "FRAMES") && i + 1 < argc) { frames = atoi(argv[++i]); timed = 1; }
+        else if (!stricmp(argv[i], "SECONDS") && i + 1 < argc) { secs = atoi(argv[++i]); timed = 1; }
+        else if (!stricmp(argv[i], "SNAP") && i + 1 < argc) snap = argv[++i];
+        else switch (pos++) {                   /* the old order: driver, width, height, depth, frames, snap */
+        case 0: drv = argv[i]; break;
+        case 1: w = atoi(argv[i]); break;
+        case 2: h = atoi(argv[i]); break;
+        case 3: depth = atoi(argv[i]); break;
+        case 4: frames = atoi(argv[i]); timed = 1; break;
+        case 5: snap = argv[i]; break;
+        }
+    }
+    if (snap && !timed) { frames = 100; timed = 1; }    /* SNAP alone: as before */
     if (w < 16) w = 320;
     if (h < 16) h = 240;
     had = GetVar((STRPTR)"MiniGL/Driver", (STRPTR)old, sizeof old, GVF_GLOBAL_ONLY) > 0;
     if (!stricmp(drv, "CPU")) SetVar((STRPTR)"MiniGL/Driver", (STRPTR)"CPU", -1, GVF_GLOBAL_ONLY);
     else if (!stricmp(drv, "GPU")) SetVar((STRPTR)"MiniGL/Driver", (STRPTR)"OpenGPU", -1, GVF_GLOBAL_ONLY);
     if (!MiniGLOpen()) { printf("MGLTest: no minigl.library 29\n"); return 10; }
-    printf("MGLTest: %s %ld.%ld, %dx%d, %d bits\n", MiniGLBase->lib_Node.ln_Name, (long)MiniGLBase->lib_Version,
+    INFO("MGLTest: %s %ld.%ld, %dx%d, %d bits\n", MiniGLBase->lib_Node.ln_Name, (long)MiniGLBase->lib_Version,
            (long)MiniGLBase->lib_Revision, w, h, depth);
     mglChoosePixelDepth(depth);
+    if (!timed) mglChooseWindowMode(GL_TRUE);       /* the demo is a window, with a close gadget */
     if (!mglCreateContext(0, 0, w, h)) { printf("MGLTest: no context\n"); MiniGLClose(); return 10; }
     if (!stricmp(drv, "CPU") || !stricmp(drv, "GPU")) {
         if (had) SetVar((STRPTR)"MiniGL/Driver", (STRPTR)old, -1, GVF_GLOBAL_ONLY);
         else DeleteVar((STRPTR)"MiniGL/Driver", GVF_GLOBAL_ONLY);
     }
     mglEnableSync(GL_FALSE);
-    printf("  renderer: %s\n", (const char *)glGetString(GL_RENDERER));
+    INFO("  renderer: %s\n", (const char *)glGetString(GL_RENDERER));
     scene_init(w, h);
     scene_frame(0.0f);
     px = malloc((size_t)w * h * 3);
     if (px) {
         glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, px);
         for (i = 0; i < w * h * 3; i++) sum = ((sum ^ px[i]) * 16777619UL) & 0xFFFFFFFFUL;
-        printf("  frame 0: checksum %08lx\n", sum);
+        INFO("  frame 0: checksum %08lx\n", sum);
         if (snap) {
             BPTR f = Open((STRPTR)snap, MODE_NEWFILE);
             if (f) {
@@ -100,17 +138,30 @@ int main(int argc, char **argv)
         }
         free(px);
     }
-    printf("  error: %ld\n", (long)glGetError());
+    INFO("  error: %ld\n", (long)glGetError());
     mglSwitchDisplay();
     t0 = ticks();
-    for (i = 1; i <= frames; i++) {
-        scene_frame(i / 30.0f);
-        mglSwitchDisplay();
+    if (timed) {
+        if (secs) {
+            for (i = 0; ticks() - t0 < (ULONG)secs * 50UL; ) { scene_frame(++i / 30.0f); mglSwitchDisplay(); }
+            frames = i;
+        } else {
+            for (i = 1; i <= frames; i++) {
+                scene_frame(i / 30.0f);
+                mglSwitchDisplay();
+            }
+        }
+    } else {
+        /* until the close gadget, Esc or Ctrl-C: mglMainLoop returns for each */
+        mglKeyFunc(key);
+        mglIdleFunc(idle);
+        mglMainLoop();
+        frames = framecount;
     }
     t1 = ticks();
     if (t1 > t0) {
         unsigned long hund = (unsigned long)frames * 5000UL / (t1 - t0);
-        printf("  %d frames in %lu.%02lu s: %lu.%02lu frames a second\n", frames, (unsigned long)(t1 - t0) / 50,
+        INFO("  %d frames in %lu.%02lu s: %lu.%02lu frames a second\n", frames, (unsigned long)(t1 - t0) / 50,
                (unsigned long)((t1 - t0) % 50) * 2, hund / 100, hund % 100);
     }
     scene_done();
