@@ -312,16 +312,32 @@ static void invert_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG
     }
 }
 
-static void begin(struct RastPort *rp)
+/* Every pixel call takes its RastPort's layer lock first and the palette lock second, and
+ * lets go in the opposite order. Intuition, graphics and programs take a layer's lock and then
+ * call in here (OpenLook paints the screen bar's layer that way), so waiting for a layer while
+ * holding the palette lock closes a cycle. It did on 10 Oct 2026: an SDL window's present held the
+ * palette lock and waited for its layer, which Intuition's window drag held; the drag waited for
+ * the screen bar's layer, held by a task that waited for the palette lock. The whole machine stopped. */
+static struct Layer *begin(struct RastPort *rp)
 {
+    struct Layer *l = rp->Layer;
+    if (l) ObtainSemaphore(&l->Lock);
     obtain();
     if (!near) near = AllocVec(32768, MEMF_ANY);
     use_palette(ortg_colormap(rp));
+    return l;
+}
+
+static void end(struct Layer *l)
+{
+    ReleaseSemaphore(&lock);
+    if (l) ReleaseSemaphore(&l->Lock);
 }
 
 LONG ortg_write_pixels(struct RastPort *rp, LONG x, LONG y, const struct OpenRTGPixels *px)
 {
     struct pix_ctx c;
+    struct Layer *lay;
     LONG done;
     if (!GfxBase || !rp || !px || !px->data || px->width <= 0 || px->height <= 0) return 0;
     c.px = px; c.at_x = x; c.at_y = y;
@@ -329,7 +345,7 @@ LONG ortg_write_pixels(struct RastPort *rp, LONG x, LONG y, const struct OpenRTG
     c.dh = px->dest_height > 0 ? px->dest_height : px->height;
     c.mask = rp->Mask; c.value = 0;
     done = c.dw * c.dh;
-    begin(rp);
+    lay = begin(rp);
     if (!ortg_pieces(rp, x, y, x + c.dw - 1, y + c.dh - 1, write_piece, &c)) {
         /* a planar RastPort: a row of pens at a time through graphics */
         UBYTE *pens = AllocVec((ULONG)c.dw + 16, MEMF_ANY);
@@ -342,16 +358,17 @@ LONG ortg_write_pixels(struct RastPort *rp, LONG x, LONG y, const struct OpenRTG
             FreeVec(pens);
         } else done = 0;
     }
-    ReleaseSemaphore(&lock);
+    end(lay);
     return done;
 }
 
 LONG ortg_read_pixels(struct RastPort *rp, LONG x, LONG y, struct OpenRTGPixels *px)
 {
     struct pix_ctx c;
+    struct Layer *lay;
     if (!GfxBase || !rp || !px || !px->data || px->width <= 0 || px->height <= 0) return 0;
     c.px = px; c.at_x = x; c.at_y = y; c.dw = px->width; c.dh = px->height; c.mask = 0xFF; c.value = 0;
-    begin(rp);
+    lay = begin(rp);
     if (!ortg_pieces(rp, x, y, x + px->width - 1, y + px->height - 1, read_piece, &c)) {
         for (LONG j = 0; j < px->height; j++) {
             UBYTE *row = (UBYTE *)px->data + (px->y + j) * px->modulo;
@@ -361,15 +378,16 @@ LONG ortg_read_pixels(struct RastPort *rp, LONG x, LONG y, struct OpenRTGPixels 
             }
         }
     }
-    ReleaseSemaphore(&lock);
+    end(lay);
     return px->width * px->height;
 }
 
 LONG ortg_fill_pixels(struct RastPort *rp, LONG x, LONG y, LONG w, LONG h, ULONG argb)
 {
     struct pix_ctx c;
+    struct Layer *lay;
     if (!GfxBase || !rp || w <= 0 || h <= 0) return 0;
-    begin(rp);
+    lay = begin(rp);
     c.px = NULL; c.mask = rp->Mask; c.value = pen_of(argb & 0xFFFFFF); c.argb = argb & 0xFFFFFF;
     if (!ortg_pieces(rp, x, y, x + w - 1, y + h - 1, fill_piece, &c)) {
         UBYTE old_pen = rp->FgPen, old_mode = rp->DrawMode;
@@ -377,7 +395,7 @@ LONG ortg_fill_pixels(struct RastPort *rp, LONG x, LONG y, LONG w, LONG h, ULONG
         RectFill(rp, x, y, x + w - 1, y + h - 1);
         SetAPen(rp, old_pen); SetDrMd(rp, old_mode);
     }
-    ReleaseSemaphore(&lock);
+    end(lay);
     return w * h;
 }
 
@@ -455,13 +473,14 @@ static void alpha_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG 
 LONG ortg_write_pixels_alpha(struct RastPort *rp, LONG x, LONG y, const struct OpenRTGPixels *px, ULONG alpha)
 {
     struct alpha_ctx c;
+    struct Layer *lay;
     if (!GfxBase || !rp || !px || !px->data || px->width <= 0 || px->height <= 0) return 0;
     if (px->format != ORTG_PIX_ARGB) return ortg_write_pixels(rp, x, y, px);
     c.px = px; c.at_x = x; c.at_y = y; c.alpha = alpha & 255; c.mask = rp->Mask;
-    begin(rp);
+    lay = begin(rp);
     if (!ortg_pieces(rp, x, y, x + px->width - 1, y + px->height - 1, alpha_piece, &c)) {
         /* a planar RastPort: the pixels at least half opaque, run by run */
-        ReleaseSemaphore(&lock);
+        end(lay);
         for (LONG j = 0; j < px->height; j++) {
             const UBYTE *row = (const UBYTE *)px->data + (px->y + j) * px->modulo + px->x * 4;
             LONG i = 0;
@@ -479,7 +498,7 @@ LONG ortg_write_pixels_alpha(struct RastPort *rp, LONG x, LONG y, const struct O
         }
         return px->width * px->height;
     }
-    ReleaseSemaphore(&lock);
+    end(lay);
     return px->width * px->height;
 }
 
