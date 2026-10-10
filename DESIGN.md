@@ -362,6 +362,18 @@ to put its patches in.
   ticks (at most 18) as keep its larger side under 29900: 15 for 1920 x 1080,
   18 up to 1661 pixels. `ticks_of()` in `library/displaydb.c`; the monitor's
   ratio stays at 18.
+- **Lock order (0.14.1, 10 October 2026):** a pixel call (WritePixelArray,
+  ReadPixelArray, FillPixelArray and the alpha write) takes its RastPort's
+  layer lock first and the palette lock second, and lets go in the opposite
+  order. Taken the other way (the palette lock, then the layer's), an SDL
+  window's present held the palette lock while it waited for its layer, which
+  Intuition's window drag held; the drag waited for the screen bar's layer,
+  held by OpenLook painting the bar's depth gadget, which waited for the
+  palette lock. Three tasks, one cycle: dragging an SDL window stopped the whole
+  machine. Programs that lock a layer and then call pixel functions (OpenLook
+  does) are safe now; the rule for any new lock in this library is that it is
+  taken after a layer's, never before. `begin()` and `end()` in
+  `library/pixels.c`.
 - **Boards:** a small driver interface (find, init, mode, pan, fill, copy,
   template, line, sprite, 3D) with the ACRTG driver built in.
 
