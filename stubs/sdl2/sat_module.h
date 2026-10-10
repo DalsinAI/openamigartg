@@ -38,7 +38,10 @@
 #include <exec/types.h>
 #include <opengpu/module.h>
 
-#define SAT_MODULE_VERSION 2            /* the first, with module ABI 2's A4 */
+#define SAT_MODULE_VERSION 3            /* what the modules give */
+#define SAT_MODULE_OPEN_VERSION 2       /* what a stub asks for: the first, with module ABI 2's A4.
+                                           Version 3 (10 October 2026): the same table; a file name
+                                           goes on as a full path (library/modules/common/ogpu_path.h). */
 
 struct SatModuleTable {
     struct OGPUModuleTable head;        /* SAT_MODULE_VERSION, a4, caller_a4 */

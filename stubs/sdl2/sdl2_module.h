@@ -18,7 +18,13 @@
  * Version 3 (8 October 2026): set_gl, SDL_GL_* on OpenGPU's GL module. A
  * stub still asks for version 2 (SDL2_MODULE_OPEN_VERSION), so a program
  * runs on a version 2 module too, without OpenGL; it calls set_gl only when
- * the table says 3 or later. */
+ * the table says 3 or later.
+ *
+ * Version 4 (10 October 2026): the same table and calls. SDL_RWFromFile opens
+ * a file by its full path (PROGDIR:, a relative name and an assign mean the
+ * same in every process), and SDL's threads start with their parent's home
+ * folder and current directory and no requester window. A stub asks for 2
+ * as before, so it runs on any module. */
 #ifndef SDL2_MODULE_H
 #define SDL2_MODULE_H
 
@@ -28,7 +34,7 @@
 
 #define SDL2_MODULE_NAME    "SDL2"
 #define SDL2_MODULE_FILE    "LIBS:OpenGPU/SDL2.module"
-#define SDL2_MODULE_VERSION 3
+#define SDL2_MODULE_VERSION 4
 #define SDL2_MODULE_OPEN_VERSION 2      /* what a stub asks for */
 #define SDL2_MODULE_GL_VERSION 3        /* the first table with set_gl */
 

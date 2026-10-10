@@ -12,7 +12,7 @@ OpenGPU is one library and the modules it loads:
 | Part | File | What it is |
 | --- | --- | --- |
 | opengpu.library 0.6 | `LIBS:opengpu.library` | the command stream (`include/opengpu/`), its back ends (the CPU, the GPU through AC090), OpenGfx's drawing, and the module loader |
-| SDL2.module 3 | `LIBS:OpenGPU/SDL2.module` | SDL 2.32.10 with the Amiga back ends |
+| SDL2.module 4 | `LIBS:OpenGPU/SDL2.module` | SDL 2.32.10 with the Amiga back ends |
 | GL.module | `LIBS:OpenGPU/GL.module` | Mesa 26.2.4's GL and GLES, and GLA |
 | minigl.library 29 | `LIBS:minigl.library` | MiniGL (OpenGL 1.1) on OpenGPU's 3D |
 | Warp3D.library | `LIBS:Warp3D.library` | Warp3D on OpenGPU's 3D |
@@ -47,9 +47,12 @@ time:
   The order is SDL's, so a program built today runs on every later module.
   GL.module's table names each call; `libGL.a` binds them all by name at the
   first call, and a call the module lacks returns 0.
-- **Versions.** A stub asks for the oldest module version it can use (SDL:
-  2). SDL2.module 3 adds `set_gl` (section 5); a program on SDL2.module 2
-  runs without OpenGL and `SDL_GL_LoadLibrary` says why.
+- **Versions.** A stub asks for the oldest module version it can use (SDL
+  and the satellites: 2). SDL2.module 3 adds `set_gl` (section 5); a program
+  on SDL2.module 2 runs without OpenGL and `SDL_GL_LoadLibrary` says why.
+  SDL2.module 4 and SDL2_image.module and SDL2_mixer.module 3 change no
+  interface: they make a file name mean the same in every process (section
+  5, "File names"), so a program built before runs on them as it did.
 - **Missing parts.** With no module, the stub prints which file is missing
   and ends the program with 20.
 - **Closing.** A destructor in the stub closes the module when the program
@@ -140,6 +143,36 @@ SVG, TGA, XCF, XPM, XV), SDL_mixer 2.8.2 (WAV, AIFF, VOC, Ogg Vorbis, MP3,
 FLAC, MIDI with Timidity, and MOD, XM, S3M, IT, MED with libxmp), SDL_ttf
 2.24.0 (FreeType built in, no HarfBuzz) and SDL_net 2.4.0 (over
 bsdsocket.library; link `-lsocket`, which its `.pc` file gives).
+
+### File names
+
+`PROGDIR:` is the home folder of the process that has it, a relative name is
+that process's current directory, and an assign can differ from one process
+to the next. A name that goes to another process (an SDL thread, a decoder
+reading a piece ahead, the x86 or ARM64 cores, a datatype) means something
+else there, or nothing, and AmigaDOS asks "Please insert volume PROGDIR: in
+any drive". So the modules make the name a full path in the caller's own
+process, before it goes on:
+
+- `SDL_RWFromFile`, and so `SDL_LoadBMP`, `SDL_LoadWAV`, `SDL_LoadFile`,
+  `IMG_Load`, `Mix_LoadWAV`, `TTF_OpenFont` and the rest that open by name,
+  open `Lock` + `NameFromLock` of the name (a file still to be written gets
+  its folder's full path and its own name). When the name can't be locked
+  (a console or pipe, a volume that isn't there) it is used as given.
+- `Mix_LoadMUS` does the same itself, in SDL2_mixer.module, for any decoder
+  that takes a name; the datatype fallback of `IMG_Load` gets the full path
+  too, and opens it with no requester.
+- A thread made with `SDL_CreateThread` starts with a copy of its parent's
+  home folder and current directory (`NP_HomeDir`, `NP_CurrentDir`; OS 3.2
+  gives them by default, earlier versions don't) and no requester window
+  (`pr_WindowPtr` -1): a path that fails there fails, quietly.
+
+A program still needs its own paths to be paths. A program that joins
+`PROGDIR:` onto a relative base with a "/" (`./PROGDIR:data`) names a volume
+called `./PROGDIR`, which no module can repair; take the folder from
+`GetProgramDir()` and `NameFromLock()` once at start-up and build from that.
+`tests/sdl2/progdir.c` checks all of it (`progdir` on `libSDL2_static.a`,
+`progdir.m` on the modules).
 
 ### SDL_image and SDL_mixer: modules, and the cores
 

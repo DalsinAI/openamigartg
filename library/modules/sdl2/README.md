@@ -273,6 +273,17 @@ In short:
 - `tests/sdl2/satladder.c` (with `make-satmedia.sh`'s pictures and sounds)
   says which rung decoded what, how long it took, and how far the pixels
   are from the original.
+- File names mean the same in every process (`library/modules/common/
+  ogpu_path.h`, 10 October 2026). `SDL_RWFromFile` (SDL2.module 4,
+  `patches/sdl2/0009`, `src/filesystem/amigaos3/SDL_os3path.c`) opens the
+  full path (`Lock` + `NameFromLock`, or the folder's full path and the
+  file's name for a file still to be written), so `PROGDIR:`, a relative
+  name and an assign all work wherever the file is read; `Mix_LoadMUS`
+  (`patches/sdl2_mixer/0002`) and the datatype fallback of `IMG_Load`
+  (`ogpu_image.c`) do the same in SDL2_mixer.module and SDL2_image.module
+  (version 3, through `satellites/module/sat_path.c`). SDL's threads start
+  with their parent's home folder and current directory and no requester
+  window (`patches/amigaos3/0007`). `tests/sdl2/progdir.c` checks it.
 
 ## How the source is put together
 

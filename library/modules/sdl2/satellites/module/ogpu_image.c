@@ -14,6 +14,7 @@
 #include <clib/alib_protos.h>
 
 #include "ogpu_image.h"
+#include "sat_path.h"
 #include "sat_service.h"
 
 #define MEDIA_DECODE "media.decode/1"
@@ -219,6 +220,8 @@ SDL_Surface *ogpu_image_load_datatype(const char *file)
     Object *o;
     struct BitMapHeader *bmh = NULL;
     SDL_Surface *s = NULL;
+    char path[512];
+    void *window;
 
     if (!file || mode() == MODE_CPU) {
         return NULL;
@@ -227,8 +230,14 @@ SDL_Surface *ogpu_image_load_datatype(const char *file)
     if (!DataTypesBase) {
         return NULL;
     }
+    /* The datatype class opens the file in processes of its own: it is given the
+       file's full path (PROGDIR: and a relative name mean nothing there), and
+       a path that fails fails without a requester. */
+    file = sat_abspath(file, path, sizeof(path));
+    window = sat_requesters_off();
     o = NewDTObject((APTR)file, DTA_GroupID, GID_PICTURE, PDTA_DestMode, PMODE_V43,
                     PDTA_Remap, FALSE, TAG_DONE);
+    sat_requesters_restore(window);
     if (o) {
         struct gpLayout layout;
         layout.MethodID = DTM_PROCLAYOUT;
