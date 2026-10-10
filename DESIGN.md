@@ -386,6 +386,11 @@ to put its patches in.
   starts from it; with more screens than tables, a screen uses the shared one,
   as before. `own_pens()`, `show_front()` and `palette_changed()` in
   `library/screens.c`.
+  0.14.3: a table is a screen's own only once it is a screen (its palette set, or
+  shown), not when its bitmap is made: programs ask for bitmaps with a ModeID too
+  (buffers, pictures), and in 0.14.2 each took a table copied from the moment it
+  was made, so pens obtained later drew in stale colours (white boxes on the bar,
+  speckled icons). A bitmap asked for with a friend takes the friend's table.
 - **Boards:** a small driver interface (find, init, mode, pan, fill, copy,
   template, line, sprite, 3D) with the ACRTG driver built in.
 

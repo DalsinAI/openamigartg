@@ -1551,7 +1551,14 @@ static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, UL
             /* the mode's own format, whatever depth intuition asks for */
             struct ortg_bitmap *o = ortg_alloc(n, (UWORD)w, (UWORD)h, 1, m->format);
             serx("ortg: screen bitmap for mode ", m->mode_id);
-            if (o && o->monitor) { if (o->bpp != 1) own_pens(o); return &o->bm; }
+            if (o && o->monitor) {
+                /* 0.14.3: no table of its own yet. Programs ask for bitmaps with a ModeID too (a game's
+                 * buffers, a program's picture); only a screen's own bitmap gets a table, when its palette
+                 * is first set or it is first shown. A friend's pens are the friend's. */
+                struct BitMap *f = (struct BitMap *)GetTagData(BMATags_Friend, 0, tags);
+                if (ortg_is(f)) o->pal_index = ortg_of(f)->pal_index;
+                return &o->bm;
+            }
             if (o) ortg_free(o);
         }
         fr = (struct BitMap *)GetTagData(BMATags_Friend, 0, tags);
@@ -1654,6 +1661,7 @@ static void show_front(void)
         reg(n, R_COMMIT, C_PAN);
         if (o->bpp == 1) palette_to_board(n, wvp[n], 0, 256);
         else {
+            if (o->pal_index <= ORTG_MAX_MONITORS) own_pens(o);     /* a screen's bitmap, shown: its own table */
             pens_from(o->pal_index, wvp[n]);
             /* the monitor's shared table follows the front screen, as before:
              * a new screen's own table starts from it */
@@ -1735,7 +1743,10 @@ static void palette_changed(struct ViewPort *vp, ULONG first, ULONG count)
          * what is drawn already keeps its colours, as on any true-colour screen.
          * A screen with its own table keeps it, in front or behind; one on its
          * monitor's shared table sets it only from the front */
+        if (o->monitor && o->pal_index <= ORTG_MAX_MONITORS) own_pens(o);   /* a screen's bitmap: its own table (0.14.3) */
         if (o->pal_index > ORTG_MAX_MONITORS || !o->monitor || shown[o->monitor].bm == o || !shown[o->monitor].bm) pens_from(o->pal_index, vp);
+        /* the monitor's shared table follows the front screen, as before 0.14.2 */
+        if (o->monitor && o->pal_index != o->monitor && shown[o->monitor].bm == o) pens_from(o->monitor, vp);
     } else if (o->monitor && shown[o->monitor].bm == o) palette_to_board(o->monitor, vp, first, count);
 }
 
