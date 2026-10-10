@@ -33,6 +33,14 @@
 /* An RTG pixel in the display database's ticks, as Picasso96 gives it
  * (measured 5 Oct 2026); the monitor's ratio follows from it. */
 #define ORTG_TICKS 18
+/* Intuition keeps the mouse in a 16-bit range: the pointer stops at 30000
+ * ticks. A picture wider than 30000 / ORTG_TICKS pixels (1667 at 18) could
+ * not be reached in its right-hand part, the screen bar's icons, a window's
+ * right edge and its scroll bar among it (OpenRTG 0.13.1, 10 Oct 2026: 1920 x
+ * 1080 stopped the pointer at 1666; with 15 ticks it reaches the edge).
+ * So a mode gets as many ticks as keep its larger side under the limit, up
+ * to ORTG_TICKS. */
+#define ORTG_MOUSE_LIMIT 29900
 
 typedef ULONG (*next_fn)(REG(d0, ULONG), REG(a6, struct Library *));
 typedef APTR (*find_fn)(REG(d0, ULONG), REG(a6, struct Library *));
@@ -182,12 +190,18 @@ static void header(struct QueryHeader *q, ULONG tag, ULONG id, ULONG size)
     q->Length = (size - sizeof *q + 7) / 8;
 }
 
+static int ticks_of(const struct ortg_mode *m)
+{
+    int side = m->width > m->height ? m->width : m->height, t = side > 0 ? ORTG_MOUSE_LIMIT / side : ORTG_TICKS;
+    return t > ORTG_TICKS ? ORTG_TICKS : t < 1 ? 1 : t;
+}
+
 static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag)
 {
     union { struct DisplayInfo d; struct DimensionInfo dm; struct MonitorInfo mi; struct NameInfo n; } r;
     ULONG len = 0, i;
     UBYTE *z = (UBYTE *)&r;
-    int n = (int)((m->mode_id >> 24) - 0x60);
+    int n = (int)((m->mode_id >> 24) - 0x60), ticks = ticks_of(m);
     for (i = 0; i < sizeof r; i++) z[i] = 0;
     switch (tag) {
     case DTAG_DISP:
@@ -195,11 +209,11 @@ static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag)
         /* as Picasso96's modes: OS 3.2's intuition treats 0x02000000 as a
          * board's mode (its mouse and pointer), measured 5 Oct 2026 */
         r.d.PropertyFlags = 0x02000000UL | DIPF_IS_DBUFFER | DIPF_IS_SPRITES_CHNG_RES | DIPF_IS_DRAGGABLE | DIPF_IS_WB | DIPF_IS_GENLOCK;
-        r.d.Resolution.x = r.d.Resolution.y = ORTG_TICKS;
+        r.d.Resolution.x = r.d.Resolution.y = ticks;
         r.d.PixelSpeed = 25;
         r.d.NumStdSprites = 0;
         r.d.PaletteRange = 512;
-        r.d.SpriteResolution.x = r.d.SpriteResolution.y = ORTG_TICKS;
+        r.d.SpriteResolution.x = r.d.SpriteResolution.y = ticks;
         r.d.RedBits = m->format == ORTG_RGB16 ? 5 : 8;
         r.d.GreenBits = m->format == ORTG_RGB16 ? 6 : 8;
         r.d.BlueBits = m->format == ORTG_RGB16 ? 5 : 8;
@@ -215,9 +229,9 @@ static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag)
     case DTAG_MNTR:
         len = sizeof r.mi;
         r.mi.Mspc = (n >= 1 && n <= ORTG_MAX_MONITORS) ? &mspec[n] : NULL;
-        r.mi.ViewResolution.x = r.mi.ViewResolution.y = ORTG_TICKS;
+        r.mi.ViewResolution.x = r.mi.ViewResolution.y = ticks;
         r.mi.Compatibility = MCOMPAT_NOBODY;
-        r.mi.MouseTicks.x = r.mi.MouseTicks.y = ORTG_TICKS;
+        r.mi.MouseTicks.x = r.mi.MouseTicks.y = ticks;
         r.mi.TotalRows = (UWORD)(m->height + 28);
         r.mi.TotalColorClocks = 94;
         {
@@ -228,8 +242,8 @@ static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag)
             ULONG *pad = (ULONG *)r.mi.pad;
             for (int k = 0; k < 2; k++) {
                 pad[4 * k] = 0; pad[4 * k + 1] = 0;
-                pad[4 * k + 2] = (ULONG)m->width * ORTG_TICKS - 1;
-                pad[4 * k + 3] = (ULONG)m->height * ORTG_TICKS - 1;
+                pad[4 * k + 2] = (ULONG)m->width * ticks - 1;
+                pad[4 * k + 3] = (ULONG)m->height * ticks - 1;
             }
         }   /* as the resolution: intuition scales the mouse by them */
         r.mi.PreferredModeID = m->mode_id;
