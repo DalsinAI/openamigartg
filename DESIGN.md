@@ -374,6 +374,18 @@ to put its patches in.
   does) are safe now; the rule for any new lock in this library is that it is
   taken after a layer's, never before. `begin()` and `end()` in
   `library/pixels.c`.
+- **Pens a screen (0.14.2, 10 October 2026):** each 16 or 32-bit screen has
+  its own table of pen colours (16 tables: one shared for each monitor, eleven
+  a screen's own), set from its palette whenever the palette changes, in front
+  or behind; its friends (backing store, double buffers) share it. Before, a
+  monitor's screens shared one table that followed the front screen, so while
+  a game's screen was in front (Neverball on MiniGL), what Workbench drew behind
+  it (the bar's clock, the dock, a window's refresh) took the game's colours
+  and kept them after the game: the desktop came back with its colours tweaked.
+  The shared table still follows the front screen, and a new screen's table
+  starts from it; with more screens than tables, a screen uses the shared one,
+  as before. `own_pens()`, `show_front()` and `palette_changed()` in
+  `library/screens.c`.
 - **Boards:** a small driver interface (find, init, mode, pan, fill, copy,
   template, line, sprite, 3D) with the ACRTG driver built in.
 

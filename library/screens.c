@@ -176,8 +176,25 @@ static void ring_reserve(int n)
 /* What each monitor shows now. */
 static struct { struct ortg_bitmap *bm; UWORD w, h; UBYTE fmt; } shown[ORTG_MAX_MONITORS + 1];
 
-/* each monitor's pen colours, for its 16 and 32-bit bitmaps; [0] for the rest */
-ULONG ortg_pen_rgb[ORTG_MAX_MONITORS + 1][256];
+/* Pen colours for 16 and 32-bit bitmaps. Tables 0 to ORTG_MAX_MONITORS are
+ * each monitor's shared one ([0] for the rest); the others belong to one
+ * screen each, and its friends (0.14.2, 10 October 2026: with one table a
+ * monitor, what Workbench drew while a game's screen was in front, the bar's
+ * clock and the dock, came out in the game's colours, and stayed so). */
+ULONG ortg_pen_rgb[ORTG_PEN_TABLES][256];
+static struct ortg_bitmap *pen_owner[ORTG_PEN_TABLES];
+
+/* A screen's own table, its monitor's colours to start with; the shared one
+ * when all are taken. */
+static void own_pens(struct ortg_bitmap *o)
+{
+    for (int t = ORTG_MAX_MONITORS + 1; t < ORTG_PEN_TABLES; t++)
+        if (!pen_owner[t]) {
+            for (int i = 0; i < 256; i++) ortg_pen_rgb[t][i] = ortg_pen_rgb[o->pal_index][i];
+            pen_owner[t] = o; o->pal_index = (UBYTE)t;
+            return;
+        }
+}
 
 /* ---- video RAM: first fit in fixed blocks ------------------------------------------- */
 
@@ -288,6 +305,7 @@ void ortg_free(struct ortg_bitmap *o)
     if (!o) return;
     for (int n = 1; n <= ORTG_MAX_MONITORS; n++)
         if (shown[n].bm == o) shown[n].bm = NULL;
+    if (o->pal_index < ORTG_PEN_TABLES && pen_owner[o->pal_index] == o) pen_owner[o->pal_index] = NULL;
     ((ULONG *)o->mem)[-2] = 0;
     if (o->monitor) vram_free(o->monitor, o->vram_block);
     else FreeVec(o->mem - ORTG_HEAD);
@@ -1533,7 +1551,7 @@ static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, UL
             /* the mode's own format, whatever depth intuition asks for */
             struct ortg_bitmap *o = ortg_alloc(n, (UWORD)w, (UWORD)h, 1, m->format);
             serx("ortg: screen bitmap for mode ", m->mode_id);
-            if (o && o->monitor) return &o->bm;
+            if (o && o->monitor) { if (o->bpp != 1) own_pens(o); return &o->bm; }
             if (o) ortg_free(o);
         }
         fr = (struct BitMap *)GetTagData(BMATags_Friend, 0, tags);
@@ -1635,7 +1653,12 @@ static void show_front(void)
         reg(n, R_ARG_A, o->vram_off); reg(n, R_ARG_B, o->stride); reg(n, R_PAN_X, 0); reg(n, R_PAN_Y, 0);
         reg(n, R_COMMIT, C_PAN);
         if (o->bpp == 1) palette_to_board(n, wvp[n], 0, 256);
-        else pens_from(o->pal_index, wvp[n]);
+        else {
+            pens_from(o->pal_index, wvp[n]);
+            /* the monitor's shared table follows the front screen, as before:
+             * a new screen's own table starts from it */
+            if (o->pal_index != n) pens_from(n, wvp[n]);
+        }
         reg(n, R_ARG_A, 1);
         reg(n, R_COMMIT, C_DISPLAY);
         shown[n].bm = o;
@@ -1709,8 +1732,10 @@ static void palette_changed(struct ViewPort *vp, ULONG first, ULONG count)
     if (!o) return;
     if (o->bpp != 1) {
         /* the pens of a 16 or 32-bit screen: what is drawn from now on;
-         * what is drawn already keeps its colours, as on any true-colour screen */
-        if (!o->monitor || shown[o->monitor].bm == o || !shown[o->monitor].bm) pens_from(o->pal_index, vp);
+         * what is drawn already keeps its colours, as on any true-colour screen.
+         * A screen with its own table keeps it, in front or behind; one on its
+         * monitor's shared table sets it only from the front */
+        if (o->pal_index > ORTG_MAX_MONITORS || !o->monitor || shown[o->monitor].bm == o || !shown[o->monitor].bm) pens_from(o->pal_index, vp);
     } else if (o->monitor && shown[o->monitor].bm == o) palette_to_board(o->monitor, vp, first, count);
 }
 
