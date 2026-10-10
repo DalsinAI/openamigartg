@@ -25,15 +25,20 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 13
+#define LIB_REVISION 14
 
 /* The ACRTG board (amigachrome's common/protocol/acrtg.h): Zorro III,
- * Dalsin (0xDA15; 2011 before 1 October 2026), product 9; video RAM at
- * +0x10000, 0xFE0000 bytes; pictures up to 1920x1200 in 8, 16 and 32-bit. */
+ * Dalsin (0xDA15; 2011 before 1 October 2026), product 9 (16 MiB) or product 15 (64 MiB, 0.14); the boot ROM page
+ * at +0, video RAM from +0x10000, the register page in the last 64 KiB (0xFE0000 bytes of video RAM on the 16 MiB
+ * board, 0x3FE0000 on the 64 MiB one); pictures up to 1920x1200 in 8, 16 and 32-bit. */
 #define DALSIN          0xDA15
 #define DALSIN_OLD      2011
 #define ACRTG_PRODUCT   9
-#define ACRTG_VRAM      0x00FE0000UL
+#define ACRTG_PRODUCT_64 15
+#define ACRTG_BOARD     0x01000000UL                    /* the 16 MiB board's window */
+#define ACRTG64_BOARD   0x04000000UL                    /* the 64 MiB board's */
+#define ACRTG_VRAM_OF(size) ((size) - 0x20000UL)        /* ROM page and register page apart */
+#define ACRTG_VRAM      ACRTG_VRAM_OF(ACRTG_BOARD)
 #define ACRTG_MAX_W     1920
 #define ACRTG_MAX_H     1200
 
@@ -42,6 +47,7 @@ struct OpenRTGBase {
     BPTR seglist;
     ULONG monitors;                                     /* RTG monitors found */
     struct ConfigDev *board[ORTG_MAX_MONITORS + 1];     /* [n]: monitor n's board */
+    ULONG board_size[ORTG_MAX_MONITORS + 1];            /* its window: ACRTG_BOARD or ACRTG64_BOARD */
     struct ortg_mode_table *table[ORTG_MAX_MONITORS + 1];
     struct Library *gfx;
     int patched;
@@ -54,7 +60,7 @@ struct ExecBase *SysBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.13.1 (10.10.2026) OpenRTG, Dalsin Limited\r\n";
+static const char lib_id[] = "openrtg.library 0.14 (10.10.2026) OpenRTG, Dalsin Limited\r\n";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));
@@ -93,22 +99,26 @@ const struct Resident lib_romtag = {
 };
 
 static const struct ortg_caps acrtg_caps = { ACRTG_VRAM, ACRTG_MAX_W, ACRTG_MAX_H, 7 };
+static const struct ortg_caps acrtg64_caps = { ACRTG_VRAM_OF(ACRTG64_BOARD), ACRTG_MAX_W, ACRTG_MAX_H, 7 };
 
 static void find_boards(struct OpenRTGBase *base) {
     struct Library *ExpansionBase = OpenLibrary("expansion.library", 37);
     static const ULONG makers[2] = { DALSIN, DALSIN_OLD };
     if (!ExpansionBase) return;
-    for (int k = 0; k < 2; k++) {
-        struct ConfigDev *cd = NULL;
-        while ((cd = FindConfigDev(cd, makers[k], ACRTG_PRODUCT)) != NULL) {
-            ULONG n = cd->cd_Rom.er_SerialNumber;          /* serial = monitor */
-            if (n < 1 || n > ORTG_MAX_MONITORS || base->board[n] || !cd->cd_BoardAddr) continue;
-            struct ortg_mode_table *t = AllocVec(sizeof *t, MEMF_ANY | MEMF_CLEAR);
-            if (!t) continue;
-            ortg_build_modes(t, (int)n, &acrtg_caps, 0);   /* Standard, the default */
-            base->board[n] = cd; base->table[n] = t; base->monitors++;
+    for (int k = 0; k < 2; k++)
+        for (int p = 0; p < 2; p++) {
+            struct ConfigDev *cd = NULL;
+            ULONG product = p ? ACRTG_PRODUCT_64 : ACRTG_PRODUCT;
+            while ((cd = FindConfigDev(cd, makers[k], product)) != NULL) {
+                ULONG n = cd->cd_Rom.er_SerialNumber;          /* serial = monitor */
+                if (n < 1 || n > ORTG_MAX_MONITORS || base->board[n] || !cd->cd_BoardAddr) continue;
+                struct ortg_mode_table *t = AllocVec(sizeof *t, MEMF_ANY | MEMF_CLEAR);
+                if (!t) continue;
+                ortg_build_modes(t, (int)n, p ? &acrtg64_caps : &acrtg_caps, 0);   /* Standard, the default */
+                base->board[n] = cd; base->table[n] = t; base->monitors++;
+                base->board_size[n] = p ? ACRTG64_BOARD : ACRTG_BOARD;
+            }
         }
-    }
     CloseLibrary(ExpansionBase);
 }
 
@@ -230,7 +240,7 @@ static LONG ORTG_Screens(REG(d0, ULONG on), REG(a6, struct OpenRTGBase *base))
     if (!base->gfx || !base->monitors) return 0;
     for (int n = 0; n <= ORTG_MAX_MONITORS; n++) boards[n] = base->board[n] ? base->board[n]->cd_BoardAddr : NULL;
     base->patched = 1;
-    return ortg_screens_on(base->gfx, base->table, boards);
+    return ortg_screens_on(base->gfx, base->table, boards, base->board_size);
 }
 
 /* ---- pixel arrays (0.4): what cybergraphics.library and Picasso96API.library pass on ---- */
