@@ -1050,6 +1050,18 @@ static void bltpattern_patch(REG(a1, struct RastPort *rp), REG(a0, PLANEPTR mask
 static void setrast_patch(REG(a1, struct RastPort *rp), REG(d0, ULONG pen), REG(a6, struct GfxBase *g))
 {
     struct ortg_bitmap *o = ortg_of(rp->BitMap);
+    if (o && rp->Layer) {
+        /* A layer's RastPort: SetRast clears the layer, not the bitmap, and only where its clip rectangles are,
+         * so an installed clip region (Clock's date does that) keeps it to the region. Filling the whole
+         * bitmap, as the bare path below does, wiped the screen: the Workbench desktop went grey (10 Oct 2026). */
+        struct Layer *l = rp->Layer;
+        struct fill_ctx f;
+        LONG w = l->bounds.MaxX - l->bounds.MinX, h = l->bounds.MaxY - l->bounds.MinY;
+        f.p.a = (UBYTE)pen; f.p.b = (UBYTE)pen; f.p.mode = JAM1; f.p.mask = rp->Mask;
+        f.ptrn = NULL; f.ptsz = 1; f.ptoff_y = 0;
+        pieces(rp, l->Scroll_X, l->Scroll_Y, l->Scroll_X + w, l->Scroll_Y + h, fill_piece, &f);
+        return;
+    }
     if (o) {
         ULONG v = ortg_pen_px(o, pen);
         ULONG n = (ULONG)o->width * o->height;
