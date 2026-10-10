@@ -100,6 +100,6 @@ void ortg_stat(int kind, int gpu, ULONG pixels);
 ULONG ortg_draw_stats(ULONG *counts, ULONG kinds, ULONG flags);
 
 /* OpenRTG's screens on: the patches go in (once). boards[n]: monitor n's board. */
-int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **tables, APTR *boards);
+int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **tables, APTR *boards, const ULONG *board_sizes);
 
 #endif

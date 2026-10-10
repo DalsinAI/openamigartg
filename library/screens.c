@@ -108,8 +108,8 @@ static void trace_big(const char *what, LONG a, LONG b, LONG c, LONG d, LONG w, 
 /* ---- the boards ----------------------------------------------------------------------- */
 
 #define VRAM_AT   0x00010000UL
-#define VRAM_SIZE 0x00FE0000UL
-#define REGS_AT   0x00FF0000UL
+#define VRAM_SIZE 0x00FE0000UL          /* the 16 MiB board's; a 64 MiB board's is in vram_size[] (the board's size less its two 64 KiB pages) */
+#define PAGE_64K  0x00010000UL
 #define R_WIDTH 0x10
 #define R_HEIGHT 0x14
 #define R_FORMAT 0x18
@@ -147,8 +147,11 @@ static const ULONG board_fmt[3] = { FMT_CLUT, FMT_RGB16, FMT_ARGB32 };   /* by e
 static UBYTE *board[ORTG_MAX_MONITORS + 1];               /* each monitor's board, or NULL */
 static struct ortg_mode_table **tables;
 
-static void reg(int n, ULONG off, ULONG v) { *(volatile ULONG *)(board[n] + REGS_AT + off) = v; }
-static ULONG rreg(int n, ULONG off) { return *(volatile ULONG *)(board[n] + REGS_AT + off); }
+/* Each board's size sets where its video RAM ends and its register page lies (the page at its end). */
+static ULONG board_size[ORTG_MAX_MONITORS + 1], regs_at[ORTG_MAX_MONITORS + 1], vram_size[ORTG_MAX_MONITORS + 1];
+
+static void reg(int n, ULONG off, ULONG v) { *(volatile ULONG *)(board[n] + regs_at[n] + off) = v; }
+static ULONG rreg(int n, ULONG off) { return *(volatile ULONG *)(board[n] + regs_at[n] + off); }
 
 /* The video RAM bitmaps may use on each board. */
 static ULONG vram_limit[ORTG_MAX_MONITORS + 1];
@@ -160,14 +163,14 @@ static ULONG vram_limit[ORTG_MAX_MONITORS + 1];
 static void ring_reserve(int n)
 {
     ULONG base, size;
-    vram_limit[n] = VRAM_SIZE;
+    vram_limit[n] = vram_size[n];
     if (rreg(n, R_VERSION) < 3 || !(rreg(n, R_GPU_INFO) & 1)) return;     /* no ring before acrtg-v3 */
     base = rreg(n, R_RING_BASE); size = rreg(n, R_RING_SIZE);
-    if (!size || base < VRAM_SIZE - RING_RESERVE || base + size > VRAM_SIZE) {
-        reg(n, R_RING_BASE, VRAM_SIZE - RING_RESERVE);
+    if (!size || base < vram_size[n] - RING_RESERVE || base + size > vram_size[n]) {
+        reg(n, R_RING_BASE, vram_size[n] - RING_RESERVE);
         reg(n, R_RING_SIZE, RING_BYTES);
     }
-    vram_limit[n] = VRAM_SIZE - RING_RESERVE;
+    vram_limit[n] = vram_size[n] - RING_RESERVE;
 }
 
 /* What each monitor shows now. */
@@ -195,7 +198,7 @@ static LONG vram_alloc(int monitor, ULONG size)
         if (clash < 0) break;
         off = blk[clash].off + blk[clash].size;
     }
-    if (off + size > (vram_limit[monitor] ? vram_limit[monitor] : VRAM_SIZE)) return -1;
+    if (off + size > (vram_limit[monitor] ? vram_limit[monitor] : vram_size[monitor])) return -1;
     for (i = 0; i < BLOCKS; i++)
         if (!blk[i].used) {
             blk[i].off = off; blk[i].size = size; blk[i].used = 1; blk[i].monitor = (UBYTE)monitor;
@@ -2241,14 +2244,20 @@ fail:
 
 static int on;
 
-int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *boards)
+int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *boards, const ULONG *sizes)
 {
     if (on) return 1;
     GfxBase = (struct GfxBase *)gfx;
     if (!(IntuitionBase = (struct IntuitionBase *)OpenLibrary("intuition.library", 39))) return 0;
     if (!(UtilityBase = OpenLibrary("utility.library", 39))) return 0;
     tables = t;
-    for (int n = 1; n <= ORTG_MAX_MONITORS; n++) if ((board[n] = boards[n]) != NULL) ring_reserve(n);
+    for (int n = 1; n <= ORTG_MAX_MONITORS; n++)
+        if ((board[n] = boards[n]) != NULL) {
+            board_size[n] = sizes && sizes[n] ? sizes[n] : VRAM_SIZE + 2 * PAGE_64K;
+            regs_at[n] = board_size[n] - PAGE_64K;
+            vram_size[n] = board_size[n] - 2 * PAGE_64K;
+            ring_reserve(n);
+        }
 
     /* OpenGPU v1.0/G1 is optional at boot. When present, the common RTG
      * fill/template/copy paths above submit v1.0 batches; every refusal
