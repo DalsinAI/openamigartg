@@ -715,7 +715,7 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
 ##### include/: the one include tree for programs
 
 - `opengpu/`:
-  - library owner: `opengpu.h`, `stream.h` (v1.2), `build.h` (batch builders), `driver.h`, `module.h`, `virgl.h` (the ACVirgl request format);
+  - library owner: `opengpu.h`, `stream.h` (v1.3), `build.h` (batch builders), `driver.h`, `module.h`, `virgl.h` (the ACVirgl request format);
   - Warp3D helper: `stream3d.h`, plus `build3d.h` with `ogpu_build3d.c` for its builders;
   - `gfx.h`: the OpenGfx fork's public calls.
 - `proto/`, `inline/`: `opengpu.h`.
