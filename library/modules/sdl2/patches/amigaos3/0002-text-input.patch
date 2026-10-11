@@ -1,7 +1,8 @@
-diff -ruN a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3events.c
+diff --git a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3events.c
+index bf5279c2..ba7afc38 100644
 --- a/src/video/amigaos3/SDL_os3events.c
 +++ b/src/video/amigaos3/SDL_os3events.c
-@@ -26,10 +26,15 @@
+@@ -27,10 +27,15 @@
  #include <dos/dos.h>
  #include "SDL_keyboard.h"
  #include "SDL_mouse.h"
@@ -17,7 +18,7 @@ diff -ruN a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3event
  /*
   * Amiga rawkey -> SDL scancode table.
   * Index = rawkey code (0x00 .. 0x77), value = SDL_Scancode.
-@@ -155,8 +160,88 @@
+@@ -169,10 +174,86 @@ static const SDL_Scancode os3_scancode_table[0x78] = {
      /* 0x77 */ SDL_SCANCODE_UNKNOWN,
  };
  
@@ -37,8 +38,8 @@ diff -ruN a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3event
 +    for (i = 0; i < src_len; i++) {
 +        unsigned int c = src[i];
 +
-+        /* Escape-prefixed key sequences, C0 controls, DEL and C1 controls
-+         * are keyboard commands, not text. */
++        /* Escape-prefixed key sequences, C0 controls, DEL and C1
++         * controls are keyboard commands, not text. */
 +        if (c < 0x20 || (c >= 0x7f && c < 0xa0)) {
 +            return 0;
 +        }
@@ -107,7 +108,7 @@ diff -ruN a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3event
      Uint8        state;
      UWORD        rawcode;
  
-@@ -167,16 +252,22 @@
+@@ -184,16 +265,24 @@ static void OS3_HandleRawKey(SDL_Window *sdlwin, UWORD code)
          rawcode = code;
      }
  
@@ -130,14 +131,15 @@ diff -ruN a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3event
 +    if (state == SDL_PRESSED && mapped_len > 0 &&
 +        SDL_GetKeyboardFocus() == sdlwin) {
 +        char utf8[32 * 2 + 1];
-+        if (OS3_AmigaTextToUTF8(mapped, mapped_len, utf8, sizeof(utf8)) > 0) {
++        if (OS3_AmigaTextToUTF8(mapped, mapped_len,
++                                utf8, sizeof(utf8)) > 0) {
 +            SDL_SendKeyboardText(utf8);
 +        }
 +    }
  }
  
  /* Translate IDCMP_MOUSEBUTTONS code to SDL mouse button event. */
-@@ -218,6 +309,10 @@
+@@ -228,6 +317,10 @@ void OS3_PumpEvents(_THIS)
      struct IntuiMessage *imsg;
      ULONG  class;
      UWORD  code;
@@ -148,7 +150,7 @@ diff -ruN a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3event
      WORD   mousex, mousey;
      struct Window *intuiwin;
  
-@@ -241,16 +336,29 @@
+@@ -251,16 +344,33 @@ void OS3_PumpEvents(_THIS)
              /* Copy fields BEFORE ReplyMsg -- message memory is Intuition's */
              class  = imsg->Class;
              code   = imsg->Code;
@@ -183,10 +185,11 @@ diff -ruN a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3event
                  break;
  
              case IDCMP_MOUSEBUTTONS:
-diff -ruN a/src/video/amigaos3/SDL_os3video.c b/src/video/amigaos3/SDL_os3video.c
+ diff --git a/src/video/amigaos3/SDL_os3video.c b/src/video/amigaos3/SDL_os3video.c
+index b9407b83..a9dd4b59 100644
 --- a/src/video/amigaos3/SDL_os3video.c
 +++ b/src/video/amigaos3/SDL_os3video.c
-@@ -35,12 +35,14 @@
+@@ -34,11 +34,13 @@
   * IntuitionBase is struct IntuitionBase * (declared by proto/intuition.h).
   * GfxBase is struct GfxBase * (declared by proto/graphics.h).
   * CyberGfxBase is struct Library * (declared by proto/cybergraphics.h).
@@ -200,7 +203,7 @@ diff -ruN a/src/video/amigaos3/SDL_os3video.c b/src/video/amigaos3/SDL_os3video.
  
  #define OS3VID_DRIVER_NAME "amigaos3"
  
-@@ -298,6 +300,17 @@
+@@ -274,6 +276,16 @@ static int OS3_VideoInit(_THIS)
          return -1;
      }
  
@@ -217,7 +220,7 @@ diff -ruN a/src/video/amigaos3/SDL_os3video.c b/src/video/amigaos3/SDL_os3video.
      OS3_InitMouse();
  
      return 0;
-@@ -307,6 +320,10 @@
+@@ -283,6 +295,11 @@ static void OS3_VideoQuit(_THIS)
  {
      OS3_QuitMouse();
  
