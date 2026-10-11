@@ -1,0 +1,90 @@
+name: SDL2 Text Input Clean Patch
+
+on:
+  push:
+    branches:
+      - implement/opengpu-sdl-keyboard-fix
+  workflow_dispatch:
+
+concurrency:
+  group: openrtg-sdl2-text-input-clean-patch
+  cancel-in-progress: true
+
+jobs:
+  clean-patch:
+    name: Generate 0002 relative to post-0001 sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 1
+
+      - name: Prepare post-0001 baseline
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone -q https://github.com/bdgscotland/libSDL2-amigaos3.git backend
+          git -C backend checkout -q 1eefa8f35c5ad4b63fa835e251e801a9315dff5c
+          patch --batch --forward -s -p1 -d backend \
+            < library/modules/sdl2/patches/amigaos3/0001-video.patch
+          git -C backend config user.name 'OpenRTG CI'
+          git -C backend config user.email 'openrtg-ci@invalid'
+          git -C backend add -A
+          git -C backend commit -q -m 'Baseline after OpenRTG 0001-video'
+
+      - name: Reuse the reviewed transformation and generate clean patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          lines = Path('.github/workflows/sdl2-text-input.yml').read_text().splitlines()
+          start = next(i for i, line in enumerate(lines) if line.strip() == "python3 - <<'PY'")
+          end = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == 'PY')
+          block = textwrap.dedent('\n'.join(lines[start + 1:end])) + '\n'
+          Path('/tmp/openrtg-sdl2-text-input-transform.py').write_text(block)
+          PY
+          python3 /tmp/openrtg-sdl2-text-input-transform.py
+          git -C backend diff --check
+          git -C backend diff -- \
+            src/video/amigaos3/SDL_os3events.c \
+            src/video/amigaos3/SDL_os3video.c > generated-0002-text-input.patch
+          test -s generated-0002-text-input.patch
+          grep -F 'MapRawKey' generated-0002-text-input.patch
+          grep -F 'SDL_SendKeyboardText' generated-0002-text-input.patch
+          grep -F 'keymap.library' generated-0002-text-input.patch
+          if grep -Fq 'SDL_SendQuit' generated-0002-text-input.patch; then
+            echo '0002 unexpectedly contains a 0001-video change' >&2
+            exit 1
+          fi
+          if grep -Fq 'SetRelativeMouseMode' generated-0002-text-input.patch; then
+            echo '0002 unexpectedly contains a 0001-video change' >&2
+            exit 1
+          fi
+          wc -l -c generated-0002-text-input.patch
+          cat generated-0002-text-input.patch
+
+      - name: Prove clean patch applies after 0001
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone -q https://github.com/bdgscotland/libSDL2-amigaos3.git verify
+          git -C verify checkout -q 1eefa8f35c5ad4b63fa835e251e801a9315dff5c
+          patch --batch --forward -s -p1 -d verify \
+            < library/modules/sdl2/patches/amigaos3/0001-video.patch
+          patch --batch --forward -s -p1 -d verify \
+            < generated-0002-text-input.patch
+          git -C verify diff --check
+
+      - name: Upload clean patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-0002-text-input-${{ github.run_id }}
+          path: generated-0002-text-input.patch
+          if-no-files-found: error
+          retention-days: 7
