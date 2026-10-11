@@ -251,10 +251,13 @@ static int OS3_MapRawText(const struct IntuiMessage *imsg,
     event.ie_Qualifier = imsg->Qualifier;
 
     /*
-     * Populate ie_EventAddress according to the MapRawKey contract while
-     * imsg and imsg->IAddress are still owned by this task.
+     * Dead keys: for IDCMP_RAWKEY, IAddress points at the previous two key
+     * codes and their qualifiers, packed in one longword (ie_dead). MapRawKey
+     * wants that longword's value in ie_EventAddress, not the pointer to it
+     * (the RKM recipe: ie.ie_EventAddress = (APTR *) *((ULONG *) imsg->IAddress)).
+     * Read it here, while imsg and its IAddress still belong to this task.
      */
-    event.ie_EventAddress = imsg->IAddress;
+    event.ie_EventAddress = imsg->IAddress ? *((APTR *) imsg->IAddress) : NULL;
 
     result = MapRawKey(&event, (STRPTR) buffer, capacity, NULL);
 
@@ -265,7 +268,13 @@ static int OS3_MapRawText(const struct IntuiMessage *imsg,
 }
 ```
 
-The exact `ie_EventAddress` treatment must follow the AmigaOS 3.x keymap autodoc. The implementation must not keep the pointer after `ReplyMsg()`. Calling `MapRawKey()` before replying avoids that hazard and supports dead-key state correctly.
+`ie_EventAddress` takes the **value** that `IAddress` points at, not `IAddress` itself. For a raw key, `IAddress` points at the previous two key codes and their qualifiers (`ie_dead`: `ie_prev1DownCode`, `ie_prev1DownQual`, `ie_prev2DownCode`, `ie_prev2DownQual`), packed into one longword.
+
+Passing the pointer itself would be wrong in two ways:
+- a dead key followed by a letter (´ then e) would not combine into é;
+- `MapRawKey()` would read whatever bytes happened to be there.
+
+The longword is read before `ReplyMsg()`, and nothing from the message is kept afterwards.
 
 ## 10. SDL Key Events Remain Unchanged
 
