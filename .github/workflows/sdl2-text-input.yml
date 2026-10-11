@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   patch-check:
-    name: Apply patches and check SDLTextCheck source
+    name: Generate patch and check SDLTextCheck source
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -23,16 +23,318 @@ jobs:
           clean: true
           fetch-depth: 1
 
-      - name: Apply AmigaOS backend patch series
+      - name: Generate canonical AmigaOS text-input patch
         shell: bash
         run: |
           set -euxo pipefail
           git clone -q https://github.com/bdgscotland/libSDL2-amigaos3.git backend
           git -C backend checkout -q 1eefa8f35c5ad4b63fa835e251e801a9315dff5c
-          for p in library/modules/sdl2/patches/amigaos3/*.patch; do
-            patch --batch --forward -s -p1 -d backend < "$p"
-          done
+          patch --batch --forward -s -p1 -d backend \
+            < library/modules/sdl2/patches/amigaos3/0001-video.patch
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, got {count}: {old[:80]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          events = "backend/src/video/amigaos3/SDL_os3events.c"
+          video = "backend/src/video/amigaos3/SDL_os3video.c"
+
+          replace_once(events,
+          '''#include <dos/dos.h>
+          #include "SDL_keyboard.h"
+          #include "SDL_mouse.h"
+          ''',
+          '''#include <dos/dos.h>
+          #include "SDL_keyboard.h"
+          #include "SDL_mouse.h"
+          #include <devices/inputevent.h>
+          #include <proto/keymap.h>
+          ''')
+
+          replace_once(events,
+          '''#define AMIGA_KEY_UP  0x80
+          ''',
+          '''#define AMIGA_KEY_UP  0x80
+
+          /* Opened by SDL_os3video.c for the lifetime of the video subsystem. */
+          extern struct Library *KeymapBase;
+          ''')
+
+          old_handler = '''/* Translate an IDCMP_RAWKEY code to SDL scancode and send keyboard event. */
+          static void OS3_HandleRawKey(SDL_Window *sdlwin, UWORD code)
+          {
+              SDL_Scancode scancode;
+              Uint8        state;
+              UWORD        rawcode;
+
+              if (code & AMIGA_KEY_UP) {
+                  state   = SDL_RELEASED;
+                  rawcode = code & ~AMIGA_KEY_UP;
+              } else {
+                  state   = SDL_PRESSED;
+                  rawcode = code;
+              }
+
+              if (rawcode >= 0x78) {
+                  return; /* out of table */
+              }
+
+              scancode = os3_scancode_table[rawcode];
+              if (scancode == SDL_SCANCODE_UNKNOWN) {
+                  return;
+              }
+
+              SDL_SendKeyboardKey(state, scancode);
+          }
+          '''
+
+          new_handler = '''/* MapRawKey returns Amiga ANSI bytes. SDL_TEXTINPUT requires UTF-8. */
+          static int OS3_AmigaTextToUTF8(const unsigned char *src, int src_len,
+                                         char *dst, int dst_len)
+          {
+              int i;
+              int out = 0;
+
+              if (!src || src_len <= 0 || !dst || dst_len <= 1) {
+                  return 0;
+              }
+
+              for (i = 0; i < src_len; i++) {
+                  unsigned int c = src[i];
+
+                  /* Escape-prefixed key sequences, C0 controls, DEL and C1
+                   * controls are keyboard commands, not text. */
+                  if (c < 0x20 || (c >= 0x7f && c < 0xa0)) {
+                      return 0;
+                  }
+
+                  if (c < 0x80) {
+                      if (out + 1 >= dst_len) {
+                          return 0;
+                      }
+                      dst[out++] = (char)c;
+                  } else {
+                      if (out + 2 >= dst_len) {
+                          return 0;
+                      }
+                      dst[out++] = (char)(0xc0 | (c >> 6));
+                      dst[out++] = (char)(0x80 | (c & 0x3f));
+                  }
+              }
+
+              dst[out] = '\\0';
+              return out;
+          }
+
+          /* Translate one copied Intuition raw-key record through the active Amiga
+           * keymap. dead_key is the packed ie_dead value copied from IAddress before
+           * ReplyMsg(), not the Intuition-owned pointer itself. */
+          static int OS3_MapRawText(UWORD code, UWORD qualifier, APTR dead_key,
+                                    unsigned char *buffer, int capacity)
+          {
+              struct InputEvent event;
+              LONG result;
+
+              if (!KeymapBase || !buffer || capacity < 2 ||
+                  (code & AMIGA_KEY_UP) || !SDL_IsTextInputActive()) {
+                  return 0;
+              }
+
+              /* Shortcuts remain key events only. Alt/Right-Alt is deliberately left
+               * to the active keymap so national printable characters still work. */
+              if (qualifier & (IEQUALIFIER_CONTROL |
+                               IEQUALIFIER_LCOMMAND |
+                               IEQUALIFIER_RCOMMAND)) {
+                  return 0;
+              }
+
+              SDL_zero(event);
+              event.ie_Class = IECLASS_RAWKEY;
+              event.ie_SubClass = 0;
+              event.ie_Code = code & ~AMIGA_KEY_UP;
+              event.ie_Qualifier = qualifier;
+              event.ie_EventAddress = dead_key;
+
+              result = MapRawKey(&event, (STRPTR)buffer, (LONG)capacity, NULL);
+              if (result <= 0 || result > capacity) {
+                  return 0;
+              }
+              return (int)result;
+          }
+
+          /* Translate an IDCMP_RAWKEY code to SDL scancode and, for printable key-down
+           * events, send the separately translated SDL_TEXTINPUT event. */
+          static void OS3_HandleRawKey(SDL_Window *sdlwin, UWORD code,
+                                       const unsigned char *mapped, int mapped_len)
+          {
+              SDL_Scancode scancode = SDL_SCANCODE_UNKNOWN;
+              Uint8        state;
+              UWORD        rawcode;
+
+              if (code & AMIGA_KEY_UP) {
+                  state   = SDL_RELEASED;
+                  rawcode = code & ~AMIGA_KEY_UP;
+              } else {
+                  state   = SDL_PRESSED;
+                  rawcode = code;
+              }
+
+              if (rawcode < SDL_arraysize(os3_scancode_table)) {
+                  scancode = os3_scancode_table[rawcode];
+              }
+
+              if (scancode != SDL_SCANCODE_UNKNOWN) {
+                  SDL_SendKeyboardKey(state, scancode);
+              }
+
+              /* Keep text tied to the window that owns keyboard focus. SDL itself can
+               * otherwise queue a text event with windowID 0 during a focus transition. */
+              if (state == SDL_PRESSED && mapped_len > 0 &&
+                  SDL_GetKeyboardFocus() == sdlwin) {
+                  char utf8[32 * 2 + 1];
+                  if (OS3_AmigaTextToUTF8(mapped, mapped_len,
+                                          utf8, sizeof(utf8)) > 0) {
+                      SDL_SendKeyboardText(utf8);
+                  }
+              }
+          }
+          '''
+          replace_once(events, old_handler, new_handler)
+
+          replace_once(events,
+          '''    ULONG  class;
+              UWORD  code;
+              WORD   mousex, mousey;
+          ''',
+          '''    ULONG  class;
+              UWORD  code;
+              UWORD  qualifier;
+              APTR   dead_key;
+              unsigned char mapped[32];
+              int mapped_len;
+              WORD   mousex, mousey;
+          ''')
+
+          replace_once(events,
+          '''            class  = imsg->Class;
+                      code   = imsg->Code;
+                      mousex = imsg->MouseX;
+                      mousey = imsg->MouseY;
+
+                      /* CRITICAL: reply immediately so Intuition can reuse the message */
+                      ReplyMsg((struct Message *)imsg);
+
+                      /* Now process the copied data */
+          ''',
+          '''            class  = imsg->Class;
+                      code   = imsg->Code;
+                      qualifier = 0;
+                      dead_key = NULL;
+                      mapped_len = 0;
+                      mousex = imsg->MouseX;
+                      mousey = imsg->MouseY;
+
+                      if (class == IDCMP_RAWKEY) {
+                          qualifier = imsg->Qualifier;
+                          /* RKM MapRawKey recipe: IAddress points at the packed ie_dead
+                           * longword. Copy its value while Intuition still owns it. */
+                          if (imsg->IAddress) {
+                              dead_key = *((APTR *)imsg->IAddress);
+                          }
+                      }
+
+                      /* CRITICAL: reply immediately so Intuition can reuse the message */
+                      ReplyMsg((struct Message *)imsg);
+
+                      if (class == IDCMP_RAWKEY && SDL_GetKeyboardFocus() == sdlwin) {
+                          mapped_len = OS3_MapRawText(code, qualifier, dead_key,
+                                                      mapped, SDL_arraysize(mapped));
+                      }
+
+                      /* Now process the copied data */
+          ''')
+
+          replace_once(events,
+          '''            case IDCMP_RAWKEY:
+                          OS3_HandleRawKey(sdlwin, code);
+                          break;
+          ''',
+          '''            case IDCMP_RAWKEY:
+                          OS3_HandleRawKey(sdlwin, code, mapped, mapped_len);
+                          break;
+          ''')
+
+          replace_once(video,
+          ''' * CyberGfxBase is struct Library * (declared by proto/cybergraphics.h).
+           * All are defined as NULL here and opened in OS3_VideoInit.
+           */
+          struct Library         *CyberGfxBase  = NULL;
+          struct IntuitionBase   *IntuitionBase = NULL;
+          struct GfxBase         *GfxBase       = NULL;
+          ''',
+          ''' * CyberGfxBase is struct Library * (declared by proto/cybergraphics.h).
+           * KeymapBase is struct Library * (used by proto/keymap.h in events.c).
+           * All are defined as NULL here and opened in OS3_VideoInit.
+           */
+          struct Library         *CyberGfxBase  = NULL;
+          struct IntuitionBase   *IntuitionBase = NULL;
+          struct GfxBase         *GfxBase       = NULL;
+          struct Library         *KeymapBase    = NULL;
+          ''')
+
+          replace_once(video,
+          '''    OS3_InitMouse();
+
+              return 0;
+          }
+          ''',
+          '''    /* Text translation is optional for video startup, but when available it
+               * turns IDCMP_RAWKEY plus the active Amiga keymap into SDL_TEXTINPUT. */
+              me->pr_WindowPtr = (APTR)-1L;
+              KeymapBase = OpenLibrary((CONST_STRPTR)"keymap.library", 36UL);
+              me->pr_WindowPtr = oldwin;
+              if (!KeymapBase) {
+                  SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
+                              "OS3: keymap.library unavailable; SDL text input disabled");
+              }
+
+              OS3_InitMouse();
+
+              return 0;
+          }
+          ''')
+
+          replace_once(video,
+          '''static void OS3_VideoQuit(_THIS)
+          {
+              OS3_QuitMouse();
+
+              /* Libraries -- close in reverse order. Windows and screens must be
+          ''',
+          '''static void OS3_VideoQuit(_THIS)
+          {
+              OS3_QuitMouse();
+
+              if (KeymapBase) {
+                  CloseLibrary(KeymapBase);
+                  KeymapBase = NULL;
+              }
+
+              /* Libraries -- close in reverse order. Windows and screens must be
+          ''')
+          PY
           git -C backend diff --check
+          git -C backend diff -- \
+            src/video/amigaos3/SDL_os3events.c \
+            src/video/amigaos3/SDL_os3video.c > generated-0002-text-input.patch
+          test -s generated-0002-text-input.patch
+          cat generated-0002-text-input.patch
           grep -F 'MapRawKey' backend/src/video/amigaos3/SDL_os3events.c
           grep -F 'SDL_SendKeyboardText' backend/src/video/amigaos3/SDL_os3events.c
           grep -F 'keymap.library' backend/src/video/amigaos3/SDL_os3video.c
@@ -47,6 +349,15 @@ jobs:
           tar xzf SDL2-2.32.10.tar.gz
           cc -std=c11 -Wall -Wextra -Werror \
             -I SDL2-2.32.10/include -fsyntax-only tests/sdl2/textinput.c
+
+      - name: Publish generated patch
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-0002-text-input-${{ github.run_id }}
+          path: generated-0002-text-input.patch
+          if-no-files-found: warn
+          retention-days: 7
 
   build:
     name: Build SDL2.module and SDLTextCheck
