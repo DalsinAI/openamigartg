@@ -15,7 +15,21 @@ CC="$P/bin/m68k-amigaos-gcc"
 [ -f "$SYS/include/GL/gl.h" ] || { echo "OpenTensor: OpenGL headers are missing" >&2; exit 4; }
 
 rm -rf "$OUT"
-mkdir -p "$OUT/package/OpenTensor"
+mkdir -p "$OUT/package/OpenTensor" "$OUT/work"
+
+# GitHub's contents API carries the first-light source as four reviewable text
+# parts. Assemble the exact translation unit in the build directory; none of
+# the generated material is committed or installed in the package.
+SOURCE="$OUT/work/opentensor.c"
+cat \
+    "$HERE/src/opentensor.c.part1" \
+    "$HERE/src/opentensor.c.part2" \
+    "$HERE/src/opentensor.c.part3" \
+    "$HERE/src/opentensor.c.part4" \
+    > "$SOURCE"
+test -s "$SOURCE"
+grep -F 'OpenTensor: First Light' "$SOURCE" >/dev/null
+grep -F 'MESA / AHI / OPENRTG' "$SOURCE" >/dev/null
 
 # The GCC16 stove has the OpenGPU SDK. Older snapshots may still carry the
 # CyberGraphX and AHI developer headers, so copy only those headers into a
@@ -57,7 +71,7 @@ GL_DIR=$(dirname "$GL_LIB")
     -I"$SYS/include" \
     -I"$EXTRA_INC" \
     -I"$ROOT/library/modules/gl" \
-    "$HERE/src/opentensor.c" \
+    "$SOURCE" \
     -L"$GL_DIR" -lGL -lm -lamiga \
     -o "$OUT/package/OpenTensor/OpenTensor"
 
