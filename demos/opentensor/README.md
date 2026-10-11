@@ -77,3 +77,7 @@ A private screen sets `gla_os3_target.bitmap`, selecting GLA's screen-owned Open
 - Produce continuous AHI audio without hanging on shutdown.
 - Exit cleanly from keyboard, mouse or Ctrl-C.
 - Complete a timed run and report FPS plus AHI underruns.
+
+## First real run
+
+The first 18-second AC090 lab run passed at `960x540x32`, using Mesa 26.2.4 through VirGL and generated 44.1 kHz AHI audio. It returned cleanly to Workbench at 50.0 fps with one initial audio underrun. See [FIRST_LIGHT_RESULT.md](FIRST_LIGHT_RESULT.md) for the captured result and evidence hashes.
