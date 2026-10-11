@@ -1,0 +1,76 @@
+name: SDL2 Amiga Text Input
+
+on:
+  push:
+    branches:
+      - implement/opengpu-sdl-keyboard-fix
+  workflow_dispatch:
+
+concurrency:
+  group: openrtg-sdl2-text-input
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build SDL2.module and SDLTextCheck
+    runs-on: self-hosted
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout implementation branch
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 1
+
+      - name: Runner identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          hostname
+          uname -a
+          echo "HOME=$HOME"
+          git rev-parse HEAD
+          test -x "$HOME/AmigaChrome/stoves/os32-gcc16/prefix/bin/m68k-amigaos-gcc"
+          "$HOME/AmigaChrome/stoves/os32-gcc16/prefix/bin/m68k-amigaos-gcc" --version | head -1
+
+      - name: Build shared and static SDL2
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$GITHUB_WORKSPACE/build/sdl2-text-input"
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+          library/modules/sdl2/build.sh "$OUT" module stub static
+
+      - name: Build SDLTextCheck both ways
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$GITHUB_WORKSPACE/build/sdl2-text-input"
+          CC="$HOME/AmigaChrome/stoves/os32-gcc16/prefix/bin/m68k-amigaos-gcc"
+          mkdir -p "$OUT/tests/sdl2"
+          "$CC" -O2 -m68040 -m68881 -fno-delete-null-pointer-checks -noixemul \
+            -I"$OUT/include/SDL2" -o "$OUT/tests/sdl2/textinput.m" \
+            tests/sdl2/textinput.c -L"$OUT" -lSDL2 -lm -lamiga
+          "$CC" -O2 -m68040 -m68881 -fno-delete-null-pointer-checks -noixemul \
+            -I"$OUT/include/SDL2" -o "$OUT/tests/sdl2/textinput" \
+            tests/sdl2/textinput.c -L"$OUT" -lSDL2_static -lm -lamiga
+          file "$OUT/SDL2.module" "$OUT/tests/sdl2/textinput.m" "$OUT/tests/sdl2/textinput"
+          sha256sum "$OUT/SDL2.module" "$OUT/tests/sdl2/textinput.m" \
+            "$OUT/tests/sdl2/textinput" | tee "$OUT/SHA256SUMS-text-input"
+
+      - name: Publish build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenGPU-SDL2-TextInput-${{ github.run_id }}
+          path: |
+            build/sdl2-text-input/SDL2.module
+            build/sdl2-text-input/libSDL2.a
+            build/sdl2-text-input/libSDL2_static.a
+            build/sdl2-text-input/tests/sdl2/textinput
+            build/sdl2-text-input/tests/sdl2/textinput.m
+            build/sdl2-text-input/SHA256SUMS-text-input
+          if-no-files-found: warn
+          retention-days: 30
