@@ -1,0 +1,51 @@
+name: SDL2 Text Input Checked Patch
+
+on:
+  push:
+    branches:
+      - implement/opengpu-sdl-keyboard-fix
+  workflow_dispatch:
+
+concurrency:
+  group: openrtg-sdl2-text-input-checked-patch
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Apply checked-in 0001 and 0002
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 1
+
+      - name: Apply the complete AmigaOS patch series
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone -q https://github.com/bdgscotland/libSDL2-amigaos3.git backend
+          git -C backend checkout -q 1eefa8f35c5ad4b63fa835e251e801a9315dff5c
+          for p in library/modules/sdl2/patches/amigaos3/*.patch; do
+            echo "applying $p"
+            patch --batch --forward -s -p1 -d backend < "$p"
+          done
+          git -C backend diff --check
+          grep -F 'MapRawKey' backend/src/video/amigaos3/SDL_os3events.c
+          grep -F 'SDL_SendKeyboardText' backend/src/video/amigaos3/SDL_os3events.c
+          grep -F 'keymap.library' backend/src/video/amigaos3/SDL_os3video.c
+          test "$(grep -c 'SDL_SendQuit' backend/src/video/amigaos3/SDL_os3events.c)" -eq 1
+          test "$(grep -c 'MapRawKey' backend/src/video/amigaos3/SDL_os3events.c)" -ge 2
+
+      - name: Syntax-check SDLTextCheck
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fsSL -o SDL2-2.32.10.tar.gz \
+            https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz
+          echo '5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165  SDL2-2.32.10.tar.gz' | sha256sum -c -
+          tar xzf SDL2-2.32.10.tar.gz
+          cc -std=c11 -Wall -Wextra -Werror \
+            -I SDL2-2.32.10/include -fsyntax-only tests/sdl2/textinput.c
