@@ -16,5 +16,7 @@ struct gla_os3_target {
 
 /* Point p at t; t must outlive the GL buffer that uses p. */
 void gla_os3_present_init(struct gla_present *p, struct gla_os3_target *t);
+/* Close what presenting opened (openrtg.library, for virgl's frames). */
+void gla_os3_present_close(void);
 
 #endif

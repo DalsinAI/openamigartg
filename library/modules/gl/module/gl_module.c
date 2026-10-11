@@ -29,8 +29,14 @@ struct Library *CyberGfxBase;
 
 static int own_opengpu;
 
+/* gla_present_os3.c's and gla_virgl_os3.c's own openings. */
+void gla_os3_present_close(void);
+void gla_os3_virgl_close(void);
+
 static void gl_close(void)
 {
+    gla_os3_present_close();
+    gla_os3_virgl_close();
     if (CyberGfxBase) CloseLibrary(CyberGfxBase);
     CyberGfxBase = NULL;
     if (own_opengpu && OpenGPUBase) CloseLibrary(OpenGPUBase);

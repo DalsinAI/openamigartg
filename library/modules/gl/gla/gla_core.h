@@ -39,10 +39,40 @@ struct gla_frame {
     int         x0, y0, x1, y1;
 };
 
+/* A frame the host's graphics chip drew through virgl, still in the host's
+ * memory: the ACVirgl context and resource (its colour buffer), row 0 at
+ * the top, and the part that changed. */
+struct gla_virgl_frame {
+    unsigned long context, handle;
+    unsigned      w, h;
+    int           x0, y0, x1, y1;
+};
+
 struct gla_present {
     void (*present)(void *user, const struct gla_frame *frame);
     void  *user;
+    /* When there is one, virgl's frames go here first, and the host writes
+     * them straight into the display (ACV_PRESENT): the pixels it wrote, or
+     * -1, and then the frame is read back into this CPU's memory and comes
+     * to present as before. */
+    long (*present_virgl)(void *user, const struct gla_virgl_frame *frame);
 };
+
+/* What GLA did with its frames, since it started or was last reset. */
+struct gla_stats {
+    unsigned long frames;           /* virgl frames finished (flush_frontbuffer) */
+    unsigned long direct;           /* ... the host wrote straight into the display */
+    unsigned long direct_pixels;
+    unsigned long readback;         /* ... read back into this CPU's memory and presented from there */
+    unsigned long readback_pixels;
+    unsigned long wpa_pixels;       /* frame pixels drawn with WritePixelArray (OS 3.2) */
+    unsigned long fences;           /* request blocks waited for (OS 3.2's transport) */
+    unsigned long fence_wait_us;    /* ... and the time spent waiting, when it can be timed */
+};
+/* The counts into s (when s isn't 0); reset puts them back to 0. */
+void gla_get_stats(struct gla_stats *s, int reset);
+/* The GLA core's own files count here. */
+extern struct gla_stats gla_counts;
 
 struct gla_display;
 struct gla_context;

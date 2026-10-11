@@ -73,6 +73,7 @@ struct gv_ws {
     unsigned at;                /* words in it */
     uint32_t next_handle;
     uint32_t ctx_id;
+    uint32_t host_flags;        /* HELLO's: ACV_HOST_ */
     mtx_t mutex;
 };
 
@@ -424,17 +425,41 @@ static void gv_fence_reference(struct virgl_winsys *vws, struct pipe_fence_handl
     *dst = src;
 }
 
-/* A finished frame: back from the host into the resource's copy, then into
- * the display target, which shows it (the GLA core's present hook). */
+/* A finished frame. When the host can (ACV_HOST_PRESENT) and the present
+ * hook has a way, the host writes it straight into the display; otherwise
+ * it comes back from the host into the resource's copy, then into the
+ * display target, which shows it (the GLA core's present hook).
+ * `drawable` is the buffer's present hook. */
 static void gv_flush_frontbuffer(struct virgl_winsys *vws, struct virgl_cmd_buf *cb, struct virgl_hw_res *res,
                                  unsigned level, unsigned layer, void *drawable, struct pipe_box *sub_box)
 {
     struct gv_ws *w = gv(vws);
+    const struct gla_present *p = drawable;
     struct pipe_box box;
     uint32_t offset = 0;
     void *map;
     (void)cb;
     if (!res->dt) return;
+    gla_counts.frames++;
+    if ((w->host_flags & ACV_HOST_PRESENT) && p && p->present_virgl && level == 0 && layer == 0) {
+        struct gla_virgl_frame f;
+        long n;
+        f.context = CTX_ID;
+        f.handle = res->res_handle;
+        f.w = res->width; f.h = res->height;
+        if (sub_box) {
+            f.x0 = sub_box->x; f.y0 = sub_box->y;
+            f.x1 = sub_box->x + sub_box->width; f.y1 = sub_box->y + sub_box->height;
+        } else {
+            f.x0 = 0; f.y0 = 0; f.x1 = (int)res->width; f.y1 = (int)res->height;
+        }
+        if ((n = p->present_virgl(p->user, &f)) >= 0) {
+            gla_counts.direct++;
+            gla_counts.direct_pixels += (unsigned long)n;
+            return;
+        }
+    }
+    gla_counts.readback++;
     if (sub_box) {
         box = *sub_box;
         offset = box.y * res->stride + box.x * util_format_get_blocksize(res->format);
@@ -445,6 +470,7 @@ static void gv_flush_frontbuffer(struct virgl_winsys *vws, struct virgl_cmd_buf 
         util_copy_rect(map, res->format, res->dt_stride, box.x, box.y, box.width, box.height, res->ptr, res->stride, box.x, box.y);
         w->sws->displaytarget_unmap(w->sws, res->dt);
     }
+    gla_counts.readback_pixels += (unsigned long)box.width * (unsigned long)box.height;
     w->sws->displaytarget_display(w->sws, res->dt, drawable, sub_box ? 1 : 0, sub_box);
 }
 
@@ -486,6 +512,7 @@ struct virgl_winsys *gla_virgl_winsys_create(struct sw_winsys *sws, const struct
         FREE(w);
         return NULL;
     }
+    w->host_flags = blk_word(w, rh + 1);
     w->base.transfer_put = gv_transfer_put;
     w->base.transfer_get = gv_transfer_get;
     w->base.resource_create = gv_resource_create;
