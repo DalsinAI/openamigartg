@@ -52,8 +52,8 @@ static int present_gpu(struct gla_os3_target *t, const struct gla_frame *f)
                           LBMI_BYTESPERROW, (ULONG)&bpr, LBMI_PIXFMT, (ULONG)&fmt, TAG_DONE);
     if (!lock)
         return 0;
-    if (fmt == PIXFMT_ARGB32)
-        ofmt = OGPU_FMT_ARGB32;
+    if (fmt == PIXFMT_ARGB32)           /* OpenRTG's 32-bit pixels have alpha 0: XRGB32 (v1.3) gives it */
+        ofmt = OGPU_ANSWER(OGPU_Query(OGPU_OP_PIXELS, OGPU_FMT_XRGB32)) != OGPU_NONE ? OGPU_FMT_XRGB32 : OGPU_FMT_ARGB32;
     else if (fmt == PIXFMT_RGB16)
         ofmt = OGPU_FMT_RGB565;
     else {
