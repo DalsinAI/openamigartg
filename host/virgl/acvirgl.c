@@ -53,12 +53,18 @@ struct vr_api {
                               struct vr_box *box, uint64_t offset, struct iovec *iovec, unsigned int iovec_cnt);
 };
 
+/* What ACV_PRESENT and the counters need of a resource, by handle. */
+struct av_res { uint32_t format, bind, width, height; };
+#define AV_MAX_HANDLES (1u << 20)
+
 struct acvirgl {
     void *dl;
     struct vr_api vr;
     struct vr_callbacks cb;
     uint8_t *tmp;               /* commands and pixels, in the host's order */
     size_t tmp_size;
+    struct av_res *res;         /* by handle; format 0: none */
+    uint32_t res_n;
     struct acvirgl_stats st;
 };
 
@@ -115,6 +121,7 @@ void acvirgl_destroy(struct acvirgl *v)
     v->vr.cleanup(v);
     /* virglrenderer keeps state at file scope; it stays loaded */
     free(v->tmp);
+    free(v->res);
     free(v);
 }
 
@@ -146,6 +153,125 @@ static void av_swap_copy(uint8_t *d, const uint8_t *s, size_t n, uint32_t unit)
     if (i < n) memcpy(d + i, s + i, n - i);   /* units 1 (or what is left over) as they are */
 }
 
+/* virgl_hw.h's numbers that ACV_PRESENT and the counters use. */
+#define AV_BIND_DISPLAY_TARGET (1u << 7)
+#define AV_BIND_SCANOUT        (1u << 18)
+
+static void av_res_set(struct acvirgl *v, uint32_t handle, const struct av_res *r)
+{
+    if (handle >= AV_MAX_HANDLES) return;           /* ACV_PRESENT then says no for it */
+    if (handle >= v->res_n) {
+        uint32_t n = handle + 256 < AV_MAX_HANDLES ? handle + 256 : AV_MAX_HANDLES;
+        struct av_res *p = realloc(v->res, (size_t)n * sizeof *p);
+        if (!p) return;
+        memset(p + v->res_n, 0, (size_t)(n - v->res_n) * sizeof *p);
+        v->res = p;
+        v->res_n = n;
+    }
+    v->res[handle] = *r;
+}
+
+/* Where R, G, B and A are in a pixel of a 32-bit colour format, as the
+ * host reads it back (4 for A: none, opaque); 0 for formats ACV_PRESENT
+ * doesn't take. */
+static int av_layout(uint32_t format, int *r, int *g, int *b, int *a)
+{
+    static const struct { uint8_t f, r, g, b, a; } t[] = {
+        { 1, 2, 1, 0, 3 },      /* B8G8R8A8 */
+        { 2, 2, 1, 0, 4 },      /* B8G8R8X8 */
+        { 3, 1, 2, 3, 0 },      /* A8R8G8B8 */
+        { 4, 1, 2, 3, 4 },      /* X8R8G8B8 */
+        { 67, 0, 1, 2, 3 },     /* R8G8B8A8 */
+        { 68, 3, 2, 1, 4 },     /* X8B8G8R8 */
+        { 121, 3, 2, 1, 0 },    /* A8B8G8R8 */
+        { 134, 0, 1, 2, 4 },    /* R8G8B8X8 */
+    };
+    unsigned i;
+    for (i = 0; i < sizeof t / sizeof t[0]; i++)
+        if (t[i].f == format) { *r = t[i].r; *g = t[i].g; *b = t[i].b; *a = t[i].a; return 1; }
+    return 0;
+}
+
+static int av_s16(uint32_t v) { v &= 0xFFFFu; return v >= 0x8000u ? (int)v - 0x10000 : (int)v; }
+
+/* ACV_PRESENT: the resource read back once, then written into the target's
+ * rectangles in its own format. */
+static int32_t av_present(struct acvirgl *v, uint8_t *(*map)(void *, uint32_t, uint32_t), void *mu, const uint8_t *a, unsigned nargs)
+{
+    uint32_t ctx = av_be32(a), handle = av_be32(a + 4), layer = av_be32(a + 8), so = av_be32(a + 12);
+    uint32_t addr = av_be32(a + 16), bpr = av_be32(a + 20), fmt = av_be32(a + 24), wh = av_be32(a + 28);
+    uint32_t flags = av_be32(a + 32), n = av_be32(a + 36), i, bpp;
+    int sx = av_s16(so >> 16), sy = av_s16(so), tw = (int)(wh >> 16), th = (int)(wh & 0xFFFFu);
+    int lr, lg, lb, la, rw, rh, bx0 = 0x7FFFFFFF, by0 = 0x7FFFFFFF, bx1 = -1, by1 = -1, flip = (flags & ACV_PRESENT_FLIP_Y) != 0;
+    int rect[ACV_PRESENT_MAX][4], nr = 0;
+    const struct av_res *res;
+    struct vr_box box;
+    struct iovec iov;
+    uint8_t *dst;
+    uint64_t pixels = 0;
+    if (n > ACV_PRESENT_MAX || nargs < 10 + 2 * n || (flags & ~(uint32_t)ACV_PRESENT_FLIP_Y)) return ACV_ERR_BADCMD;
+    bpp = fmt == OGPU_FMT_XRGB32 || fmt == OGPU_FMT_ARGB32 ? 4 : fmt == OGPU_FMT_RGB565 ? 2 : 0;
+    if (!bpp) return ACV_ERR_BADCMD;
+    if (!n || !tw || !th) return 0;
+    if (bpr < (uint32_t)tw * bpp || bpr > 0x01000000u) return ACV_ERR_BADCMD;
+    if (handle >= v->res_n || !(res = &v->res[handle])->format || !av_layout(res->format, &lr, &lg, &lb, &la))
+        return ACV_ERR_RENDERER;
+    rw = (int)res->width; rh = (int)res->height;
+    if (!(dst = map(mu, addr, bpr * (uint32_t)(th - 1) + (uint32_t)tw * bpp))) return ACV_ERR_NOMAP;
+    /* Each rectangle inside the target and over the resource; their box in the resource. */
+    for (i = 0; i < n; i++) {
+        uint32_t xy = av_be32(a + 40 + i * 8), rwh = av_be32(a + 44 + i * 8);
+        int x0 = av_s16(xy >> 16), y0 = av_s16(xy), x1 = x0 + (int)(rwh >> 16), y1 = y0 + (int)(rwh & 0xFFFFu);
+        if (x0 < 0) x0 = 0;
+        if (y0 < 0) y0 = 0;
+        if (x1 > tw) x1 = tw;
+        if (y1 > th) y1 = th;
+        if (x0 < sx) x0 = sx;
+        if (y0 < sy) y0 = sy;
+        if (x1 > sx + rw) x1 = sx + rw;
+        if (y1 > sy + rh) y1 = sy + rh;
+        if (x0 >= x1 || y0 >= y1) continue;
+        rect[nr][0] = x0; rect[nr][1] = y0; rect[nr][2] = x1; rect[nr][3] = y1; nr++;
+        if (x0 - sx < bx0) bx0 = x0 - sx;
+        if (x1 - sx > bx1) bx1 = x1 - sx;
+        if (flip) {
+            if (rh - (y1 - sy) < by0) by0 = rh - (y1 - sy);
+            if (rh - (y0 - sy) > by1) by1 = rh - (y0 - sy);
+        } else {
+            if (y0 - sy < by0) by0 = y0 - sy;
+            if (y1 - sy > by1) by1 = y1 - sy;
+        }
+    }
+    if (!nr) return 0;
+    box.x = (uint32_t)bx0; box.y = (uint32_t)by0; box.z = layer;
+    box.w = (uint32_t)(bx1 - bx0); box.h = (uint32_t)(by1 - by0); box.d = 1;
+    if (!av_need(v, (size_t)box.w * box.h * 4)) return ACV_ERR_RENDERER;
+    iov.iov_base = v->tmp;
+    iov.iov_len = (size_t)box.w * box.h * 4;
+    if (v->vr.transfer_read_iov(handle, ctx, 0, box.w * 4, 0, &box, 0, &iov, 1)) return ACV_ERR_RENDERER;
+    for (i = 0; i < (uint32_t)nr; i++) {
+        int x0 = rect[i][0], y0 = rect[i][1], x1 = rect[i][2], y1 = rect[i][3], x, y;
+        for (y = y0; y < y1; y++) {
+            int ry = flip ? rh - 1 - (y - sy) : y - sy;
+            const uint8_t *sp = v->tmp + ((size_t)(ry - by0) * box.w + (size_t)(x0 - sx - bx0)) * 4;
+            uint8_t *dp = dst + (size_t)y * bpr + (size_t)x0 * bpp;
+            if (fmt == OGPU_FMT_RGB565)
+                for (x = x0; x < x1; x++, sp += 4, dp += 2) {
+                    dp[0] = (uint8_t)((sp[lr] & 0xF8) | (sp[lg] >> 5));
+                    dp[1] = (uint8_t)(((sp[lg] & 0x1C) << 3) | (sp[lb] >> 3));
+                }
+            else
+                for (x = x0; x < x1; x++, sp += 4, dp += 4) {
+                    dp[0] = fmt == OGPU_FMT_XRGB32 ? 0 : la == 4 ? 0xFF : sp[la];
+                    dp[1] = sp[lr]; dp[2] = sp[lg]; dp[3] = sp[lb];
+                }
+        }
+        pixels += (uint64_t)(x1 - x0) * (uint64_t)(y1 - y0);
+    }
+    v->st.presents++; v->st.present_rects += (uint64_t)nr; v->st.present_pixels += pixels;
+    return pixels > 0x7FFFFFFF ? 0x7FFFFFFF : (int32_t)pixels;
+}
+
 /* The words a command has after its header and result word. */
 static int av_args_of(unsigned cmd)
 {
@@ -160,6 +286,7 @@ static int av_args_of(unsigned cmd)
     case ACV_ATTACH: case ACV_DETACH: return 2;
     case ACV_SUBMIT: return 3;
     case ACV_PUT: case ACV_GET: return 14;
+    case ACV_PRESENT: return 10;            /* and two a rectangle */
     }
     return -1;
 }
@@ -182,6 +309,7 @@ static int32_t av_transfer(struct acvirgl *v, uint8_t *(*map)(void *, uint32_t, 
         if (v->vr.transfer_read_iov(handle, ctx, level, stride, layer_stride, &box, 0, &iov, 1)) return ACV_ERR_RENDERER;
         av_swap_copy(mem, v->tmp, bytes, unit);
         v->st.gets++; v->st.get_bytes += bytes;
+        if (handle < v->res_n && (v->res[handle].bind & (AV_BIND_DISPLAY_TARGET | AV_BIND_SCANOUT))) v->st.frame_get_bytes += bytes;
     } else {
         av_swap_copy(v->tmp, mem, bytes, unit);
         if (v->vr.transfer_write_iov(handle, ctx, (int)level, stride, layer_stride, &box, 0, &iov, 1)) return ACV_ERR_RENDERER;
@@ -210,7 +338,7 @@ int acvirgl_run(struct acvirgl *v, uint8_t *(*map)(void *, uint32_t, uint32_t), 
         }
         switch (cmd) {
         case ACV_HELLO:
-            av_put_be32(a, 0);
+            av_put_be32(a, ACV_HOST_PRESENT);
             r = ACV_PROTOCOL;
             break;
         case ACV_CAPSET_INFO: {
@@ -255,10 +383,20 @@ int acvirgl_run(struct acvirgl *v, uint8_t *(*map)(void *, uint32_t, uint32_t), 
             ra.width = av_be32(a + 16); ra.height = av_be32(a + 20); ra.depth = av_be32(a + 24); ra.array_size = av_be32(a + 28);
             ra.last_level = av_be32(a + 32); ra.nr_samples = av_be32(a + 36); ra.flags = av_be32(a + 40);
             if (v->vr.resource_create(&ra, NULL, 0)) r = ACV_ERR_RENDERER;
-            else if (ctx) v->vr.ctx_attach_resource((int)ctx, (int)ra.handle);
+            else {
+                struct av_res e;
+                e.format = ra.format; e.bind = ra.bind; e.width = ra.width; e.height = ra.height;
+                av_res_set(v, ra.handle, &e);
+                if (ctx) v->vr.ctx_attach_resource((int)ctx, (int)ra.handle);
+            }
             break;
         }
-        case ACV_RES_UNREF: v->vr.resource_unref(av_be32(a)); break;
+        case ACV_RES_UNREF: {
+            uint32_t h = av_be32(a);
+            v->vr.resource_unref(h);
+            if (h < v->res_n) memset(&v->res[h], 0, sizeof v->res[h]);
+            break;
+        }
         case ACV_ATTACH: v->vr.ctx_attach_resource((int)av_be32(a), (int)av_be32(a + 4)); break;
         case ACV_DETACH: v->vr.ctx_detach_resource((int)av_be32(a), (int)av_be32(a + 4)); break;
         case ACV_SUBMIT: {
@@ -274,6 +412,7 @@ int acvirgl_run(struct acvirgl *v, uint8_t *(*map)(void *, uint32_t, uint32_t), 
         }
         case ACV_PUT: r = av_transfer(v, map, mu, a, 0); break;
         case ACV_GET: r = av_transfer(v, map, mu, a, 1); break;
+        case ACV_PRESENT: r = av_present(v, map, mu, a, len - 2); break;
         }
         if (r < 0) v->st.errors++;
         av_put_be32(c + 4, (uint32_t)r);
