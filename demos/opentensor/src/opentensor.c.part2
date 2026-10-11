@@ -1,0 +1,250 @@
+        dst[i * 2 + 0] = ot_clip16(left);
+        dst[i * 2 + 1] = ot_clip16(right);
+    }
+}
+
+static void ot_audio_request(struct AudioState *a, int n, struct AHIRequest *link)
+{
+    struct AHIRequest *r = a->req[n];
+    r->ahir_Std.io_Message.mn_Node.ln_Pri = 0;
+    r->ahir_Std.io_Command = CMD_WRITE;
+    r->ahir_Std.io_Data = a->pcm[n];
+    r->ahir_Std.io_Length = OT_AUDIO_WORDS * sizeof(WORD);
+    r->ahir_Std.io_Offset = 0;
+    r->ahir_Type = AHIST_S16S;
+    r->ahir_Frequency = OT_AUDIO_RATE;
+    r->ahir_Volume = 0x10000UL;
+    r->ahir_Position = 0x8000UL;
+    r->ahir_Link = link;
+    SendIO((struct IORequest *)r);
+    a->inflight[n] = 1;
+}
+
+static void ot_audio_close(struct AudioState *a);
+
+static int ot_audio_open(struct AudioState *a)
+{
+    memset(a, 0, sizeof(*a));
+    a->noise = 0x13579BDFUL;
+    a->last_step = ~0UL;
+    a->kick_age = OT_AUDIO_RATE;
+    a->hat_age = OT_AUDIO_RATE;
+
+    a->pcm[0] = (WORD *)AllocVec(OT_AUDIO_WORDS * sizeof(WORD) * 2UL, MEMF_ANY | MEMF_CLEAR);
+    if (!a->pcm[0]) goto fail;
+    a->pcm[1] = a->pcm[0] + OT_AUDIO_WORDS;
+    a->port = CreateMsgPort();
+    if (!a->port) goto fail;
+    a->req[0] = (struct AHIRequest *)CreateIORequest(a->port, sizeof(struct AHIRequest));
+    if (!a->req[0]) goto fail;
+    a->req[0]->ahir_Version = 4;
+    if (OpenDevice(AHINAME, AHI_DEFAULT_UNIT, (struct IORequest *)a->req[0], 0))
+        goto fail;
+    a->req[1] = (struct AHIRequest *)AllocVec(sizeof(struct AHIRequest), MEMF_ANY | MEMF_CLEAR);
+    if (!a->req[1]) goto fail;
+    CopyMem(a->req[0], a->req[1], sizeof(struct AHIRequest));
+
+    ot_audio_fill(a, a->pcm[0]);
+    ot_audio_fill(a, a->pcm[1]);
+    ot_audio_request(a, 0, NULL);
+    ot_audio_request(a, 1, a->req[0]);
+    a->ready = 1;
+    return 1;
+
+fail:
+    ot_audio_close(a);
+    return 0;
+}
+
+static void ot_audio_pump(struct AudioState *a)
+{
+    int done0, done1;
+    if (!a->ready) return;
+    done0 = a->inflight[0] && CheckIO((struct IORequest *)a->req[0]) != NULL;
+    done1 = a->inflight[1] && CheckIO((struct IORequest *)a->req[1]) != NULL;
+
+    if (done0 && done1) {
+        WaitIO((struct IORequest *)a->req[0]);
+        WaitIO((struct IORequest *)a->req[1]);
+        a->inflight[0] = a->inflight[1] = 0;
+        a->underruns++;
+        ot_audio_fill(a, a->pcm[0]);
+        ot_audio_fill(a, a->pcm[1]);
+        ot_audio_request(a, 0, NULL);
+        ot_audio_request(a, 1, a->req[0]);
+    } else if (done0) {
+        WaitIO((struct IORequest *)a->req[0]);
+        a->inflight[0] = 0;
+        ot_audio_fill(a, a->pcm[0]);
+        ot_audio_request(a, 0, a->req[1]);
+    } else if (done1) {
+        WaitIO((struct IORequest *)a->req[1]);
+        a->inflight[1] = 0;
+        ot_audio_fill(a, a->pcm[1]);
+        ot_audio_request(a, 1, a->req[0]);
+    }
+}
+
+static void ot_audio_close(struct AudioState *a)
+{
+    int i;
+    for (i = 0; i < 2; i++) {
+        if (a->req[i] && a->inflight[i]) {
+            if (!CheckIO((struct IORequest *)a->req[i]))
+                AbortIO((struct IORequest *)a->req[i]);
+            WaitIO((struct IORequest *)a->req[i]);
+            a->inflight[i] = 0;
+        }
+    }
+    if (a->req[0] && a->req[0]->ahir_Std.io_Device)
+        CloseDevice((struct IORequest *)a->req[0]);
+    if (a->req[1]) FreeVec(a->req[1]);
+    if (a->req[0]) DeleteIORequest((struct IORequest *)a->req[0]);
+    if (a->port) DeleteMsgPort(a->port);
+    if (a->pcm[0]) FreeVec(a->pcm[0]);
+    memset(a, 0, sizeof(*a));
+}
+
+static int ot_mesh_alloc(struct Mesh *m, GLsizei count, GLenum mode)
+{
+    memset(m, 0, sizeof(*m));
+    m->v = (GLfloat *)AllocVec((ULONG)count * 3UL * sizeof(GLfloat), MEMF_ANY | MEMF_CLEAR);
+    m->c = (GLfloat *)AllocVec((ULONG)count * 4UL * sizeof(GLfloat), MEMF_ANY | MEMF_CLEAR);
+    if (!m->v || !m->c) {
+        if (m->v) FreeVec(m->v);
+        if (m->c) FreeVec(m->c);
+        memset(m, 0, sizeof(*m));
+        return 0;
+    }
+    m->count = count;
+    m->mode = mode;
+    return 1;
+}
+
+static void ot_mesh_free(struct Mesh *m)
+{
+    if (m->v) FreeVec(m->v);
+    if (m->c) FreeVec(m->c);
+    memset(m, 0, sizeof(*m));
+}
+
+static void ot_put_vertex(struct Mesh *m, int n, float x, float y, float z,
+                          float r, float g, float b, float a)
+{
+    m->v[n * 3 + 0] = x;
+    m->v[n * 3 + 1] = y;
+    m->v[n * 3 + 2] = z;
+    m->c[n * 4 + 0] = r;
+    m->c[n * 4 + 1] = g;
+    m->c[n * 4 + 2] = b;
+    m->c[n * 4 + 3] = a;
+}
+
+static int ot_build_ground(struct Mesh *m)
+{
+    const int nx = 24, nz = 32;
+    const float x0 = -18.0f, z0 = -44.0f, cell = 1.5f;
+    int x, z, n = 0;
+    if (!ot_mesh_alloc(m, nx * nz * 6, GL_TRIANGLES)) return 0;
+    for (z = 0; z < nz; z++) {
+        for (x = 0; x < nx; x++) {
+            float xa = x0 + x * cell, xb = xa + cell;
+            float za = z0 + z * cell, zb = za + cell;
+            float r, g, b;
+            if ((x + z) & 1) { r = 0.43f; g = 0.51f; b = 0.62f; }
+            else             { r = 0.70f; g = 0.69f; b = 0.64f; }
+#define GROUND_VERTEX(px,pz) ot_put_vertex(m, n++, (px), -2.4f, (pz), r, g, b, 1.0f)
+            GROUND_VERTEX(xa, za); GROUND_VERTEX(xb, za); GROUND_VERTEX(xb, zb);
+            GROUND_VERTEX(xa, za); GROUND_VERTEX(xb, zb); GROUND_VERTEX(xa, zb);
+#undef GROUND_VERTEX
+        }
+    }
+    return 1;
+}
+
+static int ot_build_ball(struct Mesh *m)
+{
+    const int slices = 24, stacks = 16;
+    int s, t, n = 0;
+    if (!ot_mesh_alloc(m, slices * stacks * 6, GL_TRIANGLES)) return 0;
+    for (t = 0; t < stacks; t++) {
+        float v0 = (float)t / (float)stacks;
+        float v1 = (float)(t + 1) / (float)stacks;
+        float p0 = (v0 - 0.5f) * OT_PI;
+        float p1 = (v1 - 0.5f) * OT_PI;
+        float y0 = ot_sin(p0), y1 = ot_sin(p1);
+        float rr0 = ot_cos(p0), rr1 = ot_cos(p1);
+        for (s = 0; s < slices; s++) {
+            float u0 = (float)s / (float)slices;
+            float u1 = (float)(s + 1) / (float)slices;
+            float a0 = u0 * OT_TAU, a1 = u1 * OT_TAU;
+            float r, g, b;
+            if (((s / 3) + (t / 2)) & 1) { r = 0.94f; g = 0.12f; b = 0.10f; }
+            else                          { r = 0.94f; g = 0.94f; b = 0.90f; }
+#define BALL_VERTEX(rr,ang,yy) ot_put_vertex(m, n++, (rr) * ot_cos(ang), (yy), (rr) * ot_sin(ang), r, g, b, 1.0f)
+            BALL_VERTEX(rr0, a0, y0); BALL_VERTEX(rr1, a0, y1); BALL_VERTEX(rr1, a1, y1);
+            BALL_VERTEX(rr0, a0, y0); BALL_VERTEX(rr1, a1, y1); BALL_VERTEX(rr0, a1, y0);
+#undef BALL_VERTEX
+        }
+    }
+    return 1;
+}
+
+static int ot_build_stars(struct Mesh *m)
+{
+    const int count = 900;
+    uint32_t rng = 0xC001D00DUL;
+    int i;
+    if (!ot_mesh_alloc(m, count, GL_POINTS)) return 0;
+    for (i = 0; i < count; i++) {
+        float x, y, z, q;
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        x = ((float)(rng & 0xffffU) / 65535.0f - 0.5f) * 70.0f;
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        y = ((float)(rng & 0xffffU) / 65535.0f - 0.5f) * 35.0f;
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        z = -3.0f - (float)(rng & 0xffffU) / 65535.0f * 90.0f;
+        q = 0.45f + (float)((rng >> 24) & 255U) / 510.0f;
+        ot_put_vertex(m, i, x, y, z, q * 0.75f, q * 0.86f, q, 1.0f);
+    }
+    return 1;
+}
+
+static int ot_build_tunnel(struct Mesh *m)
+{
+    const int rings = 48, sides = 24;
+    int r, s, n = 0;
+    if (!ot_mesh_alloc(m, rings * sides * 4, GL_LINES)) return 0;
+    for (r = 0; r < rings; r++) {
+        float z = -5.0f - r * 1.7f;
+        float radius = 5.4f + 0.7f * ot_sin((float)r * 0.37f);
+        for (s = 0; s < sides; s++) {
+            float a0 = (float)s * OT_TAU / (float)sides;
+            float a1 = (float)(s + 1) * OT_TAU / (float)sides;
+            float cr = 0.25f + 0.55f * (float)(s & 3) / 3.0f;
+            float cg = 0.35f + 0.35f * (float)((s + r) & 3) / 3.0f;
+            float cb = 0.75f + 0.20f * (float)(r & 1);
+            ot_put_vertex(m, n++, radius * ot_cos(a0), radius * ot_sin(a0), z, cr, cg, cb, 0.72f);
+            ot_put_vertex(m, n++, radius * ot_cos(a1), radius * ot_sin(a1), z, cr, cg, cb, 0.72f);
+            if (r + 1 < rings) {
+                float z1 = z - 1.7f;
+                float radius1 = 5.4f + 0.7f * ot_sin((float)(r + 1) * 0.37f);
+                ot_put_vertex(m, n++, radius * ot_cos(a0), radius * ot_sin(a0), z, cr, cg, cb, 0.55f);
+                ot_put_vertex(m, n++, radius1 * ot_cos(a0), radius1 * ot_sin(a0), z1, cr, cg, cb, 0.55f);
+            } else {
+                ot_put_vertex(m, n++, radius * ot_cos(a0), radius * ot_sin(a0), z, cr, cg, cb, 0.0f);
+                ot_put_vertex(m, n++, radius * ot_cos(a0), radius * ot_sin(a0), z, cr, cg, cb, 0.0f);
+            }
+        }
+    }
+    m->count = n;
+    return 1;
+}
+
+static void ot_draw_mesh(const struct Mesh *m)
+{
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_COLOR_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 0, m->v);
+    glColorPointer(4, GL_FLOAT, 0, m->c);
+    glDrawArrays(m->mode, 0, m->count);
