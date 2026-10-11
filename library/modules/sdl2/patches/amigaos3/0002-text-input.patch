@@ -185,7 +185,7 @@ index bf5279c2..ba7afc38 100644
                  break;
  
              case IDCMP_MOUSEBUTTONS:
- diff --git a/src/video/amigaos3/SDL_os3video.c b/src/video/amigaos3/SDL_os3video.c
+diff --git a/src/video/amigaos3/SDL_os3video.c b/src/video/amigaos3/SDL_os3video.c
 index b9407b83..a9dd4b59 100644
 --- a/src/video/amigaos3/SDL_os3video.c
 +++ b/src/video/amigaos3/SDL_os3video.c
