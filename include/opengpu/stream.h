@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * OGPU stream v1.2: the bytes every OpenGPU back end receives (DESIGN.md
+ * OGPU stream v1.3: the bytes every OpenGPU back end receives (DESIGN.md
  * section 5). v1.1 added A8 coverage masks for anti-aliased text and clip
  * paths (OpenGfx): the A8 format, MASK, and COMPOSITE's MASK, ADD and IN
  * flags. v1.2 (8 October 2026) adds what SDL 2's renderer and Warp3D need:
@@ -10,7 +10,10 @@
  * formats of real cards' screens, and the 3D range 0x0030-0x003F, whose
  * layouts are in stream3d.h (TRIANGLES serves SDL_RenderGeometry and
  * Warp3D alike). An older back end answers OGPU_NONE to OGPU_Query for
- * anything newer than it, so a program asks before it uses any of them. The 68k's own CPU back end, ACRTG.gpu on the Cradle and
+ * anything newer than it, so a program asks before it uses any of them.
+ * v1.3 (12 October 2026) adds XRGB32, ARGB32's colour without its alpha: a
+ * 32-bit OpenRTG screen's pixels, whose top byte is always 0, so ARGB
+ * pixels reach one through PIXELS on the GPU, not the 68k. The 68k's own CPU back end, ACRTG.gpu on the Cradle and
  * PiStorm.gpu on a spare ARM core all read exactly this, so they draw the
  * same pixels.
  *
@@ -34,7 +37,7 @@
 #define OPENGPU_STREAM_H
 
 #define OGPU_STREAM_VERSION 1
-#define OGPU_STREAM_MINOR   2
+#define OGPU_STREAM_MINOR   3
 
 #define OGPU_HDR(op, words)     (((unsigned long)(op) << 16) | ((unsigned long)(words) & 0xFFFFUL))
 #define OGPU_HDR_OP(w)          ((unsigned)((w) >> 16))
@@ -53,7 +56,12 @@
 #define OGPU_FMT_RGB555         7   /* 2 bytes, high byte first: 0RRRRRGG GGGBBBBB */
 #define OGPU_FMT_RGB555PC       8   /* 2 bytes, low byte first */
 #define OGPU_FMT_BGRA32         9   /* 4 bytes: B, G, R, A */
-#define OGPU_FMT_COUNT          10
+/* v1.3: ARGB32 without the alpha. Every write sets X to 0 and every read
+ * takes the pixel as opaque, so a PIXELS of ARGB32 (or INDEX8) into an
+ * XRGB32 target copies the colour and forces the top byte to 0 (an XRGB32
+ * source's X is cleared too). COPY, which moves raw pixels, keeps them. */
+#define OGPU_FMT_XRGB32         10  /* 4 bytes: X (0), R, G, B */
+#define OGPU_FMT_COUNT          11
 /* 16-18 (Z16, Z32, S8: depth and stencil) are stream3d.h's. */
 
 /* Draw modes, as graphics.library's (JAM1, JAM2, COMPLEMENT, INVERSVID). */

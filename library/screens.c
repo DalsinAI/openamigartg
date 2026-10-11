@@ -416,18 +416,23 @@ static int ogpu_format_of(const struct ortg_bitmap *bm)
 }
 
 /* OGPU_Query's answers, kept: 0 not asked, 1 yes, 2 no (opcodes below 0x40). */
-static UBYTE ogpu_known[0x40][4];
+static UBYTE ogpu_known[0x40][OGPU_FMT_COUNT];
 
-static int ogpu_can(int op, const struct ortg_bitmap *bm)
+static int ogpu_can_fmt(int op, int fmt)
 {
-    int fmt = ogpu_format_of(bm), yes;
-    if (!OpenGPUBase || !fmt || ogpu_off) return 0;
+    int yes;
+    if (!OpenGPUBase || fmt <= 0 || fmt >= OGPU_FMT_COUNT || ogpu_off) return 0;
     if (op < 0x40 && ogpu_known[op][fmt]) return ogpu_known[op][fmt] == 1;
     yes = OGPU_ANSWER(OGPU_Query((ULONG)op, (ULONG)fmt)) != OGPU_NONE;
     /* Ask again until a process has asked: opengpu.library looks for its
      * drivers then, and the answer may change once. */
     if (op < 0x40 && ((struct Task *)FindTask(NULL))->tc_Node.ln_Type == NT_PROCESS) ogpu_known[op][fmt] = yes ? 1 : 2;
     return yes;
+}
+
+static int ogpu_can(int op, const struct ortg_bitmap *bm)
+{
+    return ogpu_can_fmt(op, ogpu_format_of(bm));
 }
 
 static int ogpu_submit_batch(struct OGPUBatch *b)
@@ -504,6 +509,28 @@ int ortg_ogpu_pixels(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
     struct OGPUBatch b;
     if (!ogpu_can(OGPU_OP_PIXELS, bm)) return 0;
     ogpu_begin(&b, stream, bm);
+    ogpu_pixels(&b, (ULONG)src, src_bpr, format, (ULONG)table, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    return ogpu_submit_batch(&b);
+}
+
+/* Whether ARGB colours can reach a 32-bit bitmap through OpenGPU with their
+ * alpha dropped, as the CPU's ortg_encode drops it: stream v1.3's XRGB32. */
+int ortg_ogpu_xrgb(const struct ortg_bitmap *bm)
+{
+    return bm && bm->format == ORTG_ARGB32 && ogpu_can_fmt(OGPU_OP_PIXELS, OGPU_FMT_XRGB32);
+}
+
+/* ortg_ogpu_pixels into a 32-bit bitmap seen as XRGB32: each pixel's colour,
+ * with the top byte 0 whatever the source's alpha (ARGB32 or INDEX8). */
+int ortg_ogpu_pixels_xrgb(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
+                          const void *src, ULONG src_bpr, int format, const void *table)
+{
+    UBYTE stream[ORTG_OGPU_WORDS * 4];
+    struct OGPUBatch b;
+    if (!ortg_ogpu_xrgb(bm)) return 0;
+    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
+    ogpu_surface(&b, 0, (ULONG)bm->mem, bm->stride, bm->width, bm->height, OGPU_FMT_XRGB32);
+    ogpu_target(&b, 0);
     ogpu_pixels(&b, (ULONG)src, src_bpr, format, (ULONG)table, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
     return ogpu_submit_batch(&b);
 }

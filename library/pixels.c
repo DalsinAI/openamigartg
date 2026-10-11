@@ -175,12 +175,15 @@ static LONG src_y(const struct pix_ctx *c, LONG ry) { return c->px->y + (c->dh =
  * bitmap's own pixels; pens and colour tables as INDEX8 on 16 and 32-bit
  * (*table: the pens' colours or the caller's, 0x00RRGGBB, so alpha 0 as
  * ortg_encode gives); ARGB colours on 16-bit (RGB565 keeps the top bits, as
- * ortg_encode does). 32-bit OpenRTG pixels carry alpha 0, and PIXELS would
- * keep an ARGB source's alpha, so ARGB there stays on the CPU. */
-static int ogpu_source(const struct pix_ctx *c, const struct ortg_bitmap *bm, const void **table)
+ * ortg_encode does). 32-bit OpenRTG pixels carry alpha 0, and PIXELS into
+ * ARGB32 would keep an ARGB source's alpha, so there ARGB colours, and
+ * tables with alpha, go to the bitmap seen as XRGB32 (*xrgb 1), which
+ * drops it; a back end without XRGB32 leaves them on the CPU. */
+static int ogpu_source(const struct pix_ctx *c, const struct ortg_bitmap *bm, const void **table, int *xrgb)
 {
     ULONG fmt = c->px->format;
     *table = NULL;
+    *xrgb = 0;
     if (c->dw != c->px->width || c->dh != c->px->height) return 0;
     if (bm->bpp == 1) {
         if (c->mask != 0xFF) return 0;
@@ -189,12 +192,19 @@ static int ogpu_source(const struct pix_ctx *c, const struct ortg_bitmap *bm, co
     if (fmt == ORTG_PIX_RAW) return bm->bpp == 2 ? OGPU_FMT_RGB565 : OGPU_FMT_ARGB32;
     if (fmt == ORTG_PIX_PEN) { *table = ortg_pen_rgb[bm->pal_index]; return OGPU_FMT_INDEX8; }
     if (fmt == ORTG_PIX_INDEX && c->px->ctable) {
-        /* the CPU code drops a colour's top byte; on 32-bit PIXELS would keep it */
-        if (bm->bpp == 4) for (int i = 0; i < 256; i++) if (c->px->ctable[i] >> 24) return 0;
+        /* the CPU code drops a colour's top byte; into ARGB32 PIXELS would keep it */
+        if (bm->bpp == 4) for (int i = 0; i < 256; i++) if (c->px->ctable[i] >> 24) {
+            if (!ortg_ogpu_xrgb(bm)) return 0;
+            *xrgb = 1;
+            break;
+        }
         *table = c->px->ctable;
         return OGPU_FMT_INDEX8;
     }
-    if (bm->bpp == 2 && (fmt == ORTG_PIX_ARGB || fmt == ORTG_PIX_0RGB)) return OGPU_FMT_ARGB32;
+    if (fmt == ORTG_PIX_ARGB || fmt == ORTG_PIX_0RGB) {
+        if (bm->bpp == 2) return OGPU_FMT_ARGB32;
+        if (bm->bpp == 4 && ortg_ogpu_xrgb(bm)) { *xrgb = 1; return OGPU_FMT_ARGB32; }
+    }
     return 0;
 }
 
@@ -202,13 +212,14 @@ static void write_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG 
 {
     struct pix_ctx *c = v;
     ULONG fmt = c->px->format;
-    int of;
+    int of, xrgb;
     const void *table;
     if (bm->bpp != 1 && !c->mask) return;
-    if ((of = ogpu_source(c, bm, &table)) != 0) {
+    if ((of = ogpu_source(c, bm, &table, &xrgb)) != 0) {
         LONG bpp = of == OGPU_FMT_ARGB32 ? 4 : of == OGPU_FMT_RGB565 ? 2 : 1;
         const UBYTE *src = (const UBYTE *)c->px->data + (c->px->y + y0 - dy - c->at_y) * c->px->modulo + (c->px->x + x0 - dx - c->at_x) * bpp;
-        if (ortg_ogpu_pixels(bm, x0, y0, x1, y1, src, (ULONG)c->px->modulo, of, table)) {
+        if (xrgb ? ortg_ogpu_pixels_xrgb(bm, x0, y0, x1, y1, src, (ULONG)c->px->modulo, of, table)
+                 : ortg_ogpu_pixels(bm, x0, y0, x1, y1, src, (ULONG)c->px->modulo, of, table)) {
             ortg_stat(ORTG_STAT_PIXELS, 1, (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1));
             return;
         }
