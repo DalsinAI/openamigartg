@@ -25,7 +25,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 16
+#define LIB_REVISION 17
 
 /* The ACRTG board (amigachrome's common/protocol/acrtg.h): Zorro III,
  * Dalsin (0xDA15; 2011 before 1 October 2026), product 9 (16 MiB) or product 15 (64 MiB, 0.14); the boot ROM page
@@ -39,8 +39,19 @@
 #define ACRTG64_BOARD   0x04000000UL                    /* the 64 MiB board's */
 #define ACRTG_VRAM_OF(size) ((size) - 0x20000UL)        /* ROM page and register page apart */
 #define ACRTG_VRAM      ACRTG_VRAM_OF(ACRTG_BOARD)
-#define ACRTG_MAX_W     1920
+#define ACRTG_MAX_W     1920                            /* before acrtg-v5; from v5 the board's LIMIT says */
 #define ACRTG_MAX_H     1200
+/* acrtg-v5 (0.17, the native screen mode's step 3): read-only registers the host publishes, in the
+ * register page (the board's last 64 KiB): the size the host's window asks for, WANT_GEN up by one at
+ * each new size, the board's largest picture (width << 16 | height), and ASK up by one each time a page
+ * asks the Amiga to follow now. Before v5 they read 0. */
+#define ACRTG_PAGE      0x10000UL
+#define R_VERSION       0x04
+#define R_WANT_W        0xE0
+#define R_WANT_H        0xE4
+#define R_WANT_GEN      0xE8
+#define R_LIMIT         0xEC
+#define R_ASK           0xF0
 
 struct OpenRTGBase {
     struct Library lib;
@@ -51,6 +62,8 @@ struct OpenRTGBase {
     struct ortg_mode_table *table[ORTG_MAX_MONITORS + 1];
     struct Library *gfx;
     int patched;
+    struct ortg_caps caps[ORTG_MAX_MONITORS + 1];       /* what each board shows (0.17: its own, kept for ORTG_SetModeList) */
+    ULONG want_gen[ORTG_MAX_MONITORS + 1];              /* WANT_GEN when the Native modes were last made */
 };
 
 struct ExecBase *SysBase;
@@ -60,7 +73,7 @@ struct ExecBase *SysBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.16.0 (12.10.2026) OpenRTG, Dalsin Limited\r\n";
+static const char lib_id[] = "openrtg.library 0.17.0 (12.10.2026) OpenRTG, Dalsin Limited\r\n";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));
@@ -83,13 +96,14 @@ static BOOL ORTG_BitMapInfo(REG(a0, struct BitMap *bm), REG(a1, struct OpenRTGBi
 static ULONG ORTG_DrawStats(REG(a0, ULONG *counts), REG(d0, ULONG kinds), REG(d1, ULONG flags), REG(a6, struct OpenRTGBase *base));
 static LONG ORTG_WritePixelsAlpha(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(a0, const struct OpenRTGPixels *px), REG(d2, ULONG alpha), REG(a6, struct OpenRTGBase *base));
 static LONG ORTG_PresentVirgl(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(a0, const struct OpenRTGVirglFrame *f), REG(a6, struct OpenRTGBase *base));
+static BOOL ORTG_NativeSize(REG(d0, ULONG monitor), REG(a0, struct OpenRTGNativeSize *out), REG(a6, struct OpenRTGBase *base));
 
 static const APTR lib_vectors[] = {
     (APTR)lib_open, (APTR)lib_close, (APTR)lib_expunge, (APTR)lib_null,
     (APTR)ORTG_MonitorCount, (APTR)ORTG_NextMode, (APTR)ORTG_GetMode,
     (APTR)ORTG_BestMode, (APTR)ORTG_SetModeList, (APTR)ORTG_BoardAddress, (APTR)ORTG_DisplayDatabase, (APTR)ORTG_Screens,
     (APTR)ORTG_WritePixels, (APTR)ORTG_ReadPixels, (APTR)ORTG_FillPixels, (APTR)ORTG_InvertPixels, (APTR)ORTG_BitMapInfo,
-    (APTR)ORTG_DrawStats, (APTR)ORTG_WritePixelsAlpha, (APTR)ORTG_PresentVirgl, (APTR)-1,
+    (APTR)ORTG_DrawStats, (APTR)ORTG_WritePixelsAlpha, (APTR)ORTG_PresentVirgl, (APTR)ORTG_NativeSize, (APTR)-1,
 };
 static const struct { ULONG size; const APTR *vectors; APTR data; APTR init; } lib_inittable = {
     sizeof(struct OpenRTGBase), lib_vectors, NULL, (APTR)lib_init,
@@ -99,8 +113,38 @@ const struct Resident lib_romtag = {
     RTF_AUTOINIT, LIB_VERSION, NT_LIBRARY, 0, (char *)lib_name, (char *)lib_id, (APTR)&lib_inittable,
 };
 
-static const struct ortg_caps acrtg_caps = { ACRTG_VRAM, ACRTG_MAX_W, ACRTG_MAX_H, 7 };
-static const struct ortg_caps acrtg64_caps = { ACRTG_VRAM_OF(ACRTG64_BOARD), ACRTG_MAX_W, ACRTG_MAX_H, 7 };
+/* The library's base, for the display database's patches and OpenRTG's screens, which ask for the
+ * Native modes to be made again when the host has asked for a new size (ortg_native_check). */
+static struct OpenRTGBase *the_base;
+
+static ULONG board_reg(struct OpenRTGBase *base, ULONG n, ULONG off)
+{
+    return *(volatile ULONG *)((UBYTE *)base->board[n]->cd_BoardAddr + base->board_size[n] - ACRTG_PAGE + off);
+}
+
+/* What monitor n's board shows: its video RAM; its largest picture, from LIMIT on acrtg-v5 (0.17) and
+ * 1920 x 1200 before; three formats; and on acrtg-v5 the size the host asks for (WANT_W, WANT_H, 0 when
+ * none is), which the Native modes have. */
+static void board_caps(struct OpenRTGBase *base, ULONG n)
+{
+    struct ortg_caps *c = &base->caps[n];
+    ULONG limit, gen;
+    c->vram_bytes = ACRTG_VRAM_OF(base->board_size[n]);
+    c->max_width = ACRTG_MAX_W; c->max_height = ACRTG_MAX_H;
+    c->formats = 7;
+    c->native = 0; c->native_w = c->native_h = 0;
+    if (board_reg(base, n, R_VERSION) < 5) return;
+    c->native = 1;
+    limit = board_reg(base, n, R_LIMIT);
+    if ((limit >> 16) >= 320 && (limit & 0xFFFF) >= 200) { c->max_width = (UWORD)(limit >> 16); c->max_height = (UWORD)limit; }
+    /* the size and its generation together: read again if the host changed it in between */
+    do {
+        gen = board_reg(base, n, R_WANT_GEN);
+        c->native_w = (UWORD)board_reg(base, n, R_WANT_W);
+        c->native_h = (UWORD)board_reg(base, n, R_WANT_H);
+    } while (gen != board_reg(base, n, R_WANT_GEN));
+    base->want_gen[n] = gen;
+}
 
 static void find_boards(struct OpenRTGBase *base) {
     struct Library *ExpansionBase = OpenLibrary("expansion.library", 37);
@@ -115,12 +159,46 @@ static void find_boards(struct OpenRTGBase *base) {
                 if (n < 1 || n > ORTG_MAX_MONITORS || base->board[n] || !cd->cd_BoardAddr) continue;
                 struct ortg_mode_table *t = AllocVec(sizeof *t, MEMF_ANY | MEMF_CLEAR);
                 if (!t) continue;
-                ortg_build_modes(t, (int)n, p ? &acrtg64_caps : &acrtg_caps, 0);   /* Standard, the default */
-                base->board[n] = cd; base->table[n] = t; base->monitors++;
-                base->board_size[n] = p ? ACRTG64_BOARD : ACRTG_BOARD;
+                base->board[n] = cd; base->board_size[n] = p ? ACRTG64_BOARD : ACRTG_BOARD;
+                board_caps(base, n);
+                ortg_build_modes(t, (int)n, &base->caps[n], 0);   /* Standard, the default */
+                base->table[n] = t; base->monitors++;
             }
         }
     CloseLibrary(ExpansionBase);
+}
+
+/* The Native modes made again when the host has asked for a new size since (WANT_GEN moved): the table
+ * at once, under Forbid, and the display database's records with it. One register read when nothing
+ * changed. 1 when the size changed. Safe from any task; never waits. */
+static int native_refresh(struct OpenRTGBase *base, ULONG n)
+{
+    struct ortg_mode_table *t = n >= 1 && n <= ORTG_MAX_MONITORS ? base->table[n] : NULL;
+    struct ortg_caps *c;
+    ULONG gen, w, h;
+    if (!t || !base->caps[n].native) return 0;
+    if ((gen = board_reg(base, n, R_WANT_GEN)) == base->want_gen[n]) return 0;
+    do {
+        gen = board_reg(base, n, R_WANT_GEN);
+        w = board_reg(base, n, R_WANT_W);
+        h = board_reg(base, n, R_WANT_H);
+    } while (gen != board_reg(base, n, R_WANT_GEN));
+    Forbid();
+    c = &base->caps[n];
+    c->native_w = (UWORD)w; c->native_h = (UWORD)h;
+    ortg_build_modes(t, (int)n, c, t->all);
+    base->want_gen[n] = gen;
+    ortg_displaydb_native(t);
+    Permit();
+    return 1;
+}
+
+void ortg_native_check(int monitor)
+{
+    struct OpenRTGBase *base = the_base;
+    if (!base) return;
+    if (monitor) { native_refresh(base, (ULONG)monitor); return; }
+    for (ULONG n = 1; n <= ORTG_MAX_MONITORS; n++) native_refresh(base, n);
 }
 
 static void free_tables(struct OpenRTGBase *base) {
@@ -136,6 +214,7 @@ static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR 
     base->seglist = seglist;
     base->lib.lib_Revision = LIB_REVISION;
     find_boards(base);
+    the_base = base;
     base->gfx = OpenLibrary("graphics.library", 39);
     return &base->lib;
 }
@@ -157,6 +236,7 @@ static BPTR lib_expunge(REG(a6, struct OpenRTGBase *base))
     if (base->lib.lib_OpenCnt || base->patched) { base->lib.lib_Flags |= LIBF_DELEXP; return 0; }   /* patched: stays */
     BPTR seglist = base->seglist;
     Remove(&base->lib.lib_Node);
+    the_base = NULL;
     free_tables(base);
     FreeMem((UBYTE *)base - base->lib.lib_NegSize, base->lib.lib_NegSize + base->lib.lib_PosSize);
     return seglist;
@@ -178,7 +258,9 @@ static ULONG ORTG_MonitorCount(REG(a6, struct OpenRTGBase *base))
 static ULONG ORTG_NextMode(REG(d0, ULONG monitor), REG(d1, ULONG previous), REG(a6, struct OpenRTGBase *base))
 {
     struct ortg_mode_table *t = table_of(base, monitor);
-    if (!t || !t->count) return 0;
+    if (!t) return 0;
+    if (!previous) native_refresh(base, monitor);       /* a new walk: the Native modes at the size asked for now */
+    if (!t->count) return 0;
     if (!previous) return t->modes[0].mode_id;
     for (int i = 0; i + 1 < t->count; i++)
         if (t->modes[i].mode_id == previous) return t->modes[i + 1].mode_id;
@@ -187,6 +269,7 @@ static ULONG ORTG_NextMode(REG(d0, ULONG monitor), REG(d1, ULONG previous), REG(
 
 static BOOL ORTG_GetMode(REG(d0, ULONG mode_id), REG(a0, struct OpenRTGMode *out), REG(a6, struct OpenRTGBase *base))
 {
+    if (ORTG_IS_NATIVE(mode_id)) native_refresh(base, (mode_id >> 24) & 0x0F);
     for (ULONG n = 1; n <= ORTG_MAX_MONITORS; n++) {
         const struct ortg_mode *m = base->table[n] ? ortg_find_mode(base->table[n], mode_id) : NULL;
         if (!m) continue;
@@ -194,6 +277,7 @@ static BOOL ORTG_GetMode(REG(d0, ULONG mode_id), REG(a0, struct OpenRTGMode *out
             out->mode_id = m->mode_id; out->width = m->width; out->height = m->height;
             out->depth = m->depth; out->format = m->format; out->standard = m->standard;
             for (int i = 0; i < ORTG_NAME_LEN; i++) out->name[i] = m->name[i];
+            out->native = m->native;            /* 0.17: in the struct's last byte, which was padding */
         }
         return TRUE;
     }
@@ -206,13 +290,17 @@ static ULONG ORTG_BestMode(REG(d0, ULONG monitor), REG(d1, ULONG width), REG(d2,
     return t ? ortg_best_mode(t, (int)width, (int)height, (int)depth) : 0;
 }
 
-/* Standard (all = 0) or All (all = 1); the number of modes now listed. */
+/* Standard (all = 0) or All (all = 1); the number of modes now listed. With the monitor's own board's
+ * caps (0.17: before, a 64 MiB board's table was made again with the 16 MiB board's), the Native size
+ * as the host asks for it now. */
 static LONG ORTG_SetModeList(REG(d0, ULONG monitor), REG(d1, ULONG all), REG(a6, struct OpenRTGBase *base))
 {
     struct ortg_mode_table *t = table_of(base, monitor);
     if (!t) return -1;
+    native_refresh(base, monitor);
     Forbid();
-    LONG n = ortg_build_modes(t, (int)monitor, &acrtg_caps, all ? 1 : 0);
+    LONG n = ortg_build_modes(t, (int)monitor, &base->caps[monitor], all ? 1 : 0);
+    ortg_displaydb_native(t);
     Permit();
     return n;
 }
@@ -284,4 +372,34 @@ static LONG ORTG_WritePixelsAlpha(REG(a1, struct RastPort *rp), REG(d0, LONG x),
 static LONG ORTG_PresentVirgl(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(a0, const struct OpenRTGVirglFrame *f), REG(a6, struct OpenRTGBase *base))
 {
     return ortg_present_virgl(rp, x, y, f);
+}
+
+/* ---- the Native size (0.17, the native screen mode's step 3) ---------------------------------------- */
+
+/* What the host asks of monitor n's board: the size its window wants (0 x 0 when none), WANT_GEN, ASK
+ * and the board's largest picture, so OpenBench never reads the board itself. TRUE when the board can
+ * be asked (ACRTG v5 on); FALSE, with everything 0, when it can't or there is no such monitor. The
+ * Native modes are made again first, when the size has changed. */
+static BOOL ORTG_NativeSize(REG(d0, ULONG monitor), REG(a0, struct OpenRTGNativeSize *out), REG(a6, struct OpenRTGBase *base))
+{
+    ULONG gen;
+    struct ortg_mode_table *t = table_of(base, monitor);
+    if (out) {
+        out->width = out->height = 0; out->gen = out->ask = 0;
+        out->limit_width = out->limit_height = 0; out->mode_id = 0;
+    }
+    if (!t || !base->board[monitor] || !base->caps[monitor].native) return FALSE;
+    native_refresh(base, monitor);
+    if (!out) return TRUE;
+    do {
+        gen = board_reg(base, monitor, R_WANT_GEN);
+        out->width = (UWORD)board_reg(base, monitor, R_WANT_W);
+        out->height = (UWORD)board_reg(base, monitor, R_WANT_H);
+    } while (gen != board_reg(base, monitor, R_WANT_GEN));
+    out->gen = gen;
+    out->ask = board_reg(base, monitor, R_ASK);
+    out->limit_width = base->caps[monitor].max_width;
+    out->limit_height = base->caps[monitor].max_height;
+    out->mode_id = ortg_native_id((int)monitor, ORTG_ARGB32);
+    return TRUE;
 }

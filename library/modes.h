@@ -20,12 +20,26 @@
 enum ortg_format { ORTG_CLUT8 = 0, ORTG_RGB16 = 1, ORTG_ARGB32 = 2 };
 #define ORTG_FORMATS 3
 
+/* The Native place (0.17, the native screen mode's step 3): the size the
+ * host's window asks for (ACRTG v5's WANT_W and WANT_H), in 8, 16 and
+ * 32-bit. It is the last place in SIZES, so its ModeIDs are 0x6n221000,
+ * 0x6n221100 and 0x6n221200 for good. */
+#define ORTG_NATIVE_PLACE   0x22
+#define ORTG_IS_NATIVE(id)  ((((id) >> 16) & 0xFFUL) == ORTG_NATIVE_PLACE && ((id) & 0x1000UL))   /* as openrtg.h */
+/* The Native modes always come last in the table, after every other mode,
+ * so the others keep their places when the Native size comes or goes. */
+#define ORTG_NATIVE_MODES 3
+
 /* What a board can show: its video RAM, the largest picture, and which
- * formats (bit n = enum ortg_format n). */
+ * formats (bit n = enum ortg_format n). A board that can be asked for a
+ * size (ACRTG v5 on) sets native; native_w and native_h are the size asked
+ * for, 0 when none is (no Native modes then). */
 struct ortg_caps {
     uint32_t vram_bytes;
     uint16_t max_width, max_height;
     uint8_t  formats;
+    uint8_t  native;
+    uint16_t native_w, native_h;
 };
 
 struct ortg_mode {
@@ -34,15 +48,18 @@ struct ortg_mode {
     uint8_t  depth;                  /* 8, 16 or 32 */
     uint8_t  format;                 /* enum ortg_format */
     uint8_t  standard;               /* 1: in the Standard list */
-    char     name[ORTG_NAME_LEN];    /* "OpenRTG.1: 1920x1080 32-bit" */
+    uint8_t  native;                 /* 1: the Native place, its size the host's */
+    char     name[ORTG_NAME_LEN];    /* "OpenRTG.1: 1920x1080 32-bit", "OpenRTG.1: Native 32-bit" */
 };
 
 struct ortg_mode_table {
     int monitor;                     /* 1 to 4 */
     int all;                         /* 0: Standard (the default), 1: All */
+    int native;                      /* 1: the board can be asked for a size (Native modes may come) */
+    uint16_t max_width, max_height;  /* the board's largest picture, as caps had it */
     int count;                       /* modes offered, in list order */
     struct ortg_mode modes[ORTG_MAX_MODES];
-    int full_count;                  /* every mode the board shows (All) */
+    int full_count;                  /* every mode the board shows (All); the Native ones last */
     struct ortg_mode full[ORTG_MAX_MODES];
 };
 
@@ -61,7 +78,15 @@ const struct ortg_mode *ortg_find_mode(const struct ortg_mode_table *t, uint32_t
 /* BestModeIDA's answer among the listed modes: the smallest that is at
  * least width x height with at least the depth asked for; if none is that
  * big, the largest with that depth; if no mode has that depth, the deepest.
- * 0 when the table is empty. */
+ * Never a Native mode: a program that asks for a size must never get a
+ * screen whose size the host changes (0.17). 0 when the table is empty. */
 uint32_t ortg_best_mode(const struct ortg_mode_table *t, int width, int height, int depth);
+
+/* The ModeID of the Native place in a format; and the slot a mode's display
+ * database record has (0 to ORTG_MAX_MODES - 1): a mode's own place in the
+ * table, but the Native modes' always the last three, so their records stay
+ * where they are while the Native size comes and goes. */
+uint32_t ortg_native_id(int monitor, int format);
+int ortg_record_slot(const struct ortg_mode_table *t, const struct ortg_mode *m);
 
 #endif
