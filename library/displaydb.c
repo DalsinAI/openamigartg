@@ -96,10 +96,15 @@ struct ortg_record {
      * Picasso96's records, 5 Oct 2026): DISP, DIMS, MNTR, NAME, TAG_DONE */
     ULONG data[80];
     const struct ortg_mode *mode;   /* OpenRTG's own, after graphics' fields */
+    ULONG gen;                      /* a Native mode's: native_gen[] when its data was filled (0.17) */
 };
 static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag);
+/* Each monitor's records, one per slot (ortg_record_slot): a mode's place in the table, the Native modes'
+ * the last three (0.17), so a record stays where it is in graphics' tree while the Native size comes,
+ * changes and goes. */
 static struct ortg_record *records[ORTG_MAX_MONITORS + 1];
 static struct ortg_record *monitor_records[ORTG_MAX_MONITORS + 1];
+static ULONG native_gen[ORTG_MAX_MONITORS + 1];   /* up by one each time a monitor's Native modes are made again */
 
 /* graphics' private AddDisplayInfo (LVO -738), as monitor drivers use it */
 static void add_info(APTR record, struct Library *gfx)
@@ -112,37 +117,65 @@ static void add_info(APTR record, struct Library *gfx)
 static struct ortg_record *record_of(const struct ortg_mode *m)
 {
     int n = (int)((m->mode_id >> 24) - 0x60);
-    struct ortg_mode_table *t = tables ? tables[n] : NULL;
-    if (n < 1 || n > ORTG_MAX_MONITORS || !t || !records[n]) return NULL;
-    for (int i = 0; i < t->full_count; i++)
-        if (&t->full[i] == m) {
-            struct ortg_record *r = &records[n][i];
-            r->major = (UWORD)(m->mode_id >> 16); r->minor = (UWORD)m->mode_id;
-            if (r->mode != m) {
-                static const ULONG kinds[] = { DTAG_DISP, DTAG_DIMS, DTAG_MNTR, DTAG_NAME };
-                UBYTE *at = (UBYTE *)r->data;
-                for (int k = 0; k < 4; k++) {
-                    struct QueryHeader *q = (struct QueryHeader *)at;
-                    fill(m, at, sizeof r->data - 8 - (ULONG)(at - (UBYTE *)r->data), kinds[k]);
-                    at += 16 + q->Length * 8;   /* the chunk as its header says */
-                }
-                ((struct TagItem *)at)->ti_Tag = TAG_DONE;
-            }
-            r->tag.ti_Tag = TAG_MORE; r->tag.ti_Data = (ULONG)r->data;
-            r->clip_oscan.MinX = 0; r->clip_oscan.MinY = 0;
-            r->clip_oscan.MaxX = (WORD)(m->width - 1); r->clip_oscan.MaxY = (WORD)(m->height - 1);
-            r->mode = m;
-            return r;
+    struct ortg_mode_table *t = (tables && n >= 1 && n <= ORTG_MAX_MONITORS) ? tables[n] : NULL;
+    int i = t ? ortg_record_slot(t, m) : -1;
+    struct ortg_record *r;
+    if (i < 0 || !records[n]) return NULL;
+    r = &records[n][i];
+    r->major = (UWORD)(m->mode_id >> 16); r->minor = (UWORD)m->mode_id;
+    /* filled once; a Native mode's again when its size has changed (0.17) */
+    if (r->mode != m || (m->native && r->gen != native_gen[n])) {
+        static const ULONG kinds[] = { DTAG_DISP, DTAG_DIMS, DTAG_MNTR, DTAG_NAME };
+        UBYTE *at = (UBYTE *)r->data;
+        for (int k = 0; k < 4; k++) {
+            struct QueryHeader *q = (struct QueryHeader *)at;
+            fill(m, at, sizeof r->data - 8 - (ULONG)(at - (UBYTE *)r->data), kinds[k]);
+            at += 16 + q->Length * 8;   /* the chunk as its header says */
         }
-    return NULL;
+        ((struct TagItem *)at)->ti_Tag = TAG_DONE;
+    }
+    r->tag.ti_Tag = TAG_MORE; r->tag.ti_Data = (ULONG)r->data;
+    r->clip_oscan.MinX = 0; r->clip_oscan.MinY = 0;
+    r->clip_oscan.MaxX = (WORD)(m->width - 1); r->clip_oscan.MaxY = (WORD)(m->height - 1);
+    r->mode = m;
+    r->gen = native_gen[n];
+    return r;
+}
+
+/* A Native slot's record with no Native mode in it (no size asked for, or a format the board lacks): in
+ * graphics' tree under its ModeID all the same, with no data, so graphics finds nothing in it, and
+ * ModeNotAvailable says so (0.17). */
+static void native_record_empty(int n, int format)
+{
+    struct ortg_record *r = &records[n][ORTG_MAX_MODES - ORTG_NATIVE_MODES + format];
+    ULONG id = ortg_native_id(n, format);
+    r->major = (UWORD)(id >> 16); r->minor = (UWORD)id;
+    r->data[0] = TAG_DONE;
+    r->tag.ti_Tag = TAG_MORE; r->tag.ti_Data = (ULONG)r->data;
+    r->clip_oscan.MinX = r->clip_oscan.MinY = r->clip_oscan.MaxX = r->clip_oscan.MaxY = 0;
+    r->mode = NULL;
+}
+
+void ortg_displaydb_native(const struct ortg_mode_table *t)
+{
+    int n = t ? t->monitor : 0, have[ORTG_FORMATS] = { 0, 0, 0 };
+    if (n < 1 || n > ORTG_MAX_MONITORS || !records[n] || !t->native) return;
+    native_gen[n]++;
+    for (int i = 0; i < t->full_count; i++)
+        if (t->full[i].native) { have[t->full[i].format] = 1; record_of(&t->full[i]); }
+    for (int f = 0; f < ORTG_FORMATS; f++)
+        if (!have[f]) native_record_empty(n, f);
 }
 
 static const struct ortg_mode *our_handle(APTR h)
 {
     for (int n = 1; tables && n <= ORTG_MAX_MONITORS; n++) {
         struct ortg_mode_table *t = tables[n];
-        if (t && records[n] && (struct ortg_record *)h >= records[n] && (struct ortg_record *)h < records[n] + t->full_count)
-            return ((struct ortg_record *)h)->mode;
+        if (t && records[n] && (struct ortg_record *)h >= records[n] && (struct ortg_record *)h < records[n] + ORTG_MAX_MODES) {
+            const struct ortg_mode *m = ((struct ortg_record *)h)->mode;
+            /* still the mode in that slot (a Native slot may be empty now) */
+            return m && ortg_record_slot(t, m) == (struct ortg_record *)h - records[n] ? m : NULL;
+        }
     }
     return NULL;
 }
@@ -171,13 +204,25 @@ static ULONG next_patch(REG(d0, ULONG id), REG(a6, struct Library *gfx))
          * OpenRTG LISTDB showed only the first, 320x200) */
         ULONG r = old_next(id, gfx);
         while (db_on && r != NO_ID && table_for(r)) r = old_next(r, gfx);
-        return (r == NO_ID && db_on) ? first_from(1) : r;
+        if (r == NO_ID && db_on) {
+            ortg_native_check(0);           /* OpenRTG's list next: its Native modes at the size asked for now (0.17) */
+            return first_from(1);
+        }
+        return r;
     }
+}
+
+/* A Native ModeID asked about: its mode made again first when the host has asked for a new size (0.17). */
+static void native_first(ULONG id)
+{
+    if (db_on && ORTG_IS_NATIVE(id) && table_for(id)) ortg_native_check((int)((id >> 24) - 0x60));
 }
 
 static APTR find_patch(REG(d0, ULONG id), REG(a6, struct Library *gfx))
 {
-    const struct ortg_mode *m = db_on ? ours(id) : NULL;
+    const struct ortg_mode *m;
+    native_first(id);
+    m = db_on ? ours(id) : NULL;
     struct ortg_record *r = m ? record_of(m) : NULL;
     return r ? (APTR)r : old_find(id, gfx);
 }
@@ -190,9 +235,18 @@ static void header(struct QueryHeader *q, ULONG tag, ULONG id, ULONG size)
     q->Length = (size - sizeof *q + 7) / 8;
 }
 
+/* A Native mode's ticks are those of the board's largest picture, whatever its size of the moment
+ * (0.17): a screen keeps the size it opened at while the host asks for another, and its pointer's
+ * scale must not change under it. */
 static int ticks_of(const struct ortg_mode *m)
 {
-    int side = m->width > m->height ? m->width : m->height, t = side > 0 ? ORTG_MOUSE_LIMIT / side : ORTG_TICKS;
+    int side = m->width > m->height ? m->width : m->height, t;
+    if (m->native) {
+        int n = (int)((m->mode_id >> 24) - 0x60);
+        const struct ortg_mode_table *tb = (tables && n >= 1 && n <= ORTG_MAX_MONITORS) ? tables[n] : NULL;
+        if (tb && tb->max_width && tb->max_height) side = tb->max_width > tb->max_height ? tb->max_width : tb->max_height;
+    }
+    t = side > 0 ? ORTG_MOUSE_LIMIT / side : ORTG_TICKS;
     return t > ORTG_TICKS ? ORTG_TICKS : t < 1 ? 1 : t;
 }
 
@@ -264,7 +318,9 @@ static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag)
 static ULONG data_patch(REG(a0, APTR h), REG(a1, UBYTE *buf), REG(d0, ULONG size), REG(d1, ULONG tag), REG(d2, ULONG id), REG(a6, struct Library *gfx))
 {
     if (db_on) {
-        const struct ortg_mode *m = h ? our_handle(h) : ours(id);
+        const struct ortg_mode *m;
+        if (!h) native_first(id);
+        m = h ? our_handle(h) : ours(id);
         if (m) return fill(m, buf, size, tag);
     }
     return old_data(h, buf, size, tag, id, gfx);
@@ -272,6 +328,7 @@ static ULONG data_patch(REG(a0, APTR h), REG(a1, UBYTE *buf), REG(d0, ULONG size
 
 static ULONG avail_patch(REG(d0, ULONG id), REG(a6, struct Library *gfx))
 {
+    native_first(id);
     if (db_on && table_for(id)) return ours(id) ? 0 : DI_AVAIL_NOMONITOR;
     return old_avail(id, gfx);
 }
@@ -391,8 +448,11 @@ int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
                 monitor_records[n] = AllocVec(sizeof(struct ortg_record) * ORTG_MAX_MODES, MEMF_PUBLIC | MEMF_CLEAR);
             }
         for (int n = 1; n <= ORTG_MAX_MONITORS; n++)
-            if (tables && tables[n] && records[n] && monitor_records[n])
+            if (tables && tables[n] && records[n] && monitor_records[n]) {
                 for (int i = 0; i < tables[n]->full_count; i++) record_of(&tables[n]->full[i]);
+                /* a board that can be asked for a size: its three Native slots, filled or empty (0.17) */
+                if (tables[n]->native) ortg_displaydb_native(tables[n]);
+            }
         Forbid();
         /* in graphics' own display database, as Picasso96's modes are: a
          * record at the top for each upper word of the ModeIDs (AddDisplayInfo
@@ -402,9 +462,14 @@ int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
          * at 0,0 until the records were in the tree) */
         for (int n = 1; n <= ORTG_MAX_MONITORS; n++) {
             int tops = 0;
+            int others;
             if (!tables || !tables[n] || !monitor_records[n] || !records[n]) continue;
-            for (int i = 0; i < tables[n]->full_count; i++) {
-                struct ortg_record *r = &records[n][i], *top = NULL, *last;
+            /* the slots in use: every mode but the Native ones, then the Native slots on a board that can be
+             * asked for a size (0.17), filled or not, so they are in the tree before any size comes */
+            for (others = 0; others < tables[n]->full_count && !tables[n]->full[others].native; others++) ;
+            for (int i = 0; i < others + (tables[n]->native ? ORTG_NATIVE_MODES : 0); i++) {
+                int slot = i < others ? i : ORTG_MAX_MODES - ORTG_NATIVE_MODES + (i - others);
+                struct ortg_record *r = &records[n][slot], *top = NULL, *last;
                 int k;
                 for (k = 0; k < tops; k++)
                     if (monitor_records[n][k].minor == r->major) top = &monitor_records[n][k];
