@@ -408,6 +408,23 @@ to put its patches in.
   host (Team, 12 October 2026: "use opengpu to do the leg work").
   `ortg_ogpu_scale()` in `library/screens.c`, `scaled()` and
   `scaled_source()` in `library/pixels.c`; checked by `OpenRTGScaleExact`.
+- **Native modes (0.17, 12 October 2026; the native screen mode's step 3,
+  amigachrome `Design-Native-Screen-Mode`):** on an ACRTG board of protocol
+  v5 or later, the host's window can ask for the Amiga screen's size
+  (`WANT_W`, `WANT_H`, `WANT_GEN`, `LIMIT`, `ASK`). While a size is asked
+  for, each RTG monitor lists three more modes, last: "OpenRTG.n: Native
+  8-bit", "16-bit" and "32-bit", at place 0x22 of the table, so their
+  ModeIDs (`0x6n221000`, `0x6n221100`, `0x6n221200`) never move. Their
+  size, their display database records and their pointer ticks are made
+  again when `WANT_GEN` moves (one register read when nothing changed). A
+  screen opened on one keeps the size of that moment. `BestModeIDA` never
+  picks one. `ORTG_NativeSize` (LVO -126) gives a program (OpenBench) the
+  size, `WANT_GEN`, `ASK` and the board's limit, so no program reads the
+  board itself. The board's largest picture comes from `LIMIT`, and
+  `ORTG_SetModeList` keeps each board's own video RAM (before, a 64 MiB
+  board's table was made again with the 16 MiB board's). Without a size the
+  table is exactly 0.16's (`tests/modes_golden.c`). `C:OpenRTG NATIVE`
+  shows it all.
 - **Boards:** a small driver interface (find, init, mode, pan, fill, copy,
   template, line, sprite, 3D) with the ACRTG driver built in.
 

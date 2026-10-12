@@ -50,6 +50,7 @@
 #include <openrtg/openrtg.h>
 
 #include "modes.h"
+#include "displaydb.h"
 #include "screens.h"
 #include "opengfx_bridge.h"
 
@@ -1725,6 +1726,7 @@ static const struct ortg_mode *mode_of(ULONG id, int *monitor)
     int n = (int)((id >> 24) - 0x60);
     if (!(id & 0x1000) || (id >> 28) != 6 || n < 1 || n > ORTG_MAX_MONITORS || !tables || !tables[n] || !board[n]) return NULL;
     *monitor = n;
+    if (ORTG_IS_NATIVE(id)) ortg_native_check(n);       /* 0.17: a Native mode at the size asked for now */
     return ortg_find_mode(tables[n], id);
 }
 
@@ -2184,7 +2186,10 @@ static struct Screen *openscreen_patch(REG(a0, struct NewScreen *ns), REG(a1, st
     ULONG id = tag_or(tags, SA_DisplayID, tag_or(ext, SA_DisplayID, ns ? ns->ViewModes : 0));
     const struct ortg_mode *m = NULL;
     int n = (int)((id >> 24) - 0x60);
-    if ((id & 0x1000) && (id >> 28) == 6 && n >= 1 && n <= ORTG_MAX_MONITORS && tables && tables[n]) m = ortg_find_mode(tables[n], id);
+    if ((id & 0x1000) && (id >> 28) == 6 && n >= 1 && n <= ORTG_MAX_MONITORS && tables && tables[n]) {
+        if (ORTG_IS_NATIVE(id)) ortg_native_check(n);   /* 0.17: a Native screen gets the size asked for now, and keeps it */
+        m = ortg_find_mode(tables[n], id);
+    }
     serx("ortg: OpenScreen, mode ", id);
     if (m && m->format == ORTG_CLUT8 && board[n] && !tag_or(tags, SA_BitMap, tag_or(ext, SA_BitMap, 0))) {
         struct ortg_bitmap *o = ortg_alloc(n, m->width, m->height, 1, ORTG_CLUT8);
