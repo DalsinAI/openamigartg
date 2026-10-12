@@ -190,6 +190,49 @@ int main(void)
                (unsigned long long)s.present_rects, (unsigned long long)s.present_pixels, (unsigned long long)s.frame_get_bytes);
         CHECK(s.presents == 2 && s.present_rects == 3 && s.present_pixels == 526 && s.frame_get_bytes == 0, "present counters");
     }
+
+    /* Handles as the Amiga makes them: GLA's resource addresses (sparse,
+     * above 1 MiB). 600 display targets, every other one dropped again;
+     * the rest present and count their GETs as frames read back. */
+    {
+        enum { N = 600, T = 0x60000 };
+        struct acvirgl_stats s0, s1;
+        uint32_t k, bad = 0;
+        acvirgl_stats(v, &s0);
+        for (k = 0; k < N; k += 20) {
+            begin();
+            for (i = k; i < k + 20; i++) {
+                uint32_t a_dt[12] = { 0x40001000u + i * 0x48u, 2, 1, 2 | (1u << 7), 8, 8, 1, 1, 0, 0, 0, 1 };
+                c = cmd(ACV_RES_CREATE, 12, a_dt);
+            }
+            acvirgl_run(v, map, NULL, BLK, at - BLK);
+            for (i = 0, c = BLK; i < 20; i++, c += 14 * 4) if (result(c) != 0) bad++;
+        }
+        CHECK(!bad, "600 resources at Amiga addresses (%u refused)", bad);
+        for (k = 0; k < N; k += 2) {
+            uint32_t h = 0x40001000u + k * 0x48u;
+            begin(); cmd(ACV_RES_UNREF, 1, &h);
+            acvirgl_run(v, map, NULL, BLK, at - BLK);
+        }
+        for (k = 0, bad = 0; k < N; k++) {
+            uint32_t pa[12] = { 1, 0x40001000u + k * 0x48u, 0, 0, T, 8 * 4, OGPU_FMT_XRGB32, (8u << 16) | 8u, 0, 1,
+                                0, (4u << 16) | 4u };
+            int32_t want = k & 1 ? 16 : ACV_ERR_RENDERER;
+            begin(); c = cmd(ACV_PRESENT, 12, pa);
+            acvirgl_run(v, map, NULL, BLK, at - BLK);
+            if (result(c) != want) bad++;
+        }
+        CHECK(!bad, "present by Amiga-address handles: the kept ones draw, the dropped ones refuse (%u wrong)", bad);
+        {
+            uint32_t a_g[14] = { 0x40001000u + 599 * 0x48u, 1, 0, 32, 0, 0, 0, 0, 8, 8, 1, 0x50000, 8 * 8 * 4, ACV_SWAP_NONE };
+            begin(); c = cmd(ACV_GET, 14, a_g);
+            acvirgl_run(v, map, NULL, BLK, at - BLK);
+        }
+        acvirgl_stats(v, &s1);
+        CHECK(result(c) == 0 && s1.frame_get_bytes - s0.frame_get_bytes == 8 * 8 * 4 && s1.presents - s0.presents == N / 2,
+              "a display target's GET counts as a frame read back (%d, %llu bytes, %llu presents)", result(c),
+              (unsigned long long)(s1.frame_get_bytes - s0.frame_get_bytes), (unsigned long long)(s1.presents - s0.presents));
+    }
     acvirgl_destroy(v);
     printf("acvirgl: %d of %d checks passed\n", checks - fails, checks);
     return fails != 0;
