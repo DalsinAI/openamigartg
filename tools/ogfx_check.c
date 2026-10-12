@@ -284,14 +284,18 @@ static void one_template(void)
 static void one_text(void)
 {
     static const char words[] = "OpenGfx inside opengpu.library: one library for all the drawing";
-    LONG n = rnd_in(1, 20), at = rnd_in(0, (LONG)sizeof words - 1 - n), x = rnd_in(0, W - 8 * n > 0 ? W - 8 * n : 0), y = rnd_in(8, H - 2);
+    LONG n = rnd_in(1, 18), at = rnd_in(0, (LONG)sizeof words - 1 - n), x = rnd_in(2, W - 8 * n - 6 > 2 ? W - 8 * n - 6 : 2), y = rnd_in(8, H - 2);
     struct TextExtent te[WAYS], ce;
     ULONG fit[WAYS], len[WAYS], drawn[WAYS];
-    ULONG fg = rnd() & 255, bg = rnd() & 255;
+    ULONG fg = rnd() & 255, bg = rnd() & 255, mode = rnd() & 3 ? JAM2 : rnd() & 7, style = rnd() & 3 ? 0 : rnd() & 7;
     int k = rnd() & 1, i;
-    for (i = 0; i < WAYS; i++) { set_rp(&ways[i].rp[k], fg, bg, JAM2, 0xFF, 0); Move(&ways[i].rp[k], x, y); }
+    for (i = 0; i < WAYS; i++) {
+        set_rp(&ways[i].rp[k], fg, bg, mode, 0xFF, 0);
+        SetSoftStyle(&ways[i].rp[k], style, 0xFF);
+        Move(&ways[i].rp[k], x, y);
+    }
     memset(te, 0, sizeof te); memset(&ce, 0, sizeof ce);
-    sprintf(args, "%ld chars at %ld,%ld", (long)n, (long)x, (long)y);
+    sprintf(args, "%ld chars at %ld,%ld, mode %lu, style %lu", (long)n, (long)x, (long)y, (unsigned long)mode, (unsigned long)style);
     kind = 4;
     ce.te_Width = (WORD)rnd_in(0, 100); ce.te_Height = 20; ce.te_Extent.MinX = 0; ce.te_Extent.MinY = -8;
     ce.te_Extent.MaxX = ce.te_Width; ce.te_Extent.MaxY = 8;
@@ -319,6 +323,7 @@ static void one_text(void)
             fails++;
             if (shown++ < 12) printf("  DIFFERENT: TextLength/TextExtent/TextFit, %s\n", way_name[i]);
         }
+    for (i = 0; i < WAYS; i++) SetSoftStyle(&ways[i].rp[k], 0, 0xFF);
 }
 
 /* ---- the core's calls: through graphics.library (the patches) ---------------- */
