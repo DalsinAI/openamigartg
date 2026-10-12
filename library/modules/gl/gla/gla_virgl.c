@@ -441,7 +441,9 @@ static void gv_flush_frontbuffer(struct virgl_winsys *vws, struct virgl_cmd_buf 
     (void)cb;
     if (!res->dt) return;
     gla_counts.frames++;
-    if ((w->host_flags & ACV_HOST_PRESENT) && p && p->present_virgl && level == 0 && layer == 0) {
+    gla_counts.direct_state = !(w->host_flags & ACV_HOST_PRESENT) ? GLA_DIRECT_NO_HOST
+                            : !p || !p->present_virgl ? GLA_DIRECT_NO_HOOK : GLA_DIRECT_REFUSED;
+    if (gla_counts.direct_state == GLA_DIRECT_REFUSED && level == 0 && layer == 0) {
         struct gla_virgl_frame f;
         long n;
         f.context = CTX_ID;
@@ -453,7 +455,8 @@ static void gv_flush_frontbuffer(struct virgl_winsys *vws, struct virgl_cmd_buf 
         } else {
             f.x0 = 0; f.y0 = 0; f.x1 = (int)res->width; f.y1 = (int)res->height;
         }
-        if ((n = p->present_virgl(p->user, &f)) >= 0) {
+        if ((n = p->present_virgl(p->user, &f)) >= 0) {     /* on -1 the hook may name why (GLA_DIRECT_) */
+            gla_counts.direct_state = GLA_DIRECT_ON;
             gla_counts.direct++;
             gla_counts.direct_pixels += (unsigned long)n;
             return;

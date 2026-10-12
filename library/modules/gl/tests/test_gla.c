@@ -457,7 +457,7 @@ int main(int argc, char **argv)
                 if (c < 990) fails++;
             }
             gla_get_stats(&st, 1);
-            if (!st.frames || st.direct || st.readback != st.frames) {
+            if (!st.frames || st.direct || st.readback != st.frames || st.direct_state != GLA_DIRECT_NO_HOOK) {
                 printf("gla: virgl read back %lu of %lu frames\n", st.readback, st.frames);
                 fails++;
             }
@@ -478,7 +478,7 @@ int main(int argc, char **argv)
                 gla_get_stats(&st, 1);
                 printf("gla: virgl direct: %lu frames, %lu straight in (%lu pixels), %lu read back\n",
                        st.frames, st.direct, st.direct_pixels, st.readback);
-                if (!st.frames || st.direct != st.frames || st.readback) fails++;
+                if (!st.frames || st.direct != st.frames || st.readback || st.direct_state != GLA_DIRECT_ON) fails++;
             }
 #endif
             gla_display_destroy(d);

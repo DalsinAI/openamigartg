@@ -30,6 +30,8 @@
 #include <cybergraphx/cybergraphics.h>
 #include <proto/exec.h>
 #include <proto/graphics.h>
+#include <proto/dos.h>
+#include <dos/var.h>
 #include <proto/cybergraphics.h>
 
 #include <opengpu/opengpu.h>
@@ -83,9 +85,28 @@ static int present_gpu(struct gla_os3_target *t, const struct gla_frame *f)
     return err == OGPU_OK;
 }
 
+/* gla_counts.direct_state into the global variable GLAPresent when it
+ * changes, so a lab can see which way virgl's frames go (GetEnv GLAPresent). */
+static void publish_state(void)
+{
+    static const char *const words[] = {
+        "", "direct: the host writes GL frames straight in",
+        "read back: the runtime's host has no ACV_PRESENT",
+        "read back: the program's present hook has no direct present",
+        "read back: openrtg.library refused the frame (CLUT or planar screen, or no OpenGPU virgl)",
+        "read back: no openrtg.library 0.15 or later",
+        "read back: no RastPort or bitmap to present to" };
+    static int shown = -1;
+    int st = gla_counts.direct_state;
+    if (st == shown || st < 1 || st > GLA_DIRECT_NO_TARGET || !DOSBase) return;
+    shown = st;
+    SetVar((CONST_STRPTR)"GLAPresent", (CONST_STRPTR)words[st], -1, GVF_GLOBAL_ONLY);
+}
+
 static void present(void *user, const struct gla_frame *f)
 {
     struct gla_os3_target *t = user;
+    publish_state();
     if (f->x1 <= f->x0 || f->y1 <= f->y0 || f->format != GLA_ARGB)
         return;
     if (t->bitmap && OpenGPUBase && CyberGfxBase && present_gpu(t, f))
@@ -106,13 +127,28 @@ static long present_virgl(void *user, const struct gla_virgl_frame *f)
     struct gla_os3_target *t = user;
     struct OpenRTGVirglFrame of;
     struct RastPort rp, *r = t->rp;
+    long n;
     if (!gla_openrtg_base) {
-        if (openrtg_tried) return -1;
-        openrtg_tried = 1;
-        if (!(gla_openrtg_base = OpenLibrary((CONST_STRPTR)"openrtg.library", 15))) return -1;
+        /* openrtg.library is version 0 (0.15 is revision 15), so OpenLibrary
+         * can't ask for 0.15: open any, then look at the revision */
+        if (!openrtg_tried) {
+            openrtg_tried = 1;
+            if ((gla_openrtg_base = OpenLibrary((CONST_STRPTR)"openrtg.library", 0)) != NULL
+                && gla_openrtg_base->lib_Version == 0 && gla_openrtg_base->lib_Revision < 15) {
+                CloseLibrary(gla_openrtg_base);
+                gla_openrtg_base = NULL;
+            }
+        }
+        if (!gla_openrtg_base) {
+            gla_counts.direct_state = GLA_DIRECT_NO_LIBRARY;
+            return -1;
+        }
     }
     if (!r) {                           /* a screen of its own: its bitmap, no layer */
-        if (!t->bitmap) return -1;
+        if (!t->bitmap) {
+            gla_counts.direct_state = GLA_DIRECT_NO_TARGET;
+            return -1;
+        }
         InitRastPort(&rp);
         rp.BitMap = t->bitmap;
         r = &rp;
@@ -127,7 +163,12 @@ static long present_virgl(void *user, const struct gla_virgl_frame *f)
     of.damage_w = (UWORD)(f->x1 - f->x0);
     of.damage_h = (UWORD)(f->y1 - f->y0);
     of.flags = 0;                       /* virgl's display targets are top-down, as GLA's frames */
-    return ORTG_PresentVirgl(r, t->left, t->top, &of);
+    n = ORTG_PresentVirgl(r, t->left, t->top, &of);
+    if (n >= 0) {
+        gla_counts.direct_state = GLA_DIRECT_ON;
+        publish_state();
+    }
+    return n;
 }
 
 void gla_os3_present_init(struct gla_present *p, struct gla_os3_target *t)
