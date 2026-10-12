@@ -13,6 +13,11 @@
  *    the screen's locked bitmap, and the CPU is free until the fence. On a
  *    plain 68040 that runs on OpenGPU's CPU back end; on AmigaChrome on the
  *    host's GPU.
+ *  - A frame virgl drew on the host's graphics chip (gla_virgl.c): with
+ *    openrtg.library 0.15, ORTG_PresentVirgl, which hands the host the
+ *    visible rectangles and lets it write the frame straight in (ACV_PRESENT),
+ *    a window's or a screen's alike. Otherwise it is read back and comes
+ *    through one of the two above.
  *  - No RTG (AGA only): not in phase 1. GL there needs a chunky-to-planar
  *    step, which comes with the AGA back end (OpenGPU G5).
  *
@@ -30,12 +35,16 @@
 #include <opengpu/opengpu.h>
 #include <opengpu/build.h>
 #include <proto/opengpu.h>
+#define OPENRTG_BASE_NAME gla_openrtg_base   /* not OpenRTGBase: a program linking this may have its own */
+#include <proto/openrtg.h>
 
 #include "../gla_core.h"
 #include "gla_present_os3.h"
 
 extern struct Library *CyberGfxBase;
 extern struct Library *OpenGPUBase;
+static struct Library *gla_openrtg_base;
+static int openrtg_tried;
 
 /* SURFACE 6 + TARGET 2 + PIXELS 7 + FENCE 2 words, with room to spare. */
 #define BATCH_WORDS 24
@@ -81,14 +90,56 @@ static void present(void *user, const struct gla_frame *f)
         return;
     if (t->bitmap && OpenGPUBase && CyberGfxBase && present_gpu(t, f))
         return;
-    if (CyberGfxBase && t->rp)
+    if (CyberGfxBase && t->rp) {
         WritePixelArray((APTR)f->pixels, f->x0, f->y0, f->stride, t->rp,
                         t->left + f->x0, t->top + f->y0, f->x1 - f->x0, f->y1 - f->y0,
                         RECTFMT_ARGB);
+        gla_counts.wpa_pixels += (unsigned long)(f->x1 - f->x0) * (unsigned long)(f->y1 - f->y0);
+    }
+}
+
+/* openrtg.library walks the RastPort's visible pieces and the host writes
+ * the frame into them; -1 when it can't (no 0.15, a CLUT or planar screen,
+ * a runtime without ACV_PRESENT), and then the frame is read back. */
+static long present_virgl(void *user, const struct gla_virgl_frame *f)
+{
+    struct gla_os3_target *t = user;
+    struct OpenRTGVirglFrame of;
+    struct RastPort rp, *r = t->rp;
+    if (!gla_openrtg_base) {
+        if (openrtg_tried) return -1;
+        openrtg_tried = 1;
+        if (!(gla_openrtg_base = OpenLibrary((CONST_STRPTR)"openrtg.library", 15))) return -1;
+    }
+    if (!r) {                           /* a screen of its own: its bitmap, no layer */
+        if (!t->bitmap) return -1;
+        InitRastPort(&rp);
+        rp.BitMap = t->bitmap;
+        r = &rp;
+    }
+    if (f->w > 0xFFFF || f->h > 0xFFFF || f->x1 <= f->x0 || f->y1 <= f->y0) return -1;
+    of.context = f->context;
+    of.handle = f->handle;
+    of.width = (UWORD)f->w;
+    of.height = (UWORD)f->h;
+    of.damage_x = (WORD)f->x0;
+    of.damage_y = (WORD)f->y0;
+    of.damage_w = (UWORD)(f->x1 - f->x0);
+    of.damage_h = (UWORD)(f->y1 - f->y0);
+    of.flags = 0;                       /* virgl's display targets are top-down, as GLA's frames */
+    return ORTG_PresentVirgl(r, t->left, t->top, &of);
 }
 
 void gla_os3_present_init(struct gla_present *p, struct gla_os3_target *t)
 {
     p->present = present;
+    p->present_virgl = present_virgl;
     p->user = t;
+}
+
+void gla_os3_present_close(void)
+{
+    if (gla_openrtg_base) CloseLibrary(gla_openrtg_base);
+    gla_openrtg_base = NULL;
+    openrtg_tried = 0;
 }

@@ -30,7 +30,11 @@ int acvirgl_run(struct acvirgl *v, uint8_t *(*map)(void *map_user, uint32_t addr
                 uint32_t addr, uint32_t bytes);
 
 /* What it has done, for the runtime's log. */
-struct acvirgl_stats { uint64_t blocks, submits, submit_words, puts, put_bytes, gets, get_bytes, errors; };
+struct acvirgl_stats {
+    uint64_t blocks, submits, submit_words, puts, put_bytes, gets, get_bytes, errors;
+    uint64_t frame_get_bytes;                       /* GETs of display targets: frames read back into Amiga memory */
+    uint64_t presents, present_rects, present_pixels;   /* ACV_PRESENT: frames written straight into a bitmap */
+};
 void acvirgl_stats(const struct acvirgl *v, struct acvirgl_stats *s);
 
 #endif

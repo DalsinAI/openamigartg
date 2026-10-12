@@ -270,6 +270,47 @@ static void t_free(void *u, void *p) { (void)u; (void)p; }
 static unsigned long t_addr(void *u, const void *p) { (void)u; return BASE + (unsigned long)((const unsigned char *)p - arena); }
 static uint8_t *t_map(void *u, uint32_t a, uint32_t len) { (void)u; return a >= BASE && a - BASE <= ARENA && len <= ARENA - (a - BASE) ? arena + (a - BASE) : NULL; }
 static int t_run(void *u, void *block, unsigned long bytes) { (void)u; return acvirgl_run(host, t_map, NULL, (uint32_t)t_addr(NULL, block), (uint32_t)bytes); }
+
+/* The direct present (ACV_PRESENT) as openrtg.library sends it, into an
+ * XRGB32 "screen" in the arena: one rectangle, the frame's changed part. */
+#include "include/opengpu/virgl.h"
+#include "include/opengpu/stream.h"
+static unsigned char *screen;
+static uint32_t be(uint32_t v)
+{
+    const unsigned char b[4] = { (unsigned char)(v >> 24), (unsigned char)(v >> 16), (unsigned char)(v >> 8), (unsigned char)v };
+    uint32_t r;
+    memcpy(&r, b, 4);
+    return r;
+}
+static long present_direct(void *user, const struct gla_virgl_frame *f)
+{
+    static uint32_t *w;
+    unsigned x, y;
+    int32_t r;
+    (void)user;
+    if (!w && !(w = t_alloc(NULL, 16 * 4))) return -1;
+    w[0] = be(ACV_HDR(ACV_PRESENT, 14)); w[1] = 0;
+    w[2] = be((uint32_t)f->context); w[3] = be((uint32_t)f->handle); w[4] = 0;
+    w[5] = 0;                                       /* the frame at the screen's 0, 0 */
+    w[6] = be((uint32_t)t_addr(NULL, screen)); w[7] = be(W * 4); w[8] = be(OGPU_FMT_XRGB32);
+    w[9] = be((W << 16) | H); w[10] = 0; w[11] = be(1);
+    w[12] = be(((uint32_t)f->x0 << 16) | (uint32_t)f->y0);
+    w[13] = be(((uint32_t)(f->x1 - f->x0) << 16) | (uint32_t)(f->y1 - f->y0));
+    if (t_run(NULL, w, 14 * 4)) return -1;
+    r = (int32_t)be(w[1]);
+    if (r < 0) return -1;
+    for (y = 0; y < H; y++)
+        for (x = 0; x < W; x++) {
+            const unsigned char *px = screen + (y * W + x) * 4;
+            if (px[0]) return -1;                   /* X is written 0 */
+            shot[(y * W + x) * 3 + 0] = px[1];
+            shot[(y * W + x) * 3 + 1] = px[2];
+            shot[(y * W + x) * 3 + 2] = px[3];
+        }
+    presents++;
+    return r;
+}
 #endif
 #if defined(GLA_TEST_VIRGL)
 /* The transport: OpenGPU's ring on the Amiga, the host side called directly here. */
@@ -289,9 +330,10 @@ static int virgl_transport(struct gla_virgl_transport *t, char *why, int whylen)
 #endif
 
 /* The three scenes on a display; their hashes in got, pictures in keep if given. */
-static int run_scenes(struct gla_display *d, unsigned long *got, unsigned char (*keep)[W * H * 3], const char *dir, const char *tag)
+static int run_scenes(struct gla_display *d, unsigned long *got, unsigned char (*keep)[W * H * 3], const char *dir, const char *tag,
+                      long (*direct)(void *, const struct gla_virgl_frame *))
 {
-    struct gla_present hook = { present, NULL };
+    struct gla_present hook = { present, NULL, direct };
     int i, fails = 0;
     printf("gla: %s gives GL %d (compat), %d (core), GLES %d\n", gla_display_driver(d),
            gla_display_version(d, GLA_COMPAT), gla_display_version(d, GLA_CORE),
@@ -365,7 +407,7 @@ int main(int argc, char **argv)
         printf("gla: no display\n");
         return 1;
     }
-    if ((r = run_scenes(d, got, soft, dir, "softpipe")) < 0) return 1;
+    if ((r = run_scenes(d, got, soft, dir, "softpipe", NULL)) < 0) return 1;
     fails += r;
     gla_display_destroy(d);
 
@@ -405,14 +447,41 @@ int main(int argc, char **argv)
             printf("gla: virgl: no display\n");
             fails++;
         } else {
-            if ((r = run_scenes(d, got, gpu, dir, "virgl")) < 0) return 1;
+            struct gla_stats st;
+            gla_get_stats(NULL, 1);
+            if ((r = run_scenes(d, got, gpu, dir, "virgl", NULL)) < 0) return 1;
             fails += r;
-            gla_display_destroy(d);
             for (i = 0; i < 3; i++) {
                 int c = closeness(gpu[i], soft[i]);
                 printf("%s: virgl's picture is %d.%d%% softpipe's\n", scenes[i].name, c / 10, c % 10);
                 if (c < 990) fails++;
             }
+            gla_get_stats(&st, 1);
+            if (!st.frames || st.direct || st.readback != st.frames) {
+                printf("gla: virgl read back %lu of %lu frames\n", st.readback, st.frames);
+                fails++;
+            }
+#if !defined(__amigaos__)
+            /* The same scenes again, the host writing each frame straight
+             * into the screen (ACV_PRESENT): the pictures byte for byte the
+             * read-back ones, and nothing read back. */
+            {
+                unsigned long direct[3];
+                if (!(screen = t_alloc(NULL, W * H * 4))) return 1;
+                if ((r = run_scenes(d, direct, NULL, dir, "virgl-direct", present_direct)) < 0) return 1;
+                fails += r;
+                for (i = 0; i < 3; i++)
+                    if (direct[i] != got[i]) {
+                        printf("%s: the direct present's picture %08lx, read back %08lx\n", scenes[i].name, direct[i], got[i]);
+                        fails++;
+                    }
+                gla_get_stats(&st, 1);
+                printf("gla: virgl direct: %lu frames, %lu straight in (%lu pixels), %lu read back\n",
+                       st.frames, st.direct, st.direct_pixels, st.readback);
+                if (!st.frames || st.direct != st.frames || st.readback) fails++;
+            }
+#endif
+            gla_display_destroy(d);
         }
     }
 #endif

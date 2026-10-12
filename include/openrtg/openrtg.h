@@ -56,6 +56,20 @@ struct OpenRTGBitMapInfo {
     unsigned char  pad;
 };
 
+/* A frame the host's GPU rendered through ACVirgl, for ORTG_PresentVirgl
+ * (0.15). The host copies the resource's damage box straight into the
+ * window's visible rectangles (ACV_PRESENT); nothing passes through the
+ * 68k's memory twice. The 68k still decides where, and what is visible. */
+struct OpenRTGVirglFrame {
+    unsigned long  context;         /* ACVirgl context of the resource */
+    unsigned long  handle;          /* the resource (its colour buffer) */
+    unsigned short width, height;   /* of the resource */
+    short          damage_x, damage_y;  /* the part that changed, in the resource; */
+    unsigned short damage_w, damage_h;  /* 0 by 0: all of it */
+    unsigned long  flags;           /* ORTG_VIRGL_FLIP_Y: row 0 is the bottom (GL) */
+};
+#define ORTG_VIRGL_FLIP_Y       1
+
 /* ORTG_DrawStats (0.11): how OpenRTG drew on its bitmaps, by kind of
  * drawing, since it started or was last reset. Each kind has four counts:
  * pieces OpenGPU drew, pieces the CPU drew, and the pixels of each. A piece
@@ -86,9 +100,10 @@ struct OpenRTGBitMapInfo {
 #define ORTG_STAT_BLIT_PLANAR   17  /* blits from or to a planar bitmap */
 #define ORTG_STAT_BLIT_CONVERT  18  /* copies between OpenRTG bitmaps of two formats */
 #define ORTG_STAT_BLIT_MASKED   19  /* blits through a mask (BltMaskBitMapRastPort) */
-#define ORTG_STAT_COUNT         20
+#define ORTG_STAT_VIRGL         20  /* ORTG_PresentVirgl: GL frames the host wrote straight in (0.15) */
+#define ORTG_STAT_COUNT         21
 #define ORTG_STAT_NAMES { "fill", "invert", "pattern", "template", "copy", "blit", "scroll", "setrast", "line", \
     "pixel", "chunky", "chunky read", "pixels", "pixels read", "pixels fill", "pixels invert", "alpha", \
-    "blit planar", "blit convert", "blit masked" }
+    "blit planar", "blit convert", "blit masked", "virgl" }
 
 #endif

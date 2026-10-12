@@ -46,6 +46,7 @@
 #include <proto/utility.h>
 #include <proto/opengpu.h>
 #include <opengpu/build.h>
+#include <opengpu/virgl.h>
 #include <openrtg/openrtg.h>
 
 #include "modes.h"
@@ -716,7 +717,9 @@ static int ogpu_copy_rect(struct ortg_bitmap *src, LONG sx, LONG sy,
 typedef void (*piece_fn)(void *ctx, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy);
 
 /* 0 when the RastPort isn't on an OpenRTG bitmap (the caller goes to graphics). */
-static int pieces(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, piece_fn fn, void *ctx)
+/* finish, when there is one, runs after the last piece and before the
+ * layer is unlocked, so what it sends can't meet a moved window. */
+static int pieces_then(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, piece_fn fn, void (*finish)(void *), void *ctx)
 {
     struct Layer *l = rp->Layer;
     struct ortg_bitmap *scr = ortg_of(rp->BitMap);
@@ -728,6 +731,7 @@ static int pieces(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, piece
         if (x1 >= scr->width) x1 = scr->width - 1;
         if (y1 >= scr->height) y1 = scr->height - 1;
         if (x0 <= x1 && y0 <= y1) fn(ctx, scr, x0, y0, x1, y1, 0, 0);
+        if (finish) finish(ctx);
         return 1;
     }
     ObtainSemaphore(&l->Lock);                    /* LockLayerRom: its argument is in a5 */
@@ -755,8 +759,14 @@ static int pieces(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, piece
             }
         }
     }
+    if (finish) finish(ctx);
     ReleaseSemaphore(&l->Lock);
     return 1;
+}
+
+static int pieces(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, piece_fn fn, void *ctx)
+{
+    return pieces_then(rp, x0, y0, x1, y1, fn, NULL, ctx);
 }
 
 struct ortg_bitmap *ortg_find(struct BitMap *bm) { return ortg_of(bm); }
@@ -764,6 +774,116 @@ struct ortg_bitmap *ortg_find(struct BitMap *bm) { return ortg_of(bm); }
 int ortg_pieces(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, ortg_piece_fn fn, void *ctx)
 {
     return pieces(rp, x0, y0, x1, y1, (piece_fn)fn, ctx);
+}
+
+/* ---- GL frames from virgl, straight into a RastPort (0.15) ------------------------------
+ * The frame's visible pieces become ACV_PRESENT commands, one for each
+ * bitmap they land in, in one ACVirgl block: the host writes the pixels.
+ * The block goes, and its fence passes, before the layer is unlocked
+ * (docs/design/Design-OpenGPU-Virgl-Direct-Present.md in DalsinAI/amigachrome). */
+
+#define VP_FIXED    12                                  /* header, result and ten arguments */
+#define VP_WORDS    (4 * (VP_FIXED + 2 * ACV_PRESENT_MAX))  /* four commands a block */
+
+struct vp_ctx {
+    const struct OpenRTGVirglFrame *f;
+    LONG fx, fy;                /* the RastPort position of the frame's pixel 0, 0 */
+    ULONG *blk;                 /* VP_WORDS, from AllocVec: the host reads it */
+    ULONG words;                /* used */
+    ULONG cmd;                  /* the open command's first word (words when none) */
+    struct ortg_bitmap *bm;     /* ... its target, and the source origin it has */
+    LONG sx, sy;
+    LONG pixels;                /* written, or -1 once anything failed */
+};
+
+/* The open command's rectangle count into its header; it is closed. */
+static void vp_close(struct vp_ctx *v)
+{
+    ULONG n;
+    if (v->cmd >= v->words) return;
+    n = v->blk[v->cmd + 11];
+    v->blk[v->cmd] = ACV_HDR(ACV_PRESENT, VP_FIXED + 2 * n);
+    v->cmd = v->words;
+}
+
+/* The block to the host and back; the pixels it wrote, or -1. */
+static void vp_send(struct vp_ctx *v)
+{
+    UBYTE stream[16 * 4];
+    struct OGPUBatch b;
+    ULONG at, i;
+    vp_close(v);
+    if (!v->words || v->pixels < 0) { v->words = v->cmd = 0; return; }
+    ogpu_batch_init(&b, stream, 16);
+    ogpu_virgl(&b, (ULONG)v->blk, v->words * 4);
+    ogpu_fence(&b, 1);
+    if (!ogpu_submit_batch(&b)) v->pixels = -1;
+    for (at = 0; v->pixels >= 0 && at < v->words; at += ACV_HDR_WORDS(v->blk[at])) {
+        LONG r = (LONG)v->blk[at + 1];
+        if (r < 0) v->pixels = -1;
+        else v->pixels += r;
+    }
+    if (v->pixels >= 0)                             /* counted once the host has drawn them */
+        for (at = 0; at < v->words; at += ACV_HDR_WORDS(v->blk[at]))
+            for (i = 0; i < v->blk[at + 11]; i++) {
+                ULONG wh = v->blk[at + VP_FIXED + 2 * i + 1];
+                ortg_stat(ORTG_STAT_VIRGL, 1, (wh >> 16) * (wh & 0xFFFF));
+            }
+    v->words = v->cmd = 0;
+}
+
+static void vp_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
+{
+    struct vp_ctx *v = c;
+    LONG sx = dx + v->fx, sy = dy + v->fy;
+    ULONG fmt, *w;
+    if (v->pixels < 0) return;
+    fmt = bm->format == ORTG_ARGB32 ? OGPU_FMT_XRGB32 : bm->format == ORTG_RGB16 ? OGPU_FMT_RGB565 : 0;
+    if (!fmt || sx < -32768 || sx > 32767 || sy < -32768 || sy > 32767) { v->pixels = -1; return; }
+    if (v->cmd < v->words && (v->bm != bm || v->sx != sx || v->sy != sy || v->blk[v->cmd + 11] == ACV_PRESENT_MAX))
+        vp_close(v);
+    if (v->cmd >= v->words) {
+        if (v->words + VP_FIXED + 2 * ACV_PRESENT_MAX > VP_WORDS) vp_send(v);
+        if (v->pixels < 0) return;
+        w = v->blk + v->words;
+        v->cmd = v->words;
+        w[0] = ACV_HDR(ACV_PRESENT, VP_FIXED);
+        w[1] = 0;
+        w[2] = v->f->context;
+        w[3] = v->f->handle;
+        w[4] = 0;                                   /* layer */
+        w[5] = OGPU_XY(sx, sy);
+        w[6] = (ULONG)bm->mem;
+        w[7] = bm->stride;
+        w[8] = fmt;
+        w[9] = OGPU_XY(bm->width, bm->height);
+        w[10] = v->f->flags & ORTG_VIRGL_FLIP_Y ? ACV_PRESENT_FLIP_Y : 0;
+        w[11] = 0;
+        v->words += VP_FIXED;
+        v->bm = bm; v->sx = sx; v->sy = sy;
+    }
+    w = v->blk + v->cmd;
+    v->blk[v->words++] = OGPU_XY(x0, y0);
+    v->blk[v->words++] = OGPU_XY(x1 - x0 + 1, y1 - y0 + 1);
+    w[11]++;
+}
+
+static void vp_finish(void *c) { vp_send((struct vp_ctx *)c); }
+
+LONG ortg_present_virgl(struct RastPort *rp, LONG x, LONG y, const struct OpenRTGVirglFrame *f)
+{
+    struct vp_ctx v;
+    LONG dx = 0, dy = 0, dw, dh;
+    if (!rp || !f || !f->width || !f->height || !OpenGPUBase || ogpu_off) return -1;
+    if (OGPU_ANSWER(OGPU_Query(OGPU_OP_VIRGL, 0)) != OGPU_FULL) return -1;
+    dw = f->width; dh = f->height;
+    if (f->damage_w && f->damage_h) { dx = f->damage_x; dy = f->damage_y; dw = f->damage_w; dh = f->damage_h; }
+    v.f = f; v.fx = x; v.fy = y;
+    v.words = v.cmd = 0; v.bm = NULL; v.sx = v.sy = 0; v.pixels = 0;
+    if (!(v.blk = AllocVec(VP_WORDS * 4, MEMF_ANY))) return -1;
+    if (!pieces_then(rp, x + dx, y + dy, x + dx + dw - 1, y + dy + dh - 1, vp_piece, vp_finish, &v)) v.pixels = -1;
+    FreeVec(v.blk);
+    return v.pixels;
 }
 
 /* The palette a RastPort draws with: its layer's screen's, else the screen

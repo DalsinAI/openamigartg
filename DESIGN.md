@@ -735,6 +735,7 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
   - the `gla/` core and the OS 3 presenter;
   - the virgl winsys over `OGPU_OP_VIRGL`.
   - It builds softpipe and virgl. virgl is used when `OGPU_Query(OGPU_OP_VIRGL)` answers "full", softpipe otherwise.
+  - **The direct present** (12 October 2026, design: amigachrome `docs/design/Design-OpenGPU-Virgl-Direct-Present.md`, approved by Dale). A finished virgl frame is no longer read back into Fast RAM and written again. When HELLO's flags carry `ACV_HOST_PRESENT`, the present hook hands openrtg.library 0.15's `ORTG_PresentVirgl` the resource; openrtg.library walks the RastPort's visible pieces under the layer's lock, and sends one ACVirgl block of `ACV_PRESENT` commands (one per target bitmap: the screen, or a smart-refresh backing bitmap) and a fence. The host writes the pixels into each rectangle. A CLUT or planar screen, an older library or an older runtime returns −1, and the frame is read back and shown as before. GLA counts its frames both ways (`gla_get_stats`); openrtg.library counts the pieces under `ORTG_STAT_VIRGL` ("virgl" in `C:OpenRTG STATS`).
   - openamigamesa keeps OpenDemos only, built against `libGL.a`.
 - `modules/common/` (library owner): what a module has in place of libnix's startup (`module_start.S`, `module_rt.c`).
 - `modules/sdl2/` (SDL 2 helper): SDL2.module, with the backends (video on openrtg, render on opengpu, audio on AHI, input, threads) and the SDL build (source fetched pinned).
