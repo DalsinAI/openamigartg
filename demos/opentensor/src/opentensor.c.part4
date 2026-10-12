@@ -1,9 +1,15 @@
+static void ot_render(struct Demo *d, float t)
 {
-    int scene = (int)(t / 12.0f);
-    float local = t - scene * 12.0f;
-    if (scene > 4) { scene = 4; local = t - 48.0f; }
+    float local = 0.0f;
+    int scene = ot_scene_at(t, &local);
+    d->current_scene = scene;
 
-    glClearColor(0.008f, 0.012f, 0.028f, 1.0f);
+    if (scene == 5)
+        glClearColor(0.004f, 0.008f, 0.020f, 1.0f);
+    else if (scene == 8)
+        glClearColor(0.018f, 0.026f, 0.050f, 1.0f);
+    else
+        glClearColor(0.008f, 0.012f, 0.028f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     ot_set_perspective(d);
 
@@ -12,41 +18,60 @@
     case 1: ot_scene_field(d, local); break;
     case 2: ot_scene_boing(d, local); break;
     case 3: ot_scene_tensor(d, local); break;
-    default: ot_scene_final(d, local); break;
+    case 4: ot_scene_final(d, local); break;
+    case 5: ot_scene_timecode(d, local); break;
+    case 6: ot_scene_streams(d, local); break;
+    case 7: ot_scene_form(d, local); break;
+    case 8: ot_scene_breakout(d, local); break;
+    case 9: ot_scene_beyond(d, local); break;
+    default: ot_scene_stack(d, local); break;
     }
     if (d->overlay)
         ot_draw_stats(d);
 }
 
-static int ot_input(struct Demo *d)
+static int ot_input_window(struct Demo *d, struct Window *w)
 {
     struct IntuiMessage *m;
     int quit = 0;
-    if (SetSignal(0, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C)
-        quit = 1;
-    while ((m = (struct IntuiMessage *)GetMsg(d->window->UserPort))) {
+    if (!w) return 0;
+    while ((m = (struct IntuiMessage *)GetMsg(w->UserPort))) {
         ULONG cls = m->Class;
         UWORD code = m->Code;
         if (cls == IDCMP_CLOSEWINDOW || cls == IDCMP_MOUSEBUTTONS)
             quit = 1;
         else if (cls == IDCMP_REFRESHWINDOW) {
-            BeginRefresh(d->window);
-            EndRefresh(d->window, TRUE);
+            BeginRefresh(w);
+            EndRefresh(w, TRUE);
         }
         else if (cls == IDCMP_RAWKEY && !(code & 0x80)) {
             switch (code) {
-            case 0x45: quit = 1; break;                /* Esc */
-            case 0x40:                                /* Space */
+            case 0x45: quit = 1; break;
+            case 0x40:
                 d->paused = !d->paused;
                 if (d->paused) d->pause_started = ot_now();
                 else d->pause_total += ot_now() - d->pause_started;
                 break;
-            case 0x50: d->overlay = !d->overlay; break; /* F1 */
+            case 0x50: d->overlay = !d->overlay; break;
+            case 0x51: d->jump_request = ot_scene_start(d->current_scene + 1); break;
+            case 0x52: d->jump_request = ot_scene_start(d->current_scene - 1); break;
+            case 0x53: d->jump_request = ot_scene_start(d->current_scene); break;
             default: break;
             }
         }
         ReplyMsg((struct Message *)m);
     }
+    return quit;
+}
+
+static int ot_input(struct Demo *d)
+{
+    int quit = 0;
+    if (SetSignal(0, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C)
+        quit = 1;
+    quit |= ot_input_window(d, d->window);
+    if (d->breakout_window && d->breakout_window != d->window)
+        quit |= ot_input_window(d, d->breakout_window);
     return quit;
 }
 
@@ -63,13 +88,17 @@ static int ot_open_display(struct Demo *d)
 
     if (d->windowed) {
         d->window = OpenWindowTags(NULL,
-            WA_Title, (ULONG)"OpenTensor: First Light",
+            WA_Title, (ULONG)"OpenTensor: Beyond First Light",
             WA_InnerWidth, d->width, WA_InnerHeight, d->height,
             WA_DragBar, TRUE, WA_DepthGadget, TRUE, WA_CloseGadget, TRUE,
             WA_Activate, TRUE, WA_SizeGadget, FALSE, WA_SimpleRefresh, TRUE,
             WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_MOUSEBUTTONS | IDCMP_REFRESHWINDOW,
             TAG_DONE);
         if (!d->window) return 0;
+        d->width = d->window->Width - d->window->BorderLeft - d->window->BorderRight;
+        d->height = d->window->Height - d->window->BorderTop - d->window->BorderBottom;
+        d->full_width = d->width;
+        d->full_height = d->height;
         d->target.rp = d->window->RPort;
         d->target.bitmap = NULL;
         d->target.left = d->window->BorderLeft;
@@ -95,7 +124,7 @@ static int ot_open_display(struct Demo *d)
         SA_DisplayID, mode, SA_Width, d->width, SA_Height, d->height,
         SA_Depth, open_depth, SA_Quiet, TRUE, SA_ShowTitle, FALSE,
         SA_Type, CUSTOMSCREEN, SA_Exclusive, TRUE,
-        SA_Title, (ULONG)"OpenTensor: First Light", TAG_DONE);
+        SA_Title, (ULONG)"OpenTensor: Beyond First Light", TAG_DONE);
     if (!d->screen) {
         printf("OpenTensor: could not open %dx%dx%d OpenRTG screen\n",
                d->width, d->height, d->depth);
@@ -109,6 +138,8 @@ static int ot_open_display(struct Demo *d)
         WA_IDCMP, IDCMP_RAWKEY | IDCMP_MOUSEBUTTONS | IDCMP_CLOSEWINDOW,
         TAG_DONE);
     if (!d->window) return 0;
+    d->full_width = d->width;
+    d->full_height = d->height;
     d->target.rp = d->window->RPort;
     d->target.bitmap = d->screen->RastPort.BitMap;
     d->target.left = 0;
@@ -119,6 +150,7 @@ static int ot_open_display(struct Demo *d)
 static int ot_open_gl(struct Demo *d)
 {
     struct gla_config cfg = { GLA_COMPAT, 0, 0, 1, 24, 0, 0 };
+    const char *driver;
     gla_os3_present_init(&d->present, &d->target);
     if (!d->cpu) {
         struct gla_virgl_transport t;
@@ -132,9 +164,17 @@ static int ot_open_gl(struct Demo *d)
                                                 d->width, d->height, &d->present) : NULL;
     if (!d->buffer || !gla_make_current(d->context, d->buffer))
         return 0;
+    d->main_buffer = d->buffer;
 
+    driver = gla_display_driver(d->display);
+    if (driver && !strcasecmp(driver, "virgl")) strcpy(d->driver_name, "VIRGL");
+    else if (driver && !strcasecmp(driver, "softpipe")) strcpy(d->driver_name, "SOFTPIPE");
+    else {
+        strncpy(d->driver_name, driver ? driver : "UNKNOWN", sizeof(d->driver_name) - 1);
+        d->driver_name[sizeof(d->driver_name) - 1] = 0;
+    }
     printf("OpenTensor: renderer %s, driver %s, OpenGL %s\n",
-           (const char *)glGetString(GL_RENDERER), gla_display_driver(d->display),
+           (const char *)glGetString(GL_RENDERER), driver,
            (const char *)glGetString(GL_VERSION));
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
@@ -148,6 +188,7 @@ static int ot_open_gl(struct Demo *d)
 static void ot_close(struct Demo *d)
 {
     ot_audio_close(&d->audio);
+    if (d->breakout_active) ot_breakout_close(d);
     if (d->context) gla_make_current(NULL, NULL);
     if (d->buffer) gla_buffer_destroy(d->buffer);
     if (d->context) gla_context_destroy(d->context);
@@ -164,8 +205,25 @@ static void ot_close(struct Demo *d)
 
 static void ot_usage(void)
 {
-    printf("OpenTensor [CPU] [WINDOW] [W n] [H n] [DEPTH 16|32] [SECONDS n] [NOAUDIO] [NOVSYNC]\n");
-    printf("  Esc or mouse exits; Space pauses; F1 toggles the diagnostic overlay.\n");
+    printf("OpenTensor [CPU] [WINDOW] [W n] [H n] [DEPTH 16|32] [START seconds] [SECONDS n] [NOAUDIO] [NOVSYNC]\n");
+    printf("  Esc or mouse exits; Space pauses; F1 overlay; F2/F3 next/previous; F4 restarts scene.\n");
+}
+
+static void ot_seek(struct Demo *d, float where, double now)
+{
+    while (where < 0.0f) where += OT_SEQUENCE_SECONDS;
+    while (where >= OT_SEQUENCE_SECONDS) where -= OT_SEQUENCE_SECONDS;
+    if (d->breakout_active) ot_breakout_close(d);
+    d->start_offset = where;
+    d->start_time = now;
+    d->pause_total = 0.0;
+    d->paused = 0;
+    if (d->audio.ready) {
+        ot_audio_close(&d->audio);
+        if (!d->noaudio)
+            ot_audio_open(&d->audio, (uint64_t)(where * (float)OT_AUDIO_RATE));
+    }
+    d->jump_request = OT_JUMP_NONE;
 }
 
 int main(int argc, char **argv)
@@ -178,6 +236,7 @@ int main(int argc, char **argv)
     d.depth = 32;
     d.vsync = 1;
     d.overlay = 1;
+    d.jump_request = OT_JUMP_NONE;
 
     for (i = 1; i < argc; i++) {
         if (!strcasecmp(argv[i], "CPU")) d.cpu = 1;
@@ -187,6 +246,7 @@ int main(int argc, char **argv)
         else if (!strcasecmp(argv[i], "W") && i + 1 < argc) d.width = atoi(argv[++i]);
         else if (!strcasecmp(argv[i], "H") && i + 1 < argc) d.height = atoi(argv[++i]);
         else if (!strcasecmp(argv[i], "DEPTH") && i + 1 < argc) d.depth = atoi(argv[++i]);
+        else if (!strcasecmp(argv[i], "START") && i + 1 < argc) d.start_offset = (float)atof(argv[++i]);
         else if (!strcasecmp(argv[i], "SECONDS") && i + 1 < argc) d.seconds = atoi(argv[++i]);
         else if (!strcasecmp(argv[i], "HELP") || !strcmp(argv[i], "?")) { ot_usage(); return 0; }
         else { printf("OpenTensor: unknown option %s\n", argv[i]); ot_usage(); return RETURN_WARN; }
@@ -194,6 +254,8 @@ int main(int argc, char **argv)
     d.width = ot_clampi(d.width, 320, 1920);
     d.height = ot_clampi(d.height, 200, 1080);
     d.depth = d.depth <= 16 ? 16 : 32;
+    while (d.start_offset < 0.0f) d.start_offset += OT_SEQUENCE_SECONDS;
+    while (d.start_offset >= OT_SEQUENCE_SECONDS) d.start_offset -= OT_SEQUENCE_SECONDS;
 
     if (!ot_build_ground(&d.ground) || !ot_build_ball(&d.ball) ||
         !ot_build_stars(&d.stars) || !ot_build_tunnel(&d.tunnel)) {
@@ -210,26 +272,42 @@ int main(int argc, char **argv)
         ot_close(&d);
         return RETURN_FAIL;
     }
-    if (!d.noaudio && !ot_audio_open(&d.audio)) {
+
+    ot_render(&d, d.start_offset);
+    gla_swap(d.context, d.buffer);
+    ot_render(&d, d.start_offset + 0.02f);
+    gla_swap(d.context, d.buffer);
+
+    if (!d.noaudio && !ot_audio_open(&d.audio,
+            (uint64_t)(d.start_offset * (float)OT_AUDIO_RATE))) {
         printf("OpenTensor: AHI could not start; continuing silently\n");
         memset(&d.audio, 0, sizeof(d.audio));
     }
 
-    printf("OpenTensor: %dx%dx%d %s, AHI %s\n",
+    printf("OpenTensor: %dx%dx%d %s, AHI %s, sequence %.0f seconds\n",
            d.width, d.height, d.depth,
            d.windowed ? "windowed compatibility" : "full-screen OpenRTG direct",
-           d.audio.ready ? "44.1 kHz stereo" : "off");
+           d.audio.ready ? "44.1 kHz stereo" : "off",
+           OT_SEQUENCE_SECONDS);
     d.start_time = d.fps_mark = ot_now();
 
     while (!quit) {
         double now = ot_now();
         double elapsed = now - d.start_time - d.pause_total;
-        float sequence;
+        float sequence = d.start_offset + (float)elapsed;
+        float local;
         ot_audio_pump(&d.audio);
         quit = ot_input(&d);
+        if (d.jump_request != OT_JUMP_NONE) {
+            ot_seek(&d, d.jump_request, now);
+            elapsed = 0.0;
+            sequence = d.start_offset;
+        }
+        while (sequence >= OT_SEQUENCE_SECONDS) sequence -= OT_SEQUENCE_SECONDS;
+        while (sequence < 0.0f) sequence += OT_SEQUENCE_SECONDS;
+        ot_scene_at(sequence, &local);
+        ot_breakout_update(&d, sequence, local);
         if (!d.paused) {
-            sequence = (float)elapsed;
-            while (sequence >= OT_SEQUENCE_SECONDS) sequence -= OT_SEQUENCE_SECONDS;
             ot_render(&d, sequence);
             gla_swap(d.context, d.buffer);
             d.fps_frames++;
@@ -246,8 +324,9 @@ int main(int argc, char **argv)
             quit = 1;
     }
 
-    printf("OpenTensor: %.1f fps, %lu AHI underruns\n",
-           d.fps, (unsigned long)d.audio.underruns);
+    printf("OpenTensor: %.1f fps, %lu AHI underruns, final scene %s\n",
+           d.fps, (unsigned long)d.audio.underruns,
+           ot_scene_name(d.current_scene));
     ot_close(&d);
     return RETURN_OK;
 }
