@@ -68,6 +68,18 @@ struct gla_stats {
     unsigned long wpa_pixels;       /* frame pixels drawn with WritePixelArray (OS 3.2) */
     unsigned long fences;           /* request blocks waited for (OS 3.2's transport) */
     unsigned long fence_wait_us;    /* ... and the time spent waiting, when it can be timed */
+    int direct_state;               /* GLA_DIRECT_: the last frame's way, and why not straight in */
+};
+/* gla_stats' direct_state. On OS 3.2 the GL module also keeps it in the
+ * global variable GLAPresent (GetEnv GLAPresent), in words. */
+enum {
+    GLA_DIRECT_UNKNOWN = 0,         /* no virgl frame yet */
+    GLA_DIRECT_ON = 1,              /* written straight in by the host */
+    GLA_DIRECT_NO_HOST = 2,         /* the host has no ACV_PRESENT (HELLO's flags) */
+    GLA_DIRECT_NO_HOOK = 3,         /* the present hook has no present_virgl */
+    GLA_DIRECT_REFUSED = 4,         /* present_virgl said no (openrtg.library's -1) */
+    GLA_DIRECT_NO_LIBRARY = 5,      /* OS 3.2: no openrtg.library 0.15 or later */
+    GLA_DIRECT_NO_TARGET = 6        /* OS 3.2: neither a RastPort nor a bitmap to present to */
 };
 /* The counts into s (when s isn't 0); reset puts them back to 0. */
 void gla_get_stats(struct gla_stats *s, int reset);
