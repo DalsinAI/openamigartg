@@ -639,6 +639,14 @@ OGFX_CALL void do_scroll(struct ogfx_state *st, struct GfxBase *gfx, struct Rast
             return;
     }
 
+    /* in a layer, the core where it takes the layer and the call (it
+     * returns 0 for a call graphics.library must make); unlayered, the
+     * leaf, which already matched graphics.library */
+    if (st->enabled && rp && rp->Layer && ogfx_rp_takes_copy(rp) && core_begin(st, gfx, rp, 0)) {
+        LONG done = ogfx_rp_ScrollRaster(rp, dx, dy, x0, y0, x1, y1);
+        core_end(gfx, rp);
+        if (done) return;
+    }
     if (st->enabled && try_planar_scroll(st, gfx, rp, dx, dy, x0, y0, x1, y1))
         return;
 
@@ -859,6 +867,28 @@ OGFX_CALL void do_clipblit(struct ogfx_state *st, struct GfxBase *gfx, struct Ra
         r.src_rp = srp; r.sx = (WORD)sx; r.sy = (WORD)sy; r.rp = rp; r.dx = (WORD)dx; r.dy = (WORD)dy;
         r.width = (WORD)w; r.height = (WORD)h; r.minterm = (UBYTE)minterm;
         if (st->provider.clipblit(st->provider.v1.userdata, &r)) return;
+    }
+    /* the core, with both RastPorts' layers locked, when it takes both (a
+     * smart refresh layer with no clip region, or none) and their bitmaps
+     * are standard planar ones that are one bitmap or don't share planes;
+     * it returns 0 for a call graphics.library must make */
+    if (st->enabled && srp && rp && srp->BitMap && rp->BitMap && ogfx_rp_takes_copy(srp) && ogfx_rp_takes_copy(rp) &&
+        core_planar(gfx, srp->BitMap) &&
+        !planar_bitmaps_alias(srp->BitMap, rp->BitMap,
+                              srp->BitMap->Depth < rp->BitMap->Depth ? srp->BitMap->Depth : rp->BitMap->Depth)) {
+        /* two layers lock in address order, so two ClipBlits between the
+         * same layers in opposite directions can't each hold one */
+        struct RastPort *first = srp, *second = rp;
+        LONG done = 0;
+        if (srp->Layer && rp->Layer && (ULONG)rp->Layer < (ULONG)srp->Layer) { first = rp; second = srp; }
+        if (core_begin(st, gfx, first, 0)) {
+            if (core_begin(st, gfx, second, 0)) {
+                done = ogfx_rp_ClipBlit(srp, (WORD)sx, (WORD)sy, rp, (WORD)dx, (WORD)dy, (WORD)w, (WORD)h, (UBYTE)minterm);
+                core_end(gfx, second);
+            }
+            core_end(gfx, first);
+        }
+        if (done) return;
     }
     ((clipblit_fn)original(st, gfx, OGFX_P_CLIPBLIT))(srp, sx, sy, rp, dx, dy, w, h, minterm, gfx);
 }
