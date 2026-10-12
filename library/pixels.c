@@ -225,6 +225,26 @@ static void write_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG 
         }
     }
     ortg_stat(ORTG_STAT_PIXELS, 0, (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1));
+    if (bm->bpp == 4 && (fmt == ORTG_PIX_ARGB || fmt == ORTG_PIX_0RGB)
+        && c->dw == c->px->width && c->dh == c->px->height) {
+        /* ARGB colours 1:1 onto a 32-bit bitmap, the case a GL or SDL frame
+         * in a window takes: each pixel is the source's longword with its
+         * alpha byte cleared, exactly what ortg_encode(src_rgb()) gives,
+         * without a call and a format switch per pixel (11 Oct 2026:
+         * AstroMenace's frames spent about a quarter of the 68k's time here). */
+        LONG sx0 = c->px->x + x0 - dx - c->at_x, n0 = x1 - x0 + 1;
+        for (LONG y = y0; y <= y1; y++) {
+            const UBYTE *row = (const UBYTE *)c->px->data + (c->px->y + y - dy - c->at_y) * c->px->modulo + sx0 * 4;
+            ULONG *d = (ULONG *)(bm->mem + y * bm->stride) + x0;
+            LONG n = n0;
+            if (!((ULONG)row & 1)) {
+                const ULONG *s = (const ULONG *)row;
+                while (n--) *d++ = *s++ & 0x00FFFFFFUL;
+            } else
+                for (; n--; row += 4) *d++ = (ULONG)row[1] << 16 | (ULONG)row[2] << 8 | row[3];
+        }
+        return;
+    }
     for (LONG y = y0; y <= y1; y++) {
         const UBYTE *row = (const UBYTE *)c->px->data + src_y(c, y - dy - c->at_y) * c->px->modulo;
         UBYTE *d = bm->mem + y * bm->stride;
