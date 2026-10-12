@@ -53,9 +53,12 @@ struct vr_api {
                               struct vr_box *box, uint64_t offset, struct iovec *iovec, unsigned int iovec_cnt);
 };
 
-/* What ACV_PRESENT and the counters need of a resource, by handle. */
-struct av_res { uint32_t format, bind, width, height; };
-#define AV_MAX_HANDLES (1u << 20)
+/* What ACV_PRESENT and the counters need of a resource, by handle. On the
+ * Amiga a handle is the address of GLA's resource (gla_virgl.c), so the
+ * handles are sparse 32-bit numbers: a hash table, open addressing,
+ * handle 0 an empty slot. */
+struct av_res { uint32_t handle, format, bind, width, height; };
+#define AV_MAX_RES (1u << 20)               /* resources known at once */
 
 struct acvirgl {
     void *dl;
@@ -63,8 +66,8 @@ struct acvirgl {
     struct vr_callbacks cb;
     uint8_t *tmp;               /* commands and pixels, in the host's order */
     size_t tmp_size;
-    struct av_res *res;         /* by handle; format 0: none */
-    uint32_t res_n;
+    struct av_res *res;         /* the table: res_cap slots, a power of 2 */
+    uint32_t res_cap, res_used;
     struct acvirgl_stats st;
 };
 
@@ -157,18 +160,64 @@ static void av_swap_copy(uint8_t *d, const uint8_t *s, size_t n, uint32_t unit)
 #define AV_BIND_DISPLAY_TARGET (1u << 7)
 #define AV_BIND_SCANOUT        (1u << 18)
 
+static uint32_t av_res_slot(const struct acvirgl *v, uint32_t handle)
+{
+    return (handle * 0x9E3779B1u) >> 7 & (v->res_cap - 1);
+}
+
+/* The resource with this handle, or NULL. */
+static const struct av_res *av_res_find(const struct acvirgl *v, uint32_t handle)
+{
+    uint32_t i;
+    if (!handle || !v->res_cap) return NULL;
+    for (i = av_res_slot(v, handle); v->res[i].handle; i = (i + 1) & (v->res_cap - 1))
+        if (v->res[i].handle == handle) return &v->res[i];
+    return NULL;
+}
+
+static void av_res_put(struct acvirgl *v, const struct av_res *r)
+{
+    uint32_t i = av_res_slot(v, r->handle);
+    while (v->res[i].handle && v->res[i].handle != r->handle) i = (i + 1) & (v->res_cap - 1);
+    if (!v->res[i].handle) v->res_used++;
+    v->res[i] = *r;
+}
+
 static void av_res_set(struct acvirgl *v, uint32_t handle, const struct av_res *r)
 {
-    if (handle >= AV_MAX_HANDLES) return;           /* ACV_PRESENT then says no for it */
-    if (handle >= v->res_n) {
-        uint32_t n = handle + 256 < AV_MAX_HANDLES ? handle + 256 : AV_MAX_HANDLES;
-        struct av_res *p = realloc(v->res, (size_t)n * sizeof *p);
-        if (!p) return;
-        memset(p + v->res_n, 0, (size_t)(n - v->res_n) * sizeof *p);
-        v->res = p;
-        v->res_n = n;
+    struct av_res e = *r;
+    if (!handle) return;                            /* ACV_PRESENT then says no for it */
+    if ((v->res_used + 1) * 2 > v->res_cap) {       /* at most half full */
+        struct av_res *old = v->res, *p;
+        uint32_t n = v->res_cap ? v->res_cap * 2 : 256, i, oc = v->res_cap;
+        if (n > 2 * AV_MAX_RES || !(p = calloc(n, sizeof *p))) return;
+        v->res = p; v->res_cap = n; v->res_used = 0;
+        for (i = 0; i < oc; i++) if (old[i].handle) av_res_put(v, &old[i]);
+        free(old);
     }
-    v->res[handle] = *r;
+    e.handle = handle;
+    av_res_put(v, &e);
+}
+
+/* Takes the handle out, moving back the entries after it that its slot
+ * displaced (linear probing's deletion, no tombstones). */
+static void av_res_drop(struct acvirgl *v, uint32_t handle)
+{
+    uint32_t i, j, k, m = v->res_cap - 1;
+    const struct av_res *f = av_res_find(v, handle);
+    if (!f) return;
+    i = (uint32_t)(f - v->res);
+    v->res[i].handle = 0;
+    v->res_used--;
+    for (j = (i + 1) & m; v->res[j].handle; j = (j + 1) & m) {
+        k = av_res_slot(v, v->res[j].handle);
+        /* j's entry can fill the hole at i unless its home k lies cyclically in (i, j] */
+        if ((j > i && (k <= i || k > j)) || (j < i && k <= i && k > j)) {
+            v->res[i] = v->res[j];
+            v->res[j].handle = 0;
+            i = j;
+        }
+    }
 }
 
 /* Where R, G, B and A are in a pixel of a 32-bit colour format, as the
@@ -214,7 +263,7 @@ static int32_t av_present(struct acvirgl *v, uint8_t *(*map)(void *, uint32_t, u
     if (!bpp) return ACV_ERR_BADCMD;
     if (!n || !tw || !th) return 0;
     if (bpr < (uint32_t)tw * bpp || bpr > 0x01000000u) return ACV_ERR_BADCMD;
-    if (handle >= v->res_n || !(res = &v->res[handle])->format || !av_layout(res->format, &lr, &lg, &lb, &la))
+    if (!(res = av_res_find(v, handle)) || !av_layout(res->format, &lr, &lg, &lb, &la))
         return ACV_ERR_RENDERER;
     rw = (int)res->width; rh = (int)res->height;
     if (!(dst = map(mu, addr, bpr * (uint32_t)(th - 1) + (uint32_t)tw * bpp))) return ACV_ERR_NOMAP;
@@ -309,7 +358,10 @@ static int32_t av_transfer(struct acvirgl *v, uint8_t *(*map)(void *, uint32_t, 
         if (v->vr.transfer_read_iov(handle, ctx, level, stride, layer_stride, &box, 0, &iov, 1)) return ACV_ERR_RENDERER;
         av_swap_copy(mem, v->tmp, bytes, unit);
         v->st.gets++; v->st.get_bytes += bytes;
-        if (handle < v->res_n && (v->res[handle].bind & (AV_BIND_DISPLAY_TARGET | AV_BIND_SCANOUT))) v->st.frame_get_bytes += bytes;
+        {
+            const struct av_res *res = av_res_find(v, handle);
+            if (res && (res->bind & (AV_BIND_DISPLAY_TARGET | AV_BIND_SCANOUT))) v->st.frame_get_bytes += bytes;
+        }
     } else {
         av_swap_copy(v->tmp, mem, bytes, unit);
         if (v->vr.transfer_write_iov(handle, ctx, (int)level, stride, layer_stride, &box, 0, &iov, 1)) return ACV_ERR_RENDERER;
@@ -394,7 +446,7 @@ int acvirgl_run(struct acvirgl *v, uint8_t *(*map)(void *, uint32_t, uint32_t), 
         case ACV_RES_UNREF: {
             uint32_t h = av_be32(a);
             v->vr.resource_unref(h);
-            if (h < v->res_n) memset(&v->res[h], 0, sizeof v->res[h]);
+            av_res_drop(v, h);
             break;
         }
         case ACV_ATTACH: v->vr.ctx_attach_resource((int)av_be32(a), (int)av_be32(a + 4)); break;
