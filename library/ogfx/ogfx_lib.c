@@ -34,6 +34,7 @@
 #include <graphics/gfx.h>
 #include <graphics/gfxbase.h>
 #include <graphics/rastport.h>
+#include <graphics/clip.h>
 #include <proto/exec.h>
 #include <proto/graphics.h>
 #include <proto/expansion.h>
@@ -448,23 +449,51 @@ static LONG try_planar_rect(struct ogfx_state *st, struct GfxBase *GfxBase,
 }
 
 /* Whether OpenGfx's own core (openamigagfx library/core, measured byte for
- * byte against OS 3.2's graphics.library) draws on this RastPort: no layer
- * (layered RastPorts stay with graphics.library until the core clips to
- * ClipRects), a standard, non-interleaved planar bitmap of 1 to 8 planes,
- * and planes the CPU may touch now (Fast RAM, or Chip RAM on AmigaChrome
- * after WaitBlit: cpu_may_draw). On a real Amiga, Chip RAM stays with the
- * blitter. */
-static int core_draws(struct ogfx_state *st, struct GfxBase *GfxBase, struct RastPort *rp)
+ * byte against OS 3.2's graphics.library) draws a call on this RastPort,
+ * and if so with its layer locked (core_end unlocks it). It does when every
+ * bitmap the call may touch is a standard, non-interleaved planar bitmap of
+ * 1 to 8 planes the CPU may touch now (Fast RAM, or Chip RAM on AmigaChrome
+ * after WaitBlit: cpu_may_draw): the RastPort's, and in a layer each
+ * covered part a smart refresh layer keeps. Super bitmap layers, and
+ * BltPattern through a mask in a layer (masked), stay with
+ * graphics.library (ogfx_rp_takes). On a real Amiga, Chip RAM stays with
+ * the blitter. */
+static int core_planar(struct GfxBase *GfxBase, struct BitMap *bm)
 {
-    struct BitMap *bm;
     ULONG flags;
 
-    if (!st->enabled || !rp || rp->Layer || !(bm = rp->BitMap) || !bm->Depth || bm->Depth > 8)
+    if (!bm || !bm->Depth || bm->Depth > 8)
         return 0;
     flags = GetBitMapAttr(bm, BMA_FLAGS);
-    if (!(flags & BMF_STANDARD) || (flags & BMF_INTERLEAVED))
+    return (flags & BMF_STANDARD) && !(flags & BMF_INTERLEAVED);
+}
+
+static int core_begin(struct ogfx_state *st, struct GfxBase *GfxBase, struct RastPort *rp, int masked)
+{
+    struct Layer *l;
+    struct ClipRect *cr;
+
+    if (!st->enabled || !rp || !core_planar(GfxBase, rp->BitMap) || !ogfx_rp_takes(rp, masked))
         return 0;
-    return cpu_may_draw(st, GfxBase, bm, NULL);
+    if (!(l = rp->Layer))
+        return cpu_may_draw(st, GfxBase, rp->BitMap, NULL);
+    LockLayerRom(l);
+    if (cpu_may_draw(st, GfxBase, rp->BitMap, NULL)) {
+        for (cr = l->ClipRect; cr; cr = cr->Next)
+            if (cr->obscured && cr->BitMap &&
+                !(core_planar(GfxBase, cr->BitMap) && cpu_may_draw(st, GfxBase, cr->BitMap, NULL)))
+                break;
+        if (!cr)
+            return 1;
+    }
+    UnlockLayerRom(l);
+    return 0;
+}
+
+static void core_end(struct GfxBase *GfxBase, struct RastPort *rp)
+{
+    if (rp->Layer)
+        UnlockLayerRom(rp->Layer);
 }
 
 /* ---- the look (gfx.h): asked first on RectFill and Text ---------------------
@@ -537,8 +566,9 @@ OGFX_CALL void do_rectfill(struct ogfx_state *st, struct GfxBase *gfx, struct Ra
 
     if (st->enabled && try_planar_rect(st, gfx, rp, x0, y0, x1, y1))
         return;
-    if (core_draws(st, gfx, rp)) {     /* an area pattern, or INVERSVID */
+    if (core_begin(st, gfx, rp, 0)) {     /* a layer, an area pattern, or INVERSVID */
         ogfx_rp_RectFill(rp, x0, y0, x1, y1);
+        core_end(gfx, rp);
         return;
     }
 
@@ -724,8 +754,9 @@ OGFX_CALL void do_bltpattern(struct ogfx_state *st, struct GfxBase *gfx, struct 
         r.mask_bpr = (WORD)bpr;
         if (st->provider.bltpattern(st->provider.v1.userdata, &r)) return;
     }
-    if (core_draws(st, gfx, rp)) {
+    if (core_begin(st, gfx, rp, mask != NULL)) {
         ogfx_rp_BltPattern(rp, mask, (WORD)x0, (WORD)y0, (WORD)x1, (WORD)y1, (UWORD)bpr);
+        core_end(gfx, rp);
         return;
     }
     ((bltpattern_fn)original(st, gfx, OGFX_P_BLTPATTERN))(rp, mask, x0, y0, x1, y1, bpr, gfx);
@@ -738,8 +769,9 @@ OGFX_CALL void do_setrast(struct ogfx_state *st, struct GfxBase *gfx, struct Ras
         r.rp = rp; r.pen = (UBYTE)pen;
         if (st->provider.setrast(st->provider.v1.userdata, &r)) return;
     }
-    if (core_draws(st, gfx, rp)) {
+    if (core_begin(st, gfx, rp, 0)) {
         ogfx_rp_SetRast(rp, (UBYTE)pen);
+        core_end(gfx, rp);
         return;
     }
     ((setrast_fn)original(st, gfx, OGFX_P_SETRAST))(rp, pen, gfx);
@@ -752,8 +784,9 @@ OGFX_CALL void do_draw(struct ogfx_state *st, struct GfxBase *gfx, struct RastPo
         r.rp = rp; r.x = (WORD)x; r.y = (WORD)y;
         if (st->provider.draw(st->provider.v1.userdata, &r)) return;
     }
-    if (core_draws(st, gfx, rp)) {
+    if (core_begin(st, gfx, rp, 0)) {
         ogfx_rp_Draw(rp, (WORD)x, (WORD)y);
+        core_end(gfx, rp);
         return;
     }
     ((draw_fn)original(st, gfx, OGFX_P_DRAW))(rp, x, y, gfx);
@@ -766,8 +799,9 @@ OGFX_CALL void do_polydraw(struct ogfx_state *st, struct GfxBase *gfx, struct Ra
         r.rp = rp; r.count = (WORD)n; r.array = xy;
         if (st->provider.polydraw(st->provider.v1.userdata, &r)) return;
     }
-    if (core_draws(st, gfx, rp)) {
+    if (core_begin(st, gfx, rp, 0)) {
         ogfx_rp_PolyDraw(rp, (WORD)n, xy);
+        core_end(gfx, rp);
         return;
     }
     ((polydraw_fn)original(st, gfx, OGFX_P_POLYDRAW))(rp, n, xy, gfx);
@@ -781,8 +815,11 @@ OGFX_CALL LONG do_pixel(struct ogfx_state *st, struct GfxBase *gfx, int p, struc
         r.rp = rp; r.x = (WORD)x; r.y = (WORD)y; r.result = 0;
         if (fn(st->provider.v1.userdata, &r)) return r.result;
     }
-    if (core_draws(st, gfx, rp))
-        return p == OGFX_P_WRITEPIXEL ? ogfx_rp_WritePixel(rp, (WORD)x, (WORD)y) : ogfx_rp_ReadPixel(rp, (WORD)x, (WORD)y);
+    if (core_begin(st, gfx, rp, 0)) {
+        LONG r = p == OGFX_P_WRITEPIXEL ? ogfx_rp_WritePixel(rp, (WORD)x, (WORD)y) : ogfx_rp_ReadPixel(rp, (WORD)x, (WORD)y);
+        core_end(gfx, rp);
+        return r;
+    }
     return ((pixel_fn)original(st, gfx, p))(rp, x, y, gfx);
 }
 
@@ -836,11 +873,14 @@ OGFX_CALL LONG do_array(struct ogfx_state *st, struct GfxBase *gfx, int p, struc
         }
         if (fn(st->provider.v1.userdata, &r)) return r.result;
     }
-    if (!line && core_draws(st, gfx, rp)) {
+    if (!line && core_begin(st, gfx, rp, 0)) {
+        LONG r = 0;
         x0 = (UWORD)x0; y0 = (UWORD)y0; x1 = (UWORD)x1; y1 = (UWORD)y1;
-        if (p == OGFX_P_WCP) { ogfx_rp_WriteChunkyPixels(rp, x0, y0, x1, y1, array, bpr); return 0; }
-        return p == OGFX_P_WPA8 ? ogfx_rp_WritePixelArray8(rp, x0, y0, x1, y1, array, tmp)
-                                : ogfx_rp_ReadPixelArray8(rp, x0, y0, x1, y1, array, tmp);
+        if (p == OGFX_P_WCP) ogfx_rp_WriteChunkyPixels(rp, x0, y0, x1, y1, array, bpr);
+        else r = p == OGFX_P_WPA8 ? ogfx_rp_WritePixelArray8(rp, x0, y0, x1, y1, array, tmp)
+                                  : ogfx_rp_ReadPixelArray8(rp, x0, y0, x1, y1, array, tmp);
+        core_end(gfx, rp);
+        return r;
     }
     if (p == OGFX_P_WCP) {
         ((wcp_fn)original(st, gfx, p))(rp, x0, y0, x1, y1, array, bpr, gfx);
