@@ -12,7 +12,8 @@
  * ScrollRaster, and from 0.8 BltPattern, SetRast, Draw, PolyDraw,
  * WritePixel, ReadPixel, BltBitMapRastPort, BltMaskBitMapRastPort, ClipBlit,
  * WriteChunkyPixels, WritePixelArray8, WritePixelLine8, ReadPixelLine8 and
- * ReadPixelArray8 (22 in all). OpenFont patches nothing: it supplies glyphs, shaping and
+ * ReadPixelArray8, and from 0.14 AreaMove, AreaDraw, AreaEllipse, AreaEnd,
+ * DrawEllipse and EraseRect (28 in all). OpenFont patches nothing: it supplies glyphs, shaping and
  * metrics. OpenRTG and other RTG systems register a provider for these calls
  * instead of installing competing vectors. A call no provider and no leaf
  * takes goes to graphics.library's own code.
@@ -75,6 +76,13 @@ static const WORD lvo_of[OGFX_P_COUNT] = {
     -774,   /* WritePixelLine8 */
     -768,   /* ReadPixelLine8 */
     -780,   /* ReadPixelArray8 */
+    /* 0.14: area fills, ellipses and EraseRect */
+    -252,   /* AreaMove */
+    -258,   /* AreaDraw */
+    -186,   /* AreaEllipse */
+    -264,   /* AreaEnd */
+    -180,   /* DrawEllipse */
+    -810,   /* EraseRect */
 };
 
 static const char gfx_name[] = "graphics.library";
@@ -932,6 +940,66 @@ OGFX_CALL LONG do_array(struct ogfx_state *st, struct GfxBase *gfx, int p, struc
     return ((array8_fn)original(st, gfx, p))(rp, x0, y0, x1, y1, array, tmp, gfx);
 }
 
+/* ---- 0.14: area fills, DrawEllipse and EraseRect through the core -------------
+ * No provider takes these yet. AreaMove, AreaDraw and AreaEllipse only add
+ * to the AreaInfo table, which the core keeps byte for byte as OS 3.2 does
+ * (openamigagfx's AREAPROBE2 and AREAPROBE4), so graphics.library's
+ * AreaEnd takes a table the core built, and the core's AreaEnd one it
+ * built. AreaEnd builds its mask in the RastPort's TmpRas with the CPU:
+ * a blit still using it ends first. */
+typedef LONG (*areapt_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(a6, struct GfxBase *));
+typedef LONG (*areaellipse_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(d2, LONG), REG(d3, LONG),
+                               REG(a6, struct GfxBase *));
+typedef LONG (*areaend_fn)(REG(a1, struct RastPort *), REG(a6, struct GfxBase *));
+typedef void (*rect4_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(d2, LONG), REG(d3, LONG),
+                         REG(a6, struct GfxBase *));
+
+OGFX_CALL LONG do_areapt(struct ogfx_state *st, struct GfxBase *gfx, int p, struct RastPort *rp, LONG x, LONG y)
+{
+    if (st->enabled && rp && rp->AreaInfo)
+        return p == OGFX_P_AREAMOVE ? ogfx_rp_AreaMove(rp, (WORD)x, (WORD)y) : ogfx_rp_AreaDraw(rp, (WORD)x, (WORD)y);
+    return ((areapt_fn)original(st, gfx, p))(rp, x, y, gfx);
+}
+
+OGFX_CALL LONG do_areaellipse(struct ogfx_state *st, struct GfxBase *gfx, struct RastPort *rp, LONG xc, LONG yc, LONG a, LONG b)
+{
+    if (st->enabled && rp && rp->AreaInfo)
+        return ogfx_rp_AreaEllipse(rp, (WORD)xc, (WORD)yc, (WORD)a, (WORD)b);
+    return ((areaellipse_fn)original(st, gfx, OGFX_P_AREAELLIPSE))(rp, xc, yc, a, b, gfx);
+}
+
+OGFX_CALL LONG do_areaend(struct ogfx_state *st, struct GfxBase *GfxBase, struct RastPort *rp)
+{
+    /* the core where it takes the table (not NOCROSSFILL, a pattern it
+     * knows, an outline inside its layer) */
+    if (rp && rp->AreaInfo && core_begin(st, GfxBase, rp, 0)) {
+        if (ogfx_rp_takes_area(rp)) {
+            LONG r;
+            WaitBlit();
+            r = ogfx_rp_AreaEnd(rp);
+            core_end(GfxBase, rp);
+            return r;
+        }
+        core_end(GfxBase, rp);
+    }
+    return ((areaend_fn)original(st, GfxBase, OGFX_P_AREAEND))(rp, GfxBase);
+}
+
+/* DrawEllipse and EraseRect: the core answers 0 for a call graphics.library
+ * must make (DrawEllipse in COMPLEMENT, INVERSVID or with a line pattern;
+ * EraseRect in a layer). */
+OGFX_CALL void do_rect4(struct ogfx_state *st, struct GfxBase *gfx, int p, struct RastPort *rp,
+                        LONG d0, LONG d1, LONG d2, LONG d3)
+{
+    if (core_begin(st, gfx, rp, 0)) {
+        int done = p == OGFX_P_DRAWELLIPSE ? ogfx_rp_DrawEllipse(rp, (WORD)d0, (WORD)d1, (WORD)d2, (WORD)d3)
+                                           : ogfx_rp_EraseRect(rp, (WORD)d0, (WORD)d1, (WORD)d2, (WORD)d3);
+        core_end(gfx, rp);
+        if (done) return;
+    }
+    ((rect4_fn)original(st, gfx, p))(rp, d0, d1, d2, d3, gfx);
+}
+
 /* ---- the patches: thin entries, called through tramp[] with the state in A4 ---- */
 
 static void rectfill_patch(REG(a1, struct RastPort *rp), REG(d0, LONG x0), REG(d1, LONG y0),
@@ -1080,6 +1148,41 @@ static LONG rpl8_patch(REG(a0, struct RastPort *rp), REG(d0, ULONG x0), REG(d1, 
     return do_array(st, gfx, OGFX_P_RPL8, rp, x0, y0, w, 0, a, 0, tmp);
 }
 
+static LONG areamove_patch(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y),
+                           REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_areapt(st, gfx, OGFX_P_AREAMOVE, rp, x, y);
+}
+
+static LONG areadraw_patch(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y),
+                           REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_areapt(st, gfx, OGFX_P_AREADRAW, rp, x, y);
+}
+
+static LONG areaellipse_patch(REG(a1, struct RastPort *rp), REG(d0, LONG xc), REG(d1, LONG yc), REG(d2, LONG a),
+                              REG(d3, LONG b), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_areaellipse(st, gfx, rp, xc, yc, a, b);
+}
+
+static LONG areaend_patch(REG(a1, struct RastPort *rp), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_areaend(st, gfx, rp);
+}
+
+static void drawellipse_patch(REG(a1, struct RastPort *rp), REG(d0, LONG xc), REG(d1, LONG yc), REG(d2, LONG a),
+                              REG(d3, LONG b), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    do_rect4(st, gfx, OGFX_P_DRAWELLIPSE, rp, xc, yc, a, b);
+}
+
+static void eraserect_patch(REG(a1, struct RastPort *rp), REG(d0, LONG x0), REG(d1, LONG y0), REG(d2, LONG x1),
+                            REG(d3, LONG y1), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    do_rect4(st, gfx, OGFX_P_ERASERECT, rp, x0, y0, x1, y1);
+}
+
 /* In OGFX_P_ order. */
 static const APTR patch_entry[OGFX_P_COUNT] = {
     (APTR)text_patch, (APTR)textlength_patch, (APTR)textextent_patch, (APTR)textfit_patch,
@@ -1087,6 +1190,8 @@ static const APTR patch_entry[OGFX_P_COUNT] = {
     (APTR)bltpattern_patch, (APTR)setrast_patch, (APTR)draw_patch, (APTR)polydraw_patch,
     (APTR)writepixel_patch, (APTR)readpixel_patch, (APTR)bltbmrp_patch, (APTR)bltmaskbmrp_patch,
     (APTR)clipblit_patch, (APTR)wcp_patch, (APTR)wpa8_patch, (APTR)wpl8_patch, (APTR)rpl8_patch, (APTR)rpa8_patch,
+    (APTR)areamove_patch, (APTR)areadraw_patch, (APTR)areaellipse_patch, (APTR)areaend_patch,
+    (APTR)drawellipse_patch, (APTR)eraserect_patch,
 };
 
 /* ---- set-up ------------------------------------------------------------------- */
