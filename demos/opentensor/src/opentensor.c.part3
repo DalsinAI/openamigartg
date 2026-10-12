@@ -2,26 +2,36 @@
     glDisableClientState(GL_VERTEX_ARRAY);
 }
 
+static const char *ot_scene_name(int scene);
+
 static const UBYTE *ot_glyph(char ch)
 {
     static const UBYTE A[7]={14,17,17,31,17,17,17};
     static const UBYTE B[7]={30,17,17,30,17,17,30};
+    static const UBYTE C[7]={14,17,16,16,16,17,14};
     static const UBYTE D[7]={30,17,17,17,17,17,30};
     static const UBYTE E[7]={31,16,16,30,16,16,31};
     static const UBYTE F[7]={31,16,16,30,16,16,16};
     static const UBYTE G[7]={14,17,16,23,17,17,14};
     static const UBYTE H[7]={17,17,17,31,17,17,17};
     static const UBYTE I[7]={31,4,4,4,4,4,31};
+    static const UBYTE J[7]={7,2,2,2,18,18,12};
+    static const UBYTE K[7]={17,18,20,24,20,18,17};
     static const UBYTE L[7]={16,16,16,16,16,16,31};
     static const UBYTE M[7]={17,27,21,21,17,17,17};
     static const UBYTE N[7]={17,25,21,19,17,17,17};
     static const UBYTE O[7]={14,17,17,17,17,17,14};
     static const UBYTE P[7]={30,17,17,30,16,16,16};
+    static const UBYTE Q[7]={14,17,17,17,21,18,13};
     static const UBYTE R[7]={30,17,17,30,20,18,17};
     static const UBYTE S[7]={15,16,16,14,1,1,30};
     static const UBYTE T[7]={31,4,4,4,4,4,4};
     static const UBYTE U[7]={17,17,17,17,17,17,14};
+    static const UBYTE V[7]={17,17,17,17,17,10,4};
     static const UBYTE W[7]={17,17,17,21,21,21,10};
+    static const UBYTE X[7]={17,17,10,4,10,17,17};
+    static const UBYTE Y[7]={17,17,10,4,4,4,4};
+    static const UBYTE Z[7]={31,1,2,4,8,16,31};
     static const UBYTE ZERO[7]={14,17,19,21,25,17,14};
     static const UBYTE ONE[7]={4,12,4,4,4,4,14};
     static const UBYTE TWO[7]={14,17,1,2,4,8,31};
@@ -37,12 +47,15 @@ static const UBYTE *ot_glyph(char ch)
     static const UBYTE DASH[7]={0,0,0,31,0,0,0};
     static const UBYTE COLON[7]={0,12,12,0,12,12,0};
     switch (ch) {
-    case 'A': return A; case 'B': return B; case 'D': return D;
-    case 'E': return E; case 'F': return F; case 'G': return G;
-    case 'H': return H; case 'I': return I; case 'L': return L;
+    case 'A': return A; case 'B': return B; case 'C': return C;
+    case 'D': return D; case 'E': return E; case 'F': return F;
+    case 'G': return G; case 'H': return H; case 'I': return I;
+    case 'J': return J; case 'K': return K; case 'L': return L;
     case 'M': return M; case 'N': return N; case 'O': return O;
-    case 'P': return P; case 'R': return R; case 'S': return S;
-    case 'T': return T; case 'U': return U; case 'W': return W;
+    case 'P': return P; case 'Q': return Q; case 'R': return R;
+    case 'S': return S; case 'T': return T; case 'U': return U;
+    case 'V': return V; case 'W': return W; case 'X': return X;
+    case 'Y': return Y; case 'Z': return Z;
     case '0': return ZERO; case '1': return ONE; case '2': return TWO;
     case '3': return THREE; case '4': return FOUR; case '5': return FIVE;
     case '6': return SIX; case '7': return SEVEN; case '8': return EIGHT;
@@ -130,19 +143,27 @@ static void ot_draw_title(struct Demo *d, float local)
 
 static void ot_draw_stats(struct Demo *d)
 {
-    char line[80];
-    float scale = OT_MAX(1.0f, d->width / 640.0f);
+    char line[96];
+    float scale = OT_MAX(0.8f, d->width / 760.0f);
+    float w = 430.0f * scale;
     ot_overlay_begin(d);
-    glColor4f(0.02f, 0.03f, 0.05f, 0.70f);
+    glColor4f(0.02f, 0.03f, 0.05f, 0.74f);
     glBegin(GL_QUADS);
-    glVertex2f(12, 12); glVertex2f(330 * scale, 12);
-    glVertex2f(330 * scale, 98 * scale); glVertex2f(12, 98 * scale);
+    glVertex2f(12, 12); glVertex2f(w, 12);
+    glVertex2f(w, 132 * scale); glVertex2f(12, 132 * scale);
     glEnd();
     ot_draw_text(20, 22, scale, "MESA / AHI / OPENRTG", 0.72f, 0.86f, 1.0f, 1.0f);
-    sprintf(line, "FPS %d", (int)(d->fps + 0.5f));
-    ot_draw_text(20, 44 * scale, scale, line, 0.95f, 0.95f, 0.90f, 1.0f);
-    sprintf(line, "AHI UNDERRUNS %lu", (unsigned long)d->audio.underruns);
-    ot_draw_text(20, 66 * scale, scale, line, 0.95f, 0.45f, 0.30f, 1.0f);
+    sprintf(line, "SCENE %s", ot_scene_name(d->current_scene));
+    ot_draw_text(20, 44 * scale, scale, line, 0.92f, 0.92f, 0.88f, 1.0f);
+    sprintf(line, "FPS %d  AHI UNDERRUNS %lu", (int)(d->fps + 0.5f),
+            (unsigned long)d->audio.underruns);
+    ot_draw_text(20, 66 * scale, scale, line, 0.95f, 0.58f, 0.32f, 1.0f);
+    sprintf(line, "%s / %s", d->driver_name,
+            d->breakout_active || d->windowed ? "COMPAT PRESENT" : "DIRECT PRESENT");
+    ot_draw_text(20, 88 * scale, scale, line, 0.66f, 0.80f, 0.98f, 1.0f);
+    ot_draw_text(20, 110 * scale, scale,
+                 d->breakout_active || d->windowed ? "WINDOW PIXEL PATH ACTIVE" : "SCREEN OWNED GPU PATH",
+                 0.58f, 0.70f, 0.86f, 1.0f);
     ot_overlay_end();
 }
 
@@ -198,7 +219,6 @@ static void ot_scene_boing(struct Demo *d, float t)
     ot_draw_mesh(&d->ball);
     glPopMatrix();
 
-    /* Impact rings: a single immediate-mode batch, not one call per ring. */
     if (bounce < 0.8f) {
         int ring, seg;
         float a = 1.0f - bounce / 0.8f;
@@ -246,5 +266,3 @@ static void ot_scene_final(struct Demo *d, float t)
     ot_draw_mesh(&d->stars);
     ot_draw_title(d, t);
 }
-
-static void ot_render(struct Demo *d, float t)
