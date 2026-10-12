@@ -541,7 +541,7 @@ static int gpu_composite(struct ogpu_vk *vk, const ogpu_u8 *a) {
                 unsigned long m0 = (unsigned long)mo + (unsigned long)(my * m->bpr + mx);
                 unsigned long m1 = (unsigned long)mo + (unsigned long)((my + h0 - 1) * m->bpr + mx + w0);
                 if (overlap(m0, m1, d0, d1)) return 0;
-            } else if (!arena_room(vk, (unsigned long)w0 * (unsigned long)h0
+            } else if (!arena_room(vk, (((unsigned long)w0 * (unsigned long)h0 + 3) & ~3UL)   /* as arena_take rounds it */
                                        + (so >= 0 ? 0 : (unsigned long)sw * sbpp * (unsigned long)sh)))
                 return 0;
             if (mo >= 0) {
