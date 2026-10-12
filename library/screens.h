@@ -100,6 +100,8 @@ int ortg_ogpu_pixels_xrgb(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LON
 int ortg_ogpu_read(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, void *dst, ULONG dst_bpr);
 int ortg_ogpu_read_argb(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, void *dst, ULONG dst_bpr);
 int ortg_ogpu_alpha(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, const void *src, ULONG src_bpr, ULONG alpha);
+int ortg_ogpu_scale(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, const void *src, ULONG src_bpr,
+                    LONG sw, LONG sh, int format, LONG dx, LONG dy, LONG dw, LONG dh);
 void ortg_stat(int kind, int gpu, ULONG pixels);
 ULONG ortg_draw_stats(ULONG *counts, ULONG kinds, ULONG flags);
 struct OpenRTGVirglFrame;

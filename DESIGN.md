@@ -391,6 +391,23 @@ to put its patches in.
   (buffers, pictures), and in 0.14.2 each took a table copied from the moment it
   was made, so pens obtained later drew in stale colours (white boxes on the bar,
   speckled icons). A bitmap asked for with a friend takes the friend's table.
+- **Pixels at another size through OpenGPU (0.16, 12 October 2026):** a
+  pixel array written at another size (`ORTG_WritePixels` with `dest_width`
+  or `dest_height`; CyberGraphX's `ScalePixelArray`) is drawn by OpenGPU's
+  COMPOSITE, nearest, one visible piece at a time, from ARGB or 0RGB colours
+  (16 and 32-bit bitmaps) or from a 16-bit bitmap's own pixels (RAW). A
+  32-bit pixel's top byte stays 0: the bitmap is seen as XRGB32 where
+  OpenGPU has stream v1.3, and elsewhere (a v1.2 runtime) as ARGB32, with an
+  INVERT of the piece by 0xFF000000 in the same batch after the opaque
+  COMPOSITE has written 255 there. Before, every pixel was
+  sampled and written by the 68k. The CPU code now takes the source pixel
+  under each target pixel's centre, as COMPOSITE does, so the two give the
+  same pixels; before it took `r * n / d`, which can pick the pixel one to
+  the left. This is what OpenPlay's films use to fit a window: the film plays
+  on a screen behind, and each new frame is scaled into the window on the
+  host (Team, 12 October 2026: "use opengpu to do the leg work").
+  `ortg_ogpu_scale()` in `library/screens.c`, `scaled()` and
+  `scaled_source()` in `library/pixels.c`; checked by `OpenRTGScaleExact`.
 - **Boards:** a small driver interface (find, init, mode, pan, fill, copy,
   template, line, sprite, 3D) with the ACRTG driver built in.
 

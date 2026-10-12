@@ -167,8 +167,20 @@ struct pix_ctx {
     ULONG argb;                 /* fill: the colour */
 };
 
-static LONG src_x(const struct pix_ctx *c, LONG rx) { return c->px->x + (c->dw == c->px->width ? rx : rx * c->px->width / c->dw); }
-static LONG src_y(const struct pix_ctx *c, LONG ry) { return c->px->y + (c->dh == c->px->height ? ry : ry * c->px->height / c->dh); }
+/* Which of n source pixels the target pixel r of d (another size) shows: the
+ * one under the target pixel's centre, as OpenGPU's COMPOSITE takes it
+ * (ogpu_core.c: a 16.16 step of n / d once, then r * step + step / 2), so a
+ * scaled write gives the same pixels on the CPU and through OpenGPU (0.16;
+ * before, r * n / d). */
+static LONG scaled(LONG r, LONG n, LONG d)
+{
+    ULONG step = ((ULONG)n << 16) / (ULONG)d;
+    LONG s = (LONG)(((ULONG)r * step + (step >> 1)) >> 16);
+    return s >= n ? n - 1 : s;
+}
+
+static LONG src_x(const struct pix_ctx *c, LONG rx) { return c->px->x + (c->dw == c->px->width ? rx : scaled(rx, c->px->width, c->dw)); }
+static LONG src_y(const struct pix_ctx *c, LONG ry) { return c->px->y + (c->dh == c->px->height ? ry : scaled(ry, c->px->height, c->dh)); }
 
 /* The OpenGPU format a source format is, where PIXELS draws exactly what
  * write_piece does (0: it doesn't): 1:1 only; pens raw on 8-bit; the
@@ -208,6 +220,22 @@ static int ogpu_source(const struct pix_ctx *c, const struct ortg_bitmap *bm, co
     return 0;
 }
 
+/* The OpenGPU format of a source drawn at another size, where COMPOSITE
+ * gives write_piece's pixels (0: it doesn't): ARGB and 0RGB colours, opaque,
+ * on 16 and 32-bit (ortg_ogpu_scale keeps a 32-bit pixel's top byte 0); a 16-bit
+ * bitmap's own pixels (RAW) on 16-bit, which RGB565 carries through
+ * unchanged. A 32-bit RAW source keeps its top byte on the CPU, which
+ * COMPOSITE doesn't, so it stays there; so do pens and colour tables. */
+static int scaled_source(const struct pix_ctx *c, const struct ortg_bitmap *bm)
+{
+    ULONG fmt = c->px->format;
+    if (c->dw == c->px->width && c->dh == c->px->height) return 0;
+    if (bm->bpp == 1 || !c->mask) return 0;
+    if (fmt == ORTG_PIX_ARGB || fmt == ORTG_PIX_0RGB) return OGPU_FMT_ARGB32;
+    if (fmt == ORTG_PIX_RAW && bm->bpp == 2) return OGPU_FMT_RGB565;
+    return 0;
+}
+
 static void write_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
     struct pix_ctx *c = v;
@@ -220,6 +248,14 @@ static void write_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG 
         const UBYTE *src = (const UBYTE *)c->px->data + (c->px->y + y0 - dy - c->at_y) * c->px->modulo + (c->px->x + x0 - dx - c->at_x) * bpp;
         if (xrgb ? ortg_ogpu_pixels_xrgb(bm, x0, y0, x1, y1, src, (ULONG)c->px->modulo, of, table)
                  : ortg_ogpu_pixels(bm, x0, y0, x1, y1, src, (ULONG)c->px->modulo, of, table)) {
+            ortg_stat(ORTG_STAT_PIXELS, 1, (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1));
+            return;
+        }
+    } else if ((of = scaled_source(c, bm)) != 0) {
+        /* another size: OpenGPU's COMPOSITE from the source rectangle (0.16) */
+        const UBYTE *src = (const UBYTE *)c->px->data + c->px->y * c->px->modulo + c->px->x * (of == OGPU_FMT_RGB565 ? 2 : 4);
+        if (ortg_ogpu_scale(bm, x0, y0, x1, y1, src, (ULONG)c->px->modulo, c->px->width, c->px->height, of,
+                            c->at_x + dx, c->at_y + dy, c->dw, c->dh)) {
             ortg_stat(ORTG_STAT_PIXELS, 1, (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1));
             return;
         }
