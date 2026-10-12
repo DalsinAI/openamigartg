@@ -13,7 +13,12 @@
  * result. RectFill (JAM1, JAM2, COMPLEMENT, area patterns, plane masks),
  * BltBitMap (every minterm, plane masks, overlapping copies within one
  * bitmap and copies between two), ScrollRaster, BltTemplate and the four
- * text calls, on 1 to 8 planes. On AmigaChrome (OGFX_STATUS_AMIGACHROME)
+ * text calls, on 1 to 8 planes. From opengpu.library 0.10, the calls
+ * OpenGfx's core (openamigagfx library/core) draws: Draw, PolyDraw,
+ * WritePixel, ReadPixel, SetRast, BltPattern, WritePixelArray8,
+ * ReadPixelArray8 and WriteChunkyPixels, every DrawMode; these have no
+ * LVO, so they go through the patches (graphics.library's pixels are
+ * copied to the other ways when the patches are not in). On AmigaChrome (OGFX_STATUS_AMIGACHROME)
  * OpenGfx's leaves take Chip RAM, so the leaves are what is checked; on a
  * real Amiga they leave Chip RAM to the blitter.
  *
@@ -76,7 +81,7 @@ struct way {
 static struct way ways[WAYS];
 static int depth, patched, fails, calls, shown, verbose;
 static char args[96];                  /* the call's arguments, for a report */
-static int fails_of[5];                /* by call: RectFill, BltBitMap, ScrollRaster, BltTemplate, text */
+static int fails_of[6];                /* by call: RectFill, BltBitMap, ScrollRaster, BltTemplate, text, core */
 static int kind;
 static UWORD area_ptrn[4] = { 0xAAAA, 0x5555, 0xF0F0, 0x0F0F };
 static UBYTE *tmpl;                    /* a template in Chip RAM: 32 x 16, 4 bytes a row */
@@ -161,6 +166,14 @@ static void compare(const char *what, LONG r0, LONG r1, LONG r2)
     }
 }
 
+/* A way takes graphics.library's pixels, for a call it can't make. */
+static void sync_way(int w)
+{
+    WaitBlit();
+    copy_bm(ways[REF].bm[0], ways[w].bm[0]);
+    copy_bm(ways[REF].bm[1], ways[w].bm[1]);
+}
+
 static void set_rp(struct RastPort *rp, ULONG fg, ULONG bg, ULONG mode, ULONG mask, int ptrn)
 {
     SetAPen(rp, fg); SetBPen(rp, bg); SetDrMd(rp, mode);
@@ -182,7 +195,7 @@ static void one_rectfill(void)
     on(0); RectFill(&ways[REF].rp[k], x0, y0, x1, y1);
     on(1); OGFX_RectFill(&ways[LVO].rp[k], x0, y0, x1, y1);
     if (patched) RectFill(&ways[PAT].rp[k], x0, y0, x1, y1);
-    if (have_fast && !ptrn && (mode == JAM1 || mode == JAM2 || mode == COMPLEMENT)) { OGFX_RectFill(&ways[FAST].rp[k], x0, y0, x1, y1); fast_r = 0; }
+    if (have_fast) { OGFX_RectFill(&ways[FAST].rp[k], x0, y0, x1, y1); fast_r = 0; }
     else sync_fast(0);
     compare("RectFill", 0, 0, 0);
 }
@@ -293,6 +306,86 @@ static void one_text(void)
         }
 }
 
+/* ---- the core's calls: through graphics.library (the patches) ---------------- */
+
+static UBYTE *core_mask;               /* BltPattern's mask, in Chip RAM: 2048 bytes */
+static UBYTE *core_arr[WAYS];          /* the pixel arrays, one a way */
+#define CORE_ARR ((W + 16) * H)
+static struct RastPort core_tmp[WAYS]; /* WritePixelArray8's temporary RastPorts */
+static struct BitMap *core_tmpbm[WAYS];
+
+/* One call of the core's on way w's RastPort k: c says which, a[] its
+ * arguments. The result, or a sum of the array read. */
+static LONG core_call(int w, int k, int c, const LONG *a, const WORD *poly)
+{
+    struct RastPort *rp = &ways[w].rp[k];
+    LONG r = 0, i;
+    switch (c) {
+    case 0: Move(rp, a[0], a[1]); Draw(rp, a[2], a[3]); break;
+    case 1: Move(rp, a[0], a[1]); PolyDraw(rp, a[2], (WORD *)poly); break;
+    case 2: r = WritePixel(rp, a[0], a[1]); break;
+    case 3: r = (LONG)ReadPixel(rp, a[0], a[1]); break;
+    case 4: SetRast(rp, (UBYTE)a[0]); break;
+    case 5: BltPattern(rp, a[4] ? core_mask : NULL, a[0], a[1], a[2], a[3], (ULONG)a[4]); break;
+    case 6:
+        for (i = 0; i < CORE_ARR; i++) core_arr[w][i] = (UBYTE)(i * 7 + a[4]);
+        r = WritePixelArray8(rp, a[0], a[1], a[2], a[3], core_arr[w], &core_tmp[w]);
+        break;
+    case 7:
+        memset(core_arr[w], 0xA5, CORE_ARR);
+        r = ReadPixelArray8(rp, a[0], a[1], a[2], a[3], core_arr[w], &core_tmp[w]);
+        {
+            /* the pixels asked for: each row's padding to 16 is the temporary
+             * RastPort's row on OS 3.2, whatever an earlier call left there */
+            LONG x, y, bpr = (a[2] - a[0] + 16) & ~15;
+            for (y = 0; y <= a[3] - a[1]; y++)
+                for (x = 0; x <= a[2] - a[0]; x++) r = r * 31 + core_arr[w][y * bpr + x];
+        }
+        break;
+    default:
+        for (i = 0; i < CORE_ARR; i++) core_arr[w][i] = (UBYTE)(i * 5 + a[4]);
+        WriteChunkyPixels(rp, a[0], a[1], a[2], a[3], core_arr[w], a[4] % 9 + a[2] - a[0] + 1);
+    }
+    if (c < 2) r = ((LONG)rp->cp_x << 16 | (UWORD)rp->cp_y) ^ ((LONG)rp->linpatcnt << 8);
+    return r;
+}
+
+static void one_core(void)
+{
+    static const char *const name[] = { "Draw", "PolyDraw", "WritePixel", "ReadPixel", "SetRast", "BltPattern",
+                                        "WritePixelArray8", "ReadPixelArray8", "WriteChunkyPixels" };
+    LONG a[5], r0, r1, r2 = 0, x0 = rnd_in(0, W - 1), y0 = rnd_in(0, H - 1), x1 = rnd_in(x0, W - 1), y1 = rnd_in(y0, H - 1);
+    ULONG fg = rnd() & 255, bg = rnd() & 255, mode = rnd() & 7, mask = rnd() & 3 ? 0xFF : rnd() & 255;
+    UWORD lp = rnd() & 1 ? 0xFFFF : (UWORD)rnd();
+    WORD poly[12];
+    int c = (int)(rnd() % 9), k = rnd() & 1, w, ptrn = (rnd() & 3) == 0, i;
+    if (c == 4 && (rnd() & 3)) c = 2;               /* SetRast seldom */
+    a[0] = x0; a[1] = y0; a[2] = x1; a[3] = y1; a[4] = 0;
+    if (c == 0) { a[2] = rnd_in(0, W - 1); a[3] = rnd_in(0, H - 1); }
+    if (c == 1) { a[2] = rnd_in(2, 6); for (i = 0; i < 2 * a[2]; i++) poly[i] = (WORD)(i & 1 ? rnd_in(0, H - 1) : rnd_in(0, W - 1)); }
+    if (c == 4) a[0] = rnd() & 255;
+    if (c == 5 && (rnd() & 1)) {                    /* a mask exactly as wide as the rectangle */
+        a[4] = 2 * (((x1 - x0) >> 4) + 1);
+        if (a[4] * (y1 - y0 + 1) > 2048) a[4] = 0;
+        for (i = 0; i < 2048; i++) core_mask[i] = (UBYTE)rnd();
+    }
+    if (c >= 6) { a[4] = rnd() & 255; if (c != 7) mode = JAM1; }
+    for (w = 0; w < WAYS; w++) {
+        set_rp(&ways[w].rp[k], fg, bg, mode, mask, ptrn);
+        SetDrPt(&ways[w].rp[k], lp);
+    }
+    sprintf(args, "%ld,%ld,%ld,%ld fg %lu bg %lu mode %lu mask %02lx%s ptrn %04x arg %ld", (long)a[0], (long)a[1], (long)a[2], (long)a[3],
+            (unsigned long)fg, (unsigned long)bg, (unsigned long)mode, (unsigned long)mask, ptrn ? " pattern" : "", lp, (long)a[4]);
+    kind = 5;
+    on(0); r0 = core_call(REF, k, c, a, poly);
+    on(1);
+    if (patched) { r1 = core_call(LVO, k, c, a, poly); r2 = core_call(PAT, k, c, a, poly); }
+    else { sync_way(LVO); r1 = r0; }
+    if (have_fast && patched) fast_r = core_call(FAST, k, c, a, poly);
+    else sync_fast(r0);
+    compare(name[c], r0, r1, r2);
+}
+
 static int alloc_ways(int d)
 {
     int w, k;
@@ -305,6 +398,11 @@ static int alloc_ways(int d)
             ways[w].rp[k].BitMap = ways[w].bm[k];
             if (font) SetFont(&ways[w].rp[k], font);
         }
+    for (w = 0; w < WAYS; w++) {
+        if (!(core_tmpbm[w] = AllocBitMap(((W + 15) & ~15) + 16, 1, d, BMF_CLEAR, NULL))) return 0;
+        InitRastPort(&core_tmp[w]);
+        core_tmp[w].BitMap = core_tmpbm[w];
+    }
     /* the Fast RAM way: planes of its own, if there is Fast RAM */
     have_fast = 0;
     if (AvailMem(MEMF_FAST) > 4UL << 20) {
@@ -329,6 +427,7 @@ static void free_ways(void)
     WaitBlit();
     for (w = 0; w < FAST; w++)
         for (k = 0; k < 2; k++) { if (ways[w].bm[k]) FreeBitMap(ways[w].bm[k]); ways[w].bm[k] = NULL; }
+    for (w = 0; w < WAYS; w++) { if (core_tmpbm[w]) FreeBitMap(core_tmpbm[w]); core_tmpbm[w] = NULL; }
     for (k = 0; k < 2; k++) {
         int p;
         for (p = 0; p < 8; p++) { if (ways[FAST].bm[k] && fast_bm[k].Planes[p]) FreeVec(fast_bm[k].Planes[p]); fast_bm[k].Planes[p] = NULL; }
@@ -352,7 +451,8 @@ static int check(int n_per_depth)
             continue;
         }
         for (i = 0; i < n_per_depth; i++) {
-            switch (rnd() % 8) {
+            switch (rnd() % 11) {
+            case 8: case 9: case 10: say("core"); one_core(); break;
             case 0: case 1: case 2: say("RectFill"); one_rectfill(); break;
             case 3: case 4: say("BltBitMap"); one_bltbitmap(); break;
             case 5: say("ScrollRaster"); one_scroll(); break;
@@ -569,6 +669,18 @@ int main(int argc, char **argv)
 
     if (!nocheck && !(tmpl = AllocVec(4 * 16, MEMF_CHIP))) { printf("OpenGfxCheck: no Chip RAM\n"); nocheck = 1; rc = 20; }
     if (!nocheck) {
+        core_mask = AllocVec(2048, MEMF_CHIP | MEMF_CLEAR);
+        for (i = 0; i < WAYS; i++) core_arr[i] = AllocVec(CORE_ARR, MEMF_ANY);
+        for (i = 0; i < WAYS; i++) if (!core_arr[i]) nocheck = 1;
+        if (!core_mask || nocheck) {
+            printf("OpenGfxCheck: no memory\n");
+            FreeVec(core_mask);
+            for (i = 0; i < WAYS; i++) FreeVec(core_arr[i]);
+            FreeVec(tmpl);
+            nocheck = 1; rc = 20;
+        }
+    }
+    if (!nocheck) {
         int f;
         for (i = 0; i < 4 * 16; i++) tmpl[i] = (UBYTE)rnd();
         was = OGFX_SetEnabled(1);
@@ -582,8 +694,8 @@ int main(int argc, char **argv)
                 printf("  (%d Fast RAM BltBitMap answers were the planes drawn, where graphics.library here counted every shared plane, as Picasso96's BltBitMap does)\n",
                        p96_counts);
             if (f) {
-                printf("  %d differences: RectFill %d, BltBitMap %d, ScrollRaster %d, BltTemplate %d, text %d\n", f,
-                       fails_of[0], fails_of[1], fails_of[2], fails_of[3], fails_of[4]);
+                printf("  %d differences: RectFill %d, BltBitMap %d, ScrollRaster %d, BltTemplate %d, text %d, core calls %d\n", f,
+                       fails_of[0], fails_of[1], fails_of[2], fails_of[3], fails_of[4], fails_of[5]);
                 rc = 10;
             }
         }
@@ -594,6 +706,8 @@ int main(int argc, char **argv)
         }
         (void)OGFX_SetEnabled(was);
         FreeVec(tmpl);
+        FreeVec(core_mask);
+        for (i = 0; i < WAYS; i++) FreeVec(core_arr[i]);
         if ((OpenGPUBase->lib_Version > 0 || OpenGPUBase->lib_Revision >= OPENGPU_OGFX_LOOK_REVISION) && look_check())
             rc = 10;
     }

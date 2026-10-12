@@ -44,8 +44,13 @@ if [ -x "$CC68K" ]; then
     P=${CC68K%gcc}
     "$CC68K" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-lto -fno-builtin -fno-tree-loop-distribute-patterns \
         -Wall -Wextra -Werror -c -o "$OUT/ogfx_leaves.o" "$GFX/ogfx_leaves.c"
+    sh "$HERE/../../tools/fetch_ogfx_core.sh" "$OUT"
+    for f in gfx_core gfx_rp; do
+        "$CC68K" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
+            -I"$OUT/ogfx-core" -c -o "$OUT/ogfx_$f.o" "$OUT/ogfx-core/$f.c"
+    done
     "$CC68K" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
-        -I"$HERE/../../include" -c -o "$OUT/ogfx_lib.o" "$GFX/ogfx_lib.c"
+        -I"$HERE/../../include" -I"$OUT/ogfx-core" -c -o "$OUT/ogfx_lib.o" "$GFX/ogfx_lib.c"
     und=$("${P}nm" -u "$OUT/ogfx_leaves.o" | awk '{print $2}' | grep -v '^___mulsi3$' | tr '\n' ' ' || true)
     [ -z "$und" ] || { echo "FAIL os32: the leaves call $und"; fail=1; }
     for f in "ogfx_planar_rect 00010100" "ogfx_chunky_rect 00010101" "ogfx_chunky_copy 00010102" "ogfx_planar_blit 00010103"; do
@@ -61,7 +66,7 @@ if [ -x "$CC68K" ]; then
             *) echo "FAIL os32: $1's tag is $bytes"; fail=1 ;; esac
     done
     # No writable data: everything OpenGfx keeps is in opengpu.library's base.
-    for o in "$OUT/ogfx_leaves.o" "$OUT/ogfx_lib.o"; do
+    for o in "$OUT/ogfx_leaves.o" "$OUT/ogfx_lib.o" "$OUT/ogfx_gfx_core.o" "$OUT/ogfx_gfx_rp.o"; do
         rw=$("${P}objdump" -h "$o" | awk '$2 ~ /^\.(data|bss)/ && $3 != "00000000" { print $2 " " $3 }')
         [ -z "$rw" ] || { echo "FAIL os32: $(basename "$o") has writable data: $rw"; fail=1; }
     done
