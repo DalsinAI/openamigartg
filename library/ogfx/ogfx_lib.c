@@ -834,6 +834,17 @@ OGFX_CALL void do_bltbmrp(struct ogfx_state *st, struct GfxBase *gfx, int p, str
         r.width = (WORD)w; r.height = (WORD)h; r.minterm = (UBYTE)minterm; r.mask = mask;
         if (fn(st->provider.v1.userdata, &r)) return;
     }
+    /* the source must be one the core reads too: a standard planar bitmap
+     * the CPU may touch now (cpu_may_draw waits for the blitter on Chip RAM),
+     * and not a second BitMap over the RastPort's own planes, whose overlap
+     * the core can't order (as in BltBitMap: planar_bitmaps_alias) */
+    if (p == OGFX_P_BLTBMRP && st->enabled && core_planar(gfx, src) && rp && rp->BitMap &&
+        !planar_bitmaps_alias(src, rp->BitMap, src->Depth < rp->BitMap->Depth ? src->Depth : rp->BitMap->Depth) &&
+        cpu_may_draw(st, gfx, src, NULL) && core_begin(st, gfx, rp, 0)) {
+        ogfx_rp_BltBitMapRastPort(src, (WORD)sx, (WORD)sy, rp, (WORD)dx, (WORD)dy, (WORD)w, (WORD)h, (UBYTE)minterm);
+        core_end(gfx, rp);
+        return;
+    }
     if (p == OGFX_P_BLTBMRP)
         ((bltbmrp_fn)original(st, gfx, p))(src, sx, sy, rp, dx, dy, w, h, minterm, gfx);
     else
