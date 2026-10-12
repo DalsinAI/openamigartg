@@ -25,7 +25,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 15
+#define LIB_REVISION 16
 
 /* The ACRTG board (amigachrome's common/protocol/acrtg.h): Zorro III,
  * Dalsin (0xDA15; 2011 before 1 October 2026), product 9 (16 MiB) or product 15 (64 MiB, 0.14); the boot ROM page
@@ -60,7 +60,7 @@ struct ExecBase *SysBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.15.0 (12.10.2026) OpenRTG, Dalsin Limited\r\n";
+static const char lib_id[] = "openrtg.library 0.16.0 (12.10.2026) OpenRTG, Dalsin Limited\r\n";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));

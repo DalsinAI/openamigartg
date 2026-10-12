@@ -27,7 +27,8 @@ struct OpenRTGPixels {
     unsigned long        format;            /* ORTG_PIX_ */
     const unsigned long *ctable;            /* ORTG_PIX_INDEX: 256 colours, 0x00RRGGBB */
     long                 width, height;     /* the rectangle */
-    long                 dest_width, dest_height;   /* written at this size (0: the same) */
+    long                 dest_width, dest_height;   /* written at this size (0: the same); 0.16: through OpenGPU
+                                                       for ARGB, 0RGB, and RAW on 16-bit */
 };
 
 #define ORTG_PIX_RGB      0UL     /* 3 bytes: R, G, B */
