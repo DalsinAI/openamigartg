@@ -315,10 +315,18 @@ static void one_text(void)
         TextExtent(&ways[PAT].rp[k], (STRPTR)words + at, n, &te[PAT]);
         fit[PAT] = TextFit(&ways[PAT].rp[k], (STRPTR)words + at, n, &te[PAT], &ce, 1, ce.te_Width, 20);
     } else { drawn[PAT] = drawn[REF]; len[PAT] = len[REF]; fit[PAT] = fit[REF]; te[PAT] = te[REF]; }
-    sync_fast((LONG)drawn[REF]);
+    /* the Fast RAM way is the one a real Amiga's core draws text on (the
+     * default font is one the core takes, so nothing reaches the blitter) */
+    if (have_fast) {
+        drawn[FAST] = (ULONG)OGFX_Text(&ways[FAST].rp[k], (STRPTR)words + at, n);
+        len[FAST] = (ULONG)OGFX_TextLength(&ways[FAST].rp[k], (STRPTR)words + at, n);
+        OGFX_TextExtent(&ways[FAST].rp[k], (STRPTR)words + at, n, &te[FAST]);
+        fit[FAST] = OGFX_TextFit(&ways[FAST].rp[k], (STRPTR)words + at, n, &te[FAST], &ce, 1, ce.te_Width, 20);
+        fast_r = (LONG)drawn[FAST];
+    } else sync_fast((LONG)drawn[REF]);
     compare("Text", (LONG)drawn[REF], (LONG)drawn[LVO], (LONG)drawn[PAT]);
     calls += 3;
-    for (i = LVO; i < FAST; i++)
+    for (i = LVO; i < (have_fast ? WAYS : FAST); i++)
         if (len[i] != len[REF] || fit[i] != fit[REF] || memcmp(&te[i], &te[REF], sizeof te[0])) {
             fails++;
             if (shown++ < 12) printf("  DIFFERENT: TextLength/TextExtent/TextFit, %s\n", way_name[i]);
