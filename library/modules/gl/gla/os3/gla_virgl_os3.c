@@ -57,7 +57,7 @@ static int os3_run(void *user, void *block, unsigned long bytes)
     if (eclock_hz) {
         ReadEClock(&t1);
         /* the low words suffice: a wait is far shorter than 2^32 ticks */
-        gla_counts.fence_wait_us += (ULONG)(((UQUAD)(t1.ev_lo - t0.ev_lo) * 1000000u) / eclock_hz);
+        gla_counts.fence_wait_us += (ULONG)(((unsigned long long)(t1.ev_lo - t0.ev_lo) * 1000000u) / eclock_hz);
     }
     return r == OGPU_OK ? 0 : -1;
 }
