@@ -10,6 +10,8 @@ SYS="$P/m68k-amigaos"
 OLD_STOVE=${OLD_STOVE:-"$HOME/AmigaChrome/stoves/os32"}
 OLD_SYS="$OLD_STOVE/prefix/m68k-amigaos"
 CC="$P/bin/m68k-amigaos-gcc"
+VERSION=0.2.0
+PACKAGE="OpenTensor-Beyond-First-Light-$VERSION.zip"
 
 [ -x "$CC" ] || { echo "OpenTensor: missing compiler $CC" >&2; exit 2; }
 [ -f "$SYS/include/GL/gl.h" ] || { echo "OpenTensor: OpenGL headers are missing" >&2; exit 4; }
@@ -17,23 +19,19 @@ CC="$P/bin/m68k-amigaos-gcc"
 rm -rf "$OUT"
 mkdir -p "$OUT/package/OpenTensor" "$OUT/work"
 
-# GitHub's contents API carries the first-light source as four reviewable text
-# parts. Assemble the exact translation unit in the build directory; none of
-# the generated material is committed or installed in the package.
 SOURCE="$OUT/work/opentensor.c"
 cat \
     "$HERE/src/opentensor.c.part1" \
     "$HERE/src/opentensor.c.part2" \
     "$HERE/src/opentensor.c.part3" \
+    "$HERE/src/opentensor.c.part5" \
     "$HERE/src/opentensor.c.part4" \
     > "$SOURCE"
 test -s "$SOURCE"
-grep -F 'OpenTensor: First Light' "$SOURCE" >/dev/null
+grep -F 'OpenTensor: Beyond First Light' "$SOURCE" >/dev/null
+grep -F 'THE NUMBER BECAME THE TIMECODE' "$SOURCE" >/dev/null
 grep -F 'MESA / AHI / OPENRTG' "$SOURCE" >/dev/null
 
-# The GCC16 stove has the OpenGPU SDK. Older snapshots may still carry the
-# CyberGraphX and AHI developer headers, so copy only those headers into a
-# private include root rather than mixing the two complete SDKs.
 EXTRA_INC="$OUT/sdk-compat"
 mkdir -p "$EXTRA_INC"
 if [ ! -f "$SYS/include/cybergraphx/cybergraphics.h" ]; then
@@ -79,10 +77,10 @@ file "$OUT/package/OpenTensor/OpenTensor"
 sha256sum "$OUT/package/OpenTensor/OpenTensor" > "$OUT/package/OpenTensor/SHA256SUMS"
 
 cat > "$OUT/package/OpenTensor/README.txt" <<'TXT'
-OpenTensor: First Light
-=======================
+OpenTensor: Beyond First Light
+==============================
 
-An AmigaOS 3.x demo using Mesa/GLA/OpenGPU, OpenRTG and ahi.device.
+A 164-second AmigaOS 3.x demo using Mesa/GLA/OpenGPU, OpenRTG and ahi.device.
 
 Recommended AmigaChrome launch:
 
@@ -92,36 +90,42 @@ Recommended AmigaChrome launch:
 Controls:
 
     Esc or either mouse button   Exit
-    Space                       Pause / resume
-    F1                          Diagnostic overlay
+    Space                        Pause / resume
+    F1                           Diagnostic overlay
+    F2 / F3                      Next / previous scene
+    F4                           Restart current scene
 
 Options:
 
-    CPU                         Force Mesa softpipe
-    WINDOW                      Run in a Workbench window
-    W n H n                     Resolution (default 960 x 540)
-    DEPTH 16|32                 RTG depth (default 32)
-    SECONDS n                   Timed run
-    NOAUDIO                     No AHI soundtrack
-    NOVSYNC                     Do not WaitTOF after each frame
+    CPU                          Force Mesa softpipe
+    WINDOW                       Run entirely in a Workbench window
+    W n H n                      Resolution (default 960 x 540)
+    DEPTH 16|32                  RTG depth (default 32)
+    START seconds                Start at a scene/time, e.g. START 64
+    SECONDS n                    Timed run
+    NOAUDIO                      No AHI soundtrack
+    NOVSYNC                      Do not WaitTOF after each frame
 
-The default private OpenRTG screen uses GLA's screen-owned OpenGPU present
-path. WINDOW deliberately exercises the layered-window compatibility path.
+Act II begins at START 64. The Window Breakout scene starts at START 114 and
+moves a live Mesa scene through a real Intuition window. The default private
+OpenRTG screen uses GLA's screen-owned OpenGPU present path; the breakout and
+WINDOW modes deliberately exercise the layered-window compatibility path.
 TXT
 
 cat > "$OUT/package/OpenTensor/BUILD-INFO.txt" <<EOF2
-OpenTensor First Light 0.1.0
+OpenTensor Beyond First Light $VERSION
 Target: AmigaOS 3.x / AC090 / 68040 + FPU
 Compiler: $("$CC" --version | head -1)
 Graphics: Mesa / GLA / OpenGPU / OpenRTG
 Audio: ahi.device, generated 44.1 kHz signed 16-bit stereo
+Sequence: 164 seconds, 11 scenes
 libGL: $GL_LIB
 EOF2
 
 (
     cd "$OUT/package"
-    zip -qr "$OUT/OpenTensor-First-Light-0.1.0.zip" OpenTensor
+    zip -qr "$OUT/$PACKAGE" OpenTensor
 )
-sha256sum "$OUT/OpenTensor-First-Light-0.1.0.zip" > "$OUT/SHA256SUMS"
-printf 'OPENTENSOR_PACKAGE=%s\n' "$OUT/OpenTensor-First-Light-0.1.0.zip"
+sha256sum "$OUT/$PACKAGE" > "$OUT/SHA256SUMS"
+printf 'OPENTENSOR_PACKAGE=%s\n' "$OUT/$PACKAGE"
 cat "$OUT/SHA256SUMS"
