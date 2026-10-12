@@ -277,6 +277,8 @@ OpenRTG patches the fourteen itself as before; with no OpenGfx, all of them.
 | BltBitMapRastPort, BltMaskBitMapRastPort, ClipBlit | -606, -636, -552 | OpenGfx (0.8) | OpenRTG |
 | WriteChunkyPixels, WritePixelArray8, WritePixelLine8 | -1056, -786, -774 | OpenGfx (0.8) | OpenRTG |
 | ReadPixelLine8, ReadPixelArray8 | -768, -780 | OpenGfx (0.8) | OpenRTG |
+| AreaMove, AreaDraw, AreaEllipse, AreaEnd | -252, -258, -186, -264 | OpenGfx (0.14) | graphics.library |
+| DrawEllipse, EraseRect | -180, -810 | OpenGfx (0.14) | graphics.library |
 | AllocBitMap, FreeBitMap, GetBitMapAttr | -918, -924, -960 | OpenRTG | (bitmaps, not drawing) |
 | MakeVPort, MrgCop, LoadView | -216, -210, -222 | OpenRTG | (the display) |
 | LoadRGB32, SetRGB32, LoadRGB4, SetRGB4 | -882, -852, -192, -288 | OpenRTG | (palettes) |
@@ -284,10 +286,11 @@ OpenRTG patches the fourteen itself as before; with no OpenGfx, all of them.
 | NextDisplayInfo, FindDisplayInfo, GetDisplayInfoData, ModeNotAvailable, BestModeIDA | -732, -726, -756, -798, -1050 | OpenRTG (displaydb.c) | (the display database) |
 | intuition: OpenScreenTagList, CloseScreen, MakeScreen, RemakeDisplay, RethinkDisplay | -612, -66, -378, -384, -390 | OpenRTG | (screens) |
 
-On Picasso96 (no OpenRTG) OpenGfx's 22 patches sit in front of Picasso96's
+On Picasso96 (no OpenRTG) OpenGfx's 28 patches sit in front of Picasso96's
 own (rtg.library patches some of the same calls, among them BltPattern, the
 pixel calls and the chunky and *8 calls): OpenGfx has no provider there and
-passes each call on, so Picasso96 draws as before. OpenLook 0.6 asks OpenGfx
+passes each call on, so Picasso96 draws as before (the area calls, DrawEllipse
+and EraseRect draw through OpenGfx's core on standard planar bitmaps only). OpenLook 0.6 asks OpenGfx
 to put its patches in.
 
 

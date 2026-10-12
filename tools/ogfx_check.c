@@ -23,7 +23,9 @@
  * front of it). From 0.12 BltBitMapRastPort too, from the way's other
  * bitmap. From 0.13 ClipBlit (within the RastPort, or from the way's
  * other one) and ScrollRaster too, and the window is a smart refresh one,
- * where the core takes those two. On AmigaChrome (OGFX_STATUS_AMIGACHROME)
+ * where the core takes those two. From 0.14 area fills (one or two
+ * polygons and maybe an ellipse, some with an outline), DrawEllipse and
+ * EraseRect too. On AmigaChrome (OGFX_STATUS_AMIGACHROME)
  * OpenGfx's leaves take Chip RAM, so the leaves are what is checked; on a
  * real Amiga they leave Chip RAM to the blitter.
  *
@@ -326,6 +328,16 @@ static UBYTE *core_arr[WAYS];          /* the pixel arrays, one a way */
 #define CORE_ARR ((W + 16) * H)
 static struct RastPort core_tmp[WAYS]; /* WritePixelArray8's temporary RastPorts */
 static struct BitMap *core_tmpbm[WAYS];
+/* The area calls: a table and a TmpRas a way, and the shape, the same on
+ * every way */
+#define AREA_PTS 12
+static struct AreaInfo core_ai[WAYS];
+static WORD core_av[WAYS][(5 * (AREA_PTS + 6) + 1) / 2];
+static struct TmpRas core_tr[WAYS];
+static PLANEPTR core_trbuf[WAYS];
+static WORD area_xy[2 * AREA_PTS], area_e[4];
+static ULONG area_moves;
+static int area_n, area_ell;
 
 /* A window's RastPort on the Chip RAM ways' first bitmap: a smart refresh
  * layer with a simple refresh one in front of it (no backfill), so the
@@ -436,6 +448,24 @@ static LONG core_call(int w, int k, int c, const LONG *a, const WORD *poly)
         ClipBlit(a[4] & 0x100 ? rp : &ways[w].rp[1 - k], a[0], a[1], rp, a[5], a[6], a[2], a[3], (ULONG)a[4] & 0xF0);
         break;
     case 11: ScrollRaster(rp, a[5], a[6], a[0], a[1], a[2], a[3]); break;
+    case 12:
+        /* the shape's polygons (a vertex in area_moves starts one) and
+         * maybe an ellipse; a[4] & 1: an outline in pen a[4] >> 8. The
+         * result: whether a call to the table failed, then AreaEnd's */
+        InitArea(&core_ai[w], core_av[w], AREA_PTS + 6);
+        InitTmpRas(&core_tr[w], core_trbuf[w], RASSIZE(W, H));
+        rp->AreaInfo = &core_ai[w]; rp->TmpRas = &core_tr[w];
+        if (a[4] & 1) SetOutlinePen(rp, (ULONG)a[4] >> 8);
+        for (i = 0; i < area_n; i++)
+            r |= area_moves >> i & 1 ? AreaMove(rp, area_xy[2 * i], area_xy[2 * i + 1])
+                                     : AreaDraw(rp, area_xy[2 * i], area_xy[2 * i + 1]);
+        if (area_ell) r |= AreaEllipse(rp, area_e[0], area_e[1], area_e[2], area_e[3]);
+        r = (r != 0) * 2 + AreaEnd(rp);
+        rp->AreaInfo = NULL; rp->TmpRas = NULL;
+        rp->Flags &= ~AREAOUTLINE;
+        break;
+    case 13: DrawEllipse(rp, a[0], a[1], a[2], a[3]); break;
+    case 14: EraseRect(rp, a[0], a[1], a[2], a[3]); break;
     default:
         for (i = 0; i < CORE_ARR; i++) core_arr[w][i] = (UBYTE)(i * 5 + a[4]);
         WriteChunkyPixels(rp, a[0], a[1], a[2], a[3], core_arr[w], a[4] % 9 + a[2] - a[0] + 1);
@@ -448,12 +478,12 @@ static void one_core(void)
 {
     static const char *const name[] = { "Draw", "PolyDraw", "WritePixel", "ReadPixel", "SetRast", "BltPattern",
                                         "WritePixelArray8", "ReadPixelArray8", "WriteChunkyPixels", "BltBitMapRastPort",
-                                        "ClipBlit", "ScrollRaster" };
+                                        "ClipBlit", "ScrollRaster", "AreaEnd", "DrawEllipse", "EraseRect" };
     LONG a[7], r0, r1, r2 = 0, x0 = rnd_in(0, W - 1), y0 = rnd_in(0, H - 1), x1 = rnd_in(x0, W - 1), y1 = rnd_in(y0, H - 1);
     ULONG fg = rnd() & 255, bg = rnd() & 255, mode = rnd() & 7, mask = rnd() & 3 ? 0xFF : rnd() & 255;
     UWORD lp = rnd() & 1 ? 0xFFFF : (UWORD)rnd();
     WORD poly[12];
-    int c = (int)(rnd() % 12), k = rnd() & 1, w, ptrn = (rnd() & 3) == 0, i;
+    int c = (int)(rnd() % 15), k = rnd() & 1, w, ptrn = (rnd() & 3) == 0, i;
     if (c == 4 && (rnd() & 3)) c = 2;               /* SetRast seldom */
     a[0] = x0; a[1] = y0; a[2] = x1; a[3] = y1; a[4] = 0;
     if (c == 0) { a[2] = rnd_in(0, W - 1); a[3] = rnd_in(0, H - 1); }
@@ -486,6 +516,46 @@ static void one_core(void)
         if (use_layer) { a[2] = rnd_in(x0, x0 + 150); a[3] = rnd_in(y0, y0 + 95); }
         a[5] = rnd_in(-12, 12); a[6] = rnd_in(-8, 8);
     }
+    if (c == 12) {
+        /* inside a bare bitmap (graphics.library clips nothing there); in
+         * the layer hanging over its edges. The first polygon has two
+         * points or more: on a table with no draw OS 3.2 answers junk */
+        LONG lx = use_layer ? -8 : 0, ly = use_layer ? -8 : 0, hx = use_layer ? 145 : W - 1, hy = use_layer ? 95 : H - 1;
+        int np = 1 + (int)(rnd() & 1), j, v;
+        area_n = 0; area_moves = 0;
+        for (j = 0; j < np; j++) {
+            int n = (j ? 1 : 2) + (int)(rnd() % 5);
+            LONG cx = rnd_in(lx, hx), cy = rnd_in(ly, hy);
+            for (v = 0; v < n && area_n < AREA_PTS; v++, area_n++) {
+                LONG px = cx + rnd_in(-30, 30), py = cy + rnd_in(-20, 20);
+                area_xy[2 * area_n] = (WORD)(px < lx ? lx : px > hx ? hx : px);
+                area_xy[2 * area_n + 1] = (WORD)(py < ly ? ly : py > hy ? hy : py);
+                if (!v) area_moves |= 1UL << area_n;
+            }
+        }
+        if ((area_ell = (rnd() % 3) == 0) != 0) {
+            area_e[0] = (WORD)rnd_in(lx, hx); area_e[1] = (WORD)rnd_in(ly, hy);
+            area_e[2] = (WORD)(rnd() % 30); area_e[3] = (WORD)(rnd() % 20);
+            if (!use_layer) {
+                if (area_e[2] > area_e[0]) area_e[2] = area_e[0];
+                if (area_e[2] > W - 1 - area_e[0]) area_e[2] = W - 1 - area_e[0];
+                if (area_e[3] > area_e[1]) area_e[3] = area_e[1];
+                if (area_e[3] > H - 1 - area_e[1]) area_e[3] = H - 1 - area_e[1];
+            }
+        }
+        a[0] = area_xy[0]; a[1] = area_xy[1]; a[2] = area_n; a[3] = area_ell;
+        a[4] = (rnd() % 3 == 0) | (LONG)(rnd() & 255) << 8;
+    }
+    if (c == 13) {
+        /* the centre and the radii; inside a bare bitmap */
+        a[2] = (LONG)(rnd() % 40); a[3] = (LONG)(rnd() % 30);
+        if (!use_layer) {
+            if (a[2] > x0) a[2] = x0;
+            if (a[2] > W - 1 - x0) a[2] = W - 1 - x0;
+            if (a[3] > y0) a[3] = y0;
+            if (a[3] > H - 1 - y0) a[3] = H - 1 - y0;
+        }
+    }
     for (w = 0; w < WAYS; w++) {
         struct RastPort *rp = use_layer && w < FAST ? &lay_rp[w] : &ways[w].rp[k];
         set_rp(rp, fg, bg, mode, mask, ptrn);
@@ -504,7 +574,8 @@ static void one_core(void)
     /* a scroll of the rectangle's size or more is graphics.library's, whose
      * blitter can't reach the Fast RAM way (as in one_scroll) */
     if (have_fast && patched && !use_layer &&
-        !(c == 11 && ((a[5] < 0 ? -a[5] : a[5]) > a[2] - a[0] || (a[6] < 0 ? -a[6] : a[6]) > a[3] - a[1])))
+        !(c == 11 && ((a[5] < 0 ? -a[5] : a[5]) > a[2] - a[0] || (a[6] < 0 ? -a[6] : a[6]) > a[3] - a[1])) &&
+        !(c == 13 && ((mode & (COMPLEMENT | INVERSVID)) || lp != 0xFFFF)))
         fast_r = core_call(FAST, k, c, a, poly);
     else sync_fast(r0);
     compare(name[c], r0, r1, r2);
@@ -525,6 +596,7 @@ static int alloc_ways(int d)
         }
     for (w = 0; w < WAYS; w++) {
         if (!(core_tmpbm[w] = AllocBitMap(((W + 15) & ~15) + 16, 1, d, BMF_CLEAR, NULL))) return 0;
+        if (!core_trbuf[w] && !(core_trbuf[w] = AllocRaster(W, H))) return 0;
         InitRastPort(&core_tmp[w]);
         core_tmp[w].BitMap = core_tmpbm[w];
     }
@@ -555,6 +627,7 @@ static void free_ways(void)
     for (w = 0; w < FAST; w++)
         for (k = 0; k < 2; k++) { if (ways[w].bm[k]) FreeBitMap(ways[w].bm[k]); ways[w].bm[k] = NULL; }
     for (w = 0; w < WAYS; w++) { if (core_tmpbm[w]) FreeBitMap(core_tmpbm[w]); core_tmpbm[w] = NULL; }
+    for (w = 0; w < WAYS; w++) { if (core_trbuf[w]) FreeRaster(core_trbuf[w], W, H); core_trbuf[w] = NULL; }
     for (k = 0; k < 2; k++) {
         int p;
         for (p = 0; p < 8; p++) { if (ways[FAST].bm[k] && fast_bm[k].Planes[p]) FreeVec(fast_bm[k].Planes[p]); fast_bm[k].Planes[p] = NULL; }
