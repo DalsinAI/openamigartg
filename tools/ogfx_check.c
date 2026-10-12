@@ -108,6 +108,8 @@ static void copy_bm(struct BitMap *from, struct BitMap *to)
         for (y = 0; y < H; y++) CopyMem(at(from, p, y), at(to, p, y), W / 8);
 }
 
+static int parts_same(int w, int fix);
+
 /* Where way w first differs from graphics.library's: a report line. */
 static void where(int w)
 {
@@ -126,6 +128,7 @@ static void where(int w)
                         return;
                     }
     }
+    if (!parts_same(w, 0)) printf("    in the window's covered part (the smart refresh layer's own bitmap)\n");
 }
 
 static int same(int w)
@@ -135,7 +138,7 @@ static int same(int w)
         for (p = 0; p < depth; p++)
             for (y = 0; y < H; y++)
                 if (memcmp(at(ways[REF].bm[k], p, y), at(ways[w].bm[k], p, y), W / 8)) return 0;
-    return 1;
+    return parts_same(w, 0);
 }
 
 /* The Fast RAM way takes graphics.library's pixels, for a call only
@@ -170,6 +173,7 @@ static void compare(const char *what, LONG r0, LONG r1, LONG r2)
             /* start the next call from the same pixels */
             copy_bm(ways[REF].bm[0], ways[w].bm[0]);
             copy_bm(ways[REF].bm[1], ways[w].bm[1]);
+            parts_same(w, 1);
         }
     }
 }
@@ -180,6 +184,7 @@ static void sync_way(int w)
     WaitBlit();
     copy_bm(ways[REF].bm[0], ways[w].bm[0]);
     copy_bm(ways[REF].bm[1], ways[w].bm[1]);
+    parts_same(w, 1);
 }
 
 static void set_rp(struct RastPort *rp, ULONG fg, ULONG bg, ULONG mode, ULONG mask, int ptrn)
@@ -341,6 +346,38 @@ static void free_layers(void)
         lay_front[w] = lay_back[w] = NULL;
         lay_li[w] = NULL;
     }
+}
+
+/* Whether way w's window keeps the same pixels as graphics.library's in
+ * its covered part (a smart refresh layer's own bitmap), within the part's
+ * bounds: the bits around them are never shown. The ClipRects pair up by
+ * their rectangles (graphics.library may reorder a list). fix: way w takes
+ * graphics.library's part. 1 for the Fast RAM way and with no window. */
+static int parts_same(int w, int fix)
+{
+    struct ClipRect *a, *b;
+    if (w >= FAST || !lay_back[REF] || !lay_back[w]) return 1;
+    for (a = lay_back[REF]->ClipRect; a; a = a->Next) {
+        LONG x0, x1, x, y, p;
+        if (!a->obscured || !a->BitMap) continue;
+        for (b = lay_back[w]->ClipRect; b; b = b->Next)
+            if (b->bounds.MinX == a->bounds.MinX && b->bounds.MinY == a->bounds.MinY &&
+                b->bounds.MaxX == a->bounds.MaxX && b->bounds.MaxY == a->bounds.MaxY) break;
+        if (!b || !b->BitMap) { if (fix) continue; return 0; }
+        if (fix) {
+            for (p = 0; p < depth && p < a->BitMap->Depth; p++)
+                CopyMem(a->BitMap->Planes[p], b->BitMap->Planes[p], (ULONG)a->BitMap->BytesPerRow * a->BitMap->Rows);
+            continue;
+        }
+        x0 = a->bounds.MinX & 15; x1 = x0 + a->bounds.MaxX - a->bounds.MinX;
+        for (p = 0; p < depth && p < a->BitMap->Depth; p++)
+            for (y = 0; y <= a->bounds.MaxY - a->bounds.MinY && y < a->BitMap->Rows; y++) {
+                const UBYTE *ra = at(a->BitMap, p, y), *rb = at(b->BitMap, p, y);
+                for (x = x0; x <= x1; x++)
+                    if ((ra[x >> 3] ^ rb[x >> 3]) & (0x80 >> (x & 7))) return 0;
+            }
+    }
+    return 1;
 }
 
 static int make_layers(void)

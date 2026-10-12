@@ -875,14 +875,19 @@ OGFX_CALL void do_clipblit(struct ogfx_state *st, struct GfxBase *gfx, struct Ra
     if (st->enabled && srp && rp && srp->BitMap && rp->BitMap && ogfx_rp_takes_copy(srp) && ogfx_rp_takes_copy(rp) &&
         core_planar(gfx, srp->BitMap) &&
         !planar_bitmaps_alias(srp->BitMap, rp->BitMap,
-                              srp->BitMap->Depth < rp->BitMap->Depth ? srp->BitMap->Depth : rp->BitMap->Depth) &&
-        core_begin(st, gfx, srp, 0)) {
+                              srp->BitMap->Depth < rp->BitMap->Depth ? srp->BitMap->Depth : rp->BitMap->Depth)) {
+        /* two layers lock in address order, so two ClipBlits between the
+         * same layers in opposite directions can't each hold one */
+        struct RastPort *first = srp, *second = rp;
         LONG done = 0;
-        if (core_begin(st, gfx, rp, 0)) {
-            done = ogfx_rp_ClipBlit(srp, sx, sy, rp, dx, dy, w, h, minterm);
-            core_end(gfx, rp);
+        if (srp->Layer && rp->Layer && (ULONG)rp->Layer < (ULONG)srp->Layer) { first = rp; second = srp; }
+        if (core_begin(st, gfx, first, 0)) {
+            if (core_begin(st, gfx, second, 0)) {
+                done = ogfx_rp_ClipBlit(srp, (WORD)sx, (WORD)sy, rp, (WORD)dx, (WORD)dy, (WORD)w, (WORD)h, (UBYTE)minterm);
+                core_end(gfx, second);
+            }
+            core_end(gfx, first);
         }
-        core_end(gfx, srp);
         if (done) return;
     }
     ((clipblit_fn)original(st, gfx, OGFX_P_CLIPBLIT))(srp, sx, sy, rp, dx, dy, w, h, minterm, gfx);
