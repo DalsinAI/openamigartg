@@ -102,6 +102,8 @@ int ortg_ogpu_read_argb(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG 
 int ortg_ogpu_alpha(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, const void *src, ULONG src_bpr, ULONG alpha);
 void ortg_stat(int kind, int gpu, ULONG pixels);
 ULONG ortg_draw_stats(ULONG *counts, ULONG kinds, ULONG flags);
+struct OpenRTGVirglFrame;
+LONG ortg_present_virgl(struct RastPort *rp, LONG x, LONG y, const struct OpenRTGVirglFrame *f);
 
 /* OpenRTG's screens on: the patches go in (once). boards[n]: monitor n's board. */
 int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **tables, APTR *boards, const ULONG *board_sizes);

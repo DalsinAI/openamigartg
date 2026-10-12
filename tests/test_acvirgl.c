@@ -64,6 +64,7 @@ int main(void)
     uint32_t cr = cmd(ACV_RES_CREATE, 12, a_res);
     acvirgl_run(v, map, NULL, BLK, at - BLK);
     CHECK(result(ch) == ACV_PROTOCOL, "hello: %d", result(ch));
+    CHECK(rbe(ch + 8) & ACV_HOST_PRESENT, "hello says the host presents (flags %08x)", rbe(ch + 8));
     CHECK(rbe(ci + 12) >= 1 && rbe(ci + 16) > 0, "capset 2: version %u, %u bytes", rbe(ci + 12), rbe(ci + 16));
     CHECK(result(cc) > 0 && rbe(0x20000) >= 1, "caps: %d bytes, max_version %u (the first word, in the Amiga's order)", result(cc), rbe(0x20000));
     CHECK(result(cx) == 0 && result(cr) == 0, "context %d, resource %d", result(cx), result(cr));
@@ -104,6 +105,75 @@ int main(void)
     CHECK(arena[c] == 0xFF && arena[c + 1] >= 0x3F && arena[c + 1] <= 0x40 && arena[c + 2] >= 0x7F && arena[c + 2] <= 0x80
           && arena[c + 3] >= 0xBF && arena[c + 3] <= 0xC0, "the clear comes back as A, R, G, B");
 
+
+    /* ACV_PRESENT: a known picture into the resource (bytes as they are,
+     * so B, G, R, A as B8G8R8A8 keeps them), then straight into "video RAM". */
+    for (i = 0; i < 64 * 64 * 4; i++) arena[0x40000 + i] = (uint8_t)(i * 13 + (i >> 9) + 5);
+    a_put[13] = ACV_SWAP_NONE;
+    begin(); cp = cmd(ACV_PUT, 14, a_put);
+    acvirgl_run(v, map, NULL, BLK, at - BLK);
+    CHECK(result(cp) == 0, "the picture went up (%d)", result(cp));
+    {
+        /* a 100x80 XRGB32 target at 0x60000, the resource at (10, 5) in it;
+         * rectangles: one inside, one that runs off the resource and the
+         * target, one wholly outside the resource */
+        enum { TW = 100, TH = 80, TB = TW * 4, T = 0x60000, T16 = 0x70000 };
+        uint32_t pa[16] = { 1, 1, 0, (10u << 16) | 5u, T, TB, OGPU_FMT_XRGB32, ((uint32_t)TW << 16) | TH, 0, 3,
+                            (12u << 16) | 7u, (20u << 16) | 10u,
+                            (60u << 16) | 60u, (40u << 16) | 40u,
+                            (80u << 16) | 0u, (20u << 16) | 4u };
+        uint32_t x, y, ok = 1, outside_ok = 1, pixels;
+        memset(arena + T, 0xEE, TB * TH);
+        begin(); c = cmd(ACV_PRESENT, 16, pa);
+        acvirgl_run(v, map, NULL, BLK, at - BLK);
+        /* 20x10 + (74-60)x(69-60) = 200 + 126 */
+        pixels = 20 * 10 + 14 * 9;
+        CHECK(result(c) == (int32_t)pixels, "present wrote %d pixels, want %u", result(c), pixels);
+        for (y = 0; y < TH; y++)
+            for (x = 0; x < TW; x++) {
+                const uint8_t *d = arena + T + y * TB + x * 4;
+                int in = (x >= 12 && x < 32 && y >= 7 && y < 17) || (x >= 60 && x < 74 && y >= 60 && y < 69);
+                if (in) {
+                    const uint8_t *p = arena + 0x40000 + ((y - 5) * 64 + (x - 10)) * 4;
+                    if (d[0] != 0 || d[1] != p[2] || d[2] != p[1] || d[3] != p[0]) ok = 0;
+                } else if (d[0] != 0xEE || d[1] != 0xEE || d[2] != 0xEE || d[3] != 0xEE) outside_ok = 0;
+            }
+        CHECK(ok, "present: X 0, R, G, B from the resource");
+        CHECK(outside_ok, "present: nothing outside the rectangles changed");
+
+        /* the same into RGB565, flipped */
+        pa[4] = T16; pa[5] = TW * 2; pa[6] = OGPU_FMT_RGB565; pa[8] = ACV_PRESENT_FLIP_Y; pa[9] = 1;
+        memset(arena + T16, 0, TW * 2 * TH);
+        begin(); c = cmd(ACV_PRESENT, 12, pa);
+        acvirgl_run(v, map, NULL, BLK, at - BLK);
+        ok = result(c) == 200;
+        for (y = 7; y < 17; y++)
+            for (x = 12; x < 32; x++) {
+                const uint8_t *d = arena + T16 + y * TW * 2 + x * 2;
+                const uint8_t *p = arena + 0x40000 + ((63 - (y - 5)) * 64 + (x - 10)) * 4;
+                if (d[0] != ((p[2] & 0xF8) | (p[1] >> 5)) || d[1] != (((p[1] & 0x1C) << 3) | (p[0] >> 3))) ok = 0;
+            }
+        CHECK(ok, "present: RGB565, flipped (%d)", result(c));
+
+        /* refusals: out of reach, an unknown resource, a bad format, bad flags */
+        pa[4] = ARENA - 16; pa[5] = TB; pa[6] = OGPU_FMT_XRGB32; pa[8] = 0;
+        begin(); c = cmd(ACV_PRESENT, 12, pa);
+        pa[4] = T; pa[1] = 99; x = cmd(ACV_PRESENT, 12, pa);
+        pa[1] = 1; pa[6] = OGPU_FMT_CLUT8; y = cmd(ACV_PRESENT, 12, pa);
+        acvirgl_run(v, map, NULL, BLK, at - BLK);
+        CHECK(result(c) == ACV_ERR_NOMAP && result(x) == ACV_ERR_RENDERER && result(y) == ACV_ERR_BADCMD,
+              "present refusals: %d %d %d", result(c), result(x), result(y));
+        pa[6] = OGPU_FMT_XRGB32; pa[8] = 2;
+        begin(); c = cmd(ACV_PRESENT, 12, pa);
+        acvirgl_run(v, map, NULL, BLK, at - BLK);
+        CHECK(result(c) == ACV_ERR_BADCMD, "present: unknown flags (%d)", result(c));
+        /* a count longer than the command */
+        pa[8] = 0; pa[9] = 3;
+        begin(); c = cmd(ACV_PRESENT, 12, pa);
+        acvirgl_run(v, map, NULL, BLK, at - BLK);
+        CHECK(result(c) == ACV_ERR_BADCMD, "present: a short rectangle list (%d)", result(c));
+    }
+
     /* a wrong length: BADCMD, and nothing after it runs */
     begin();
     be(at, ACV_HDR(ACV_RES_UNREF, 2)); be(at + 4, 0); at += 8;
@@ -116,6 +186,9 @@ int main(void)
         acvirgl_stats(v, &s);
         printf("acvirgl: %llu blocks, %llu submits, %llu puts, %llu gets, %llu errors\n", (unsigned long long)s.blocks,
                (unsigned long long)s.submits, (unsigned long long)s.puts, (unsigned long long)s.gets, (unsigned long long)s.errors);
+        printf("acvirgl: %llu presents, %llu rectangles, %llu pixels; %llu frame bytes read back\n", (unsigned long long)s.presents,
+               (unsigned long long)s.present_rects, (unsigned long long)s.present_pixels, (unsigned long long)s.frame_get_bytes);
+        CHECK(s.presents == 2 && s.present_rects == 3 && s.present_pixels == 526 && s.frame_get_bytes == 0, "present counters");
     }
     acvirgl_destroy(v);
     printf("acvirgl: %d of %d checks passed\n", checks - fails, checks);

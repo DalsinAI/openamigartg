@@ -22,4 +22,5 @@ LONG ORTG_InvertPixels(struct RastPort *rp, LONG x, LONG y, LONG width, LONG hei
 BOOL ORTG_BitMapInfo(struct BitMap *bitmap, struct OpenRTGBitMapInfo *info)(a0,a1)
 ULONG ORTG_DrawStats(ULONG *counts, ULONG kinds, ULONG flags)(a0,d0,d1)
 LONG ORTG_WritePixelsAlpha(struct RastPort *rp, LONG x, LONG y, const struct OpenRTGPixels *pixels, ULONG alpha)(a1,d0,d1,a0,d2)
+LONG ORTG_PresentVirgl(struct RastPort *rp, LONG x, LONG y, const struct OpenRTGVirglFrame *frame)(a1,d0,d1,a0)
 ==end
