@@ -22,13 +22,14 @@ static void ot_audio_request(struct AudioState *a, int n, struct AHIRequest *lin
 
 static void ot_audio_close(struct AudioState *a);
 
-static int ot_audio_open(struct AudioState *a)
+static int ot_audio_open(struct AudioState *a, uint64_t start_sample)
 {
     memset(a, 0, sizeof(*a));
     a->noise = 0x13579BDFUL;
     a->last_step = ~0UL;
     a->kick_age = OT_AUDIO_RATE;
     a->hat_age = OT_AUDIO_RATE;
+    a->sample_cursor = start_sample;
 
     a->pcm[0] = (WORD *)AllocVec(OT_AUDIO_WORDS * sizeof(WORD) * 2UL, MEMF_ANY | MEMF_CLEAR);
     if (!a->pcm[0]) goto fail;
