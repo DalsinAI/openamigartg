@@ -1,5 +1,5 @@
 /*
- * OpenTensor: First Light
+ * OpenTensor: Beyond First Light
  *
  * An AmigaOS 3.x demo for the Open stack:
  *   - Mesa / GLA / OpenGPU for 3D
@@ -45,9 +45,11 @@ struct Library *CyberGfxBase = NULL;
 #define OT_PI 3.14159265358979323846f
 #define OT_TAU 6.28318530717958647692f
 #define OT_AUDIO_RATE 44100UL
-#define OT_AUDIO_FRAMES 2048UL
+#define OT_AUDIO_FRAMES 4096UL
 #define OT_AUDIO_WORDS (OT_AUDIO_FRAMES * 2UL)
-#define OT_SEQUENCE_SECONDS 64.0f
+#define OT_SEQUENCE_SECONDS 164.0f
+#define OT_SCENE_COUNT 11
+#define OT_JUMP_NONE (-9999.0f)
 #define OT_MAX(a,b) ((a) > (b) ? (a) : (b))
 #define OT_MIN(a,b) ((a) < (b) ? (a) : (b))
 
@@ -79,6 +81,8 @@ struct AudioState {
 struct Demo {
     int width;
     int height;
+    int full_width;
+    int full_height;
     int depth;
     int windowed;
     int cpu;
@@ -87,11 +91,19 @@ struct Demo {
     int overlay;
     int paused;
     int seconds;
+    int current_scene;
+    int breakout_active;
+    int breakout_move_tick;
+    float start_offset;
+    float jump_request;
     struct Screen *screen;
     struct Window *window;
+    struct Window *breakout_window;
     struct gla_display *display;
     struct gla_context *context;
     struct gla_buffer *buffer;
+    struct gla_buffer *main_buffer;
+    struct gla_buffer *breakout_buffer;
     struct gla_present present;
     struct gla_os3_target target;
     struct Mesh ground;
@@ -99,6 +111,7 @@ struct Demo {
     struct Mesh stars;
     struct Mesh tunnel;
     struct AudioState audio;
+    char driver_name[16];
     double start_time;
     double pause_started;
     double pause_total;
@@ -191,8 +204,9 @@ static const uint32_t ot_notes[] = {
 
 static void ot_audio_fill(struct AudioState *a, WORD *dst)
 {
-    const ULONG step_samples = 5168UL;  /* 128 BPM, approximately one 16th */
+    const ULONG step_samples = 5168UL;
     ULONG i;
+    ULONG cycle_second = (ULONG)(a->sample_cursor / OT_AUDIO_RATE) % (ULONG)OT_SEQUENCE_SECONDS;
     static const UBYTE progression[32] = {
         8, 10, 12, 15, 8, 10, 13, 15,
         5,  8, 10, 13, 5,  8, 12, 13,
@@ -248,3 +262,24 @@ static void ot_audio_fill(struct AudioState *a, WORD *dst)
 
         left  = bass + kick + pad + hat + lead * 3 / 4;
         right = bass + kick + pad - hat / 2 + lead;
+
+        if (cycle_second >= 64 && cycle_second < 78) {
+            int32_t click = within < 180 ? (int32_t)(180 - within) * 26 : 0;
+            left = left * 2 / 5 + click;
+            right = right * 2 / 5 - click / 2;
+        } else if (cycle_second >= 78 && cycle_second < 96) {
+            int32_t pan = ot_triangle(a->lead_phase >> 1);
+            left += lead * (32767 - pan) / 65534;
+            right += lead * (32767 + pan) / 65534;
+            left += pad; right += pad;
+        } else if (cycle_second >= 96 && cycle_second < 114) {
+            left = left * 5 / 4 + bass / 2 + pad;
+            right = right * 5 / 4 + bass / 2 + pad;
+        } else if (cycle_second >= 114 && cycle_second < 130) {
+            int32_t mono = (left + right) / 2;
+            left = mono + hat / 5;
+            right = mono - hat / 5;
+        } else if (cycle_second >= 130) {
+            left = left * 6 / 5 + pad;
+            right = right * 6 / 5 + pad;
+        }
