@@ -27,15 +27,21 @@ D3= D3SRC=
 if [ -f "$HERE/opengpu/ogpu_3d.c" ]; then D3=-DOGPU_WITH_3D; D3SRC="$HERE/opengpu/ogpu_3d.c"; fi
 # OpenGfx (library/ogfx): the patches' glue and its leaves. The leaves are AC090
 # magic functions: stack arguments, and no loop turned into a call (ogfx_leaves.c).
+# OpenGfx's drawing core comes from openamigagfx at a pinned commit (one copy).
+sh "$ROOT/tools/fetch_ogfx_core.sh" "$OUT"
+for f in gfx_core gfx_rp; do
+    "$CC" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
+        -I"$OUT/ogfx-core" -c -o "$OUT/ogfx_$f.o" "$OUT/ogfx-core/$f.c"
+done
 "$CC" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
-    -I"$ROOT/include" -c -o "$OUT/ogfx_lib.o" "$HERE/ogfx/ogfx_lib.c"
+    -I"$ROOT/include" -I"$OUT/ogfx-core" -c -o "$OUT/ogfx_lib.o" "$HERE/ogfx/ogfx_lib.c"
 "$CC" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-lto -fno-builtin -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror \
     -c -o "$OUT/ogfx_leaves.o" "$HERE/ogfx/ogfx_leaves.c"
 # -mnobitfield: GCC's bitfield instructions are slow on the AC090's JIT (opengpu_core.c's header).
 "$CC" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-toplevel-reorder -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
     -nostartfiles -nostdlib -I"$ROOT/include" \
     $D3 -o "$OUT/opengpu.library" "$HERE/opengpu/opengpu_lib.c" "$HERE/opengpu/ogpu_core.c" $D3SRC "$HERE/opengpu/ogpu_module.c" "$HERE/string.c" \
-    "$OUT/ogfx_lib.o" "$OUT/ogfx_leaves.o" -lgcc
+    "$OUT/ogfx_lib.o" "$OUT/ogfx_leaves.o" "$OUT/ogfx_gfx_core.o" "$OUT/ogfx_gfx_rp.o" -lgcc
 echo "$OUT/opengpu.library ($(wc -c < "$OUT/opengpu.library") bytes)"
 # No writable data: it may run from ROM, so everything it keeps is in its base.
 python3 "$ROOT/tools/hunk_rw_check.py" "$OUT/opengpu.library"
