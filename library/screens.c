@@ -586,6 +586,49 @@ int ortg_ogpu_alpha(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
     return ogpu_submit_batch(&b);
 }
 
+/* Pixels in memory drawn at another size (ORTG_WritePixels with a dest_width
+ * or dest_height, ScalePixelArray), one piece at a time (0.16): a surface
+ * over the source rectangle, sw x sh at src (ARGB32 or RGB565, taken as
+ * opaque), COMPOSITE nearest to dw x dh at dx, dy on the bitmap, clipped to
+ * the piece. The CPU code samples the same source pixel for each target
+ * pixel (pixels.c's src_x and src_y: OpenGPU's centre rule).
+ *
+ * A 32-bit bitmap's pixels keep their top byte 0, as ortg_encode gives: seen
+ * as XRGB32 (stream v1.3) when OpenGPU has it; else as ARGB32, where an
+ * opaque COMPOSITE writes the top byte 255, and an INVERT of the piece with
+ * 0xFF000000 in the same batch turns it to 0 (a v1.2 runtime: the Cradle's
+ * until it carries v1.3). */
+int ortg_ogpu_scale(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
+                    const void *src, ULONG src_bpr, LONG sw, LONG sh, int format,
+                    LONG dx, LONG dy, LONG dw, LONG dh)
+{
+    UBYTE stream[ORTG_OGPU_WORDS * 4];
+    struct OGPUBatch b;
+    int tf = 0, clear_top = 0;
+    if (format != OGPU_FMT_ARGB32 && format != OGPU_FMT_RGB565) return 0;
+    if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 || sw > OGPU_MAX_SIZE || sh > OGPU_MAX_SIZE || dw > OGPU_MAX_SIZE || dh > OGPU_MAX_SIZE)
+        return 0;
+    if (dx < -32768 || dy < -32768 || dx > 32767 || dy > 32767) return 0;
+    if (bm->bpp == 2) {
+        tf = ogpu_format_of(bm);
+        if (tf != OGPU_FMT_RGB565 || !ogpu_can_fmt(OGPU_OP_COMPOSITE, tf)) return 0;
+    } else if (bm->bpp == 4 && bm->format == ORTG_ARGB32) {
+        if (ogpu_can_fmt(OGPU_OP_COMPOSITE, OGPU_FMT_XRGB32)) tf = OGPU_FMT_XRGB32;
+        else if (ogpu_can_fmt(OGPU_OP_COMPOSITE, OGPU_FMT_ARGB32) && ogpu_can_fmt(OGPU_OP_INVERT, OGPU_FMT_ARGB32)) {
+            tf = OGPU_FMT_ARGB32;
+            clear_top = 1;
+        } else return 0;
+    } else return 0;
+    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
+    ogpu_surface(&b, 0, (ULONG)bm->mem, bm->stride, bm->width, bm->height, tf);
+    ogpu_surface(&b, 1, (ULONG)src, src_bpr, sw, sh, format);
+    ogpu_target(&b, 0);
+    ogpu_clip(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    ogpu_composite(&b, 1, 0, 0, sw, sh, dx, dy, dw, dh, 255, 0);
+    if (clear_top) ogpu_invert(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, 0xFF000000UL);
+    return ogpu_submit_batch(&b);
+}
+
 static int ogpu_pattern_piece(struct ortg_bitmap *bm,
                               LONG x0, LONG y0, LONG x1, LONG y1,
                               LONG dx, LONG dy, const struct fill_ctx *f,
