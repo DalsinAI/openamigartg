@@ -9,12 +9,12 @@
 # files must still match the pin).
 set -eu
 OUT=${1:?usage: fetch_ogfx_core.sh OUT_DIR}
-PIN=cbe192bfb4328a8ccc8b53a437067912939f300f
+PIN=f8f646af13e5808e48f1f6547ec961a8be8979a7
 REPO=${OGFX_CORE_REPO:-https://github.com/DalsinAI/openamigagfx.git}
 SUMS='52fa2b89fdd526c0fa1f3b2cf07cda4d96259d12508fc989bb43b085a40a185d  gfx_core.c
 ce60403283f6278ca5394cbbd13ac17322e4a4488dadad8d384f3cf5478863d5  gfx_core.h
-9b08fa6c1e44832c4eabc741a1672b3d72b8dbfc6b50c0af8fceab70f82226cd  gfx_rp.c
-0774a4dfb9bb25b10eaddcb77ad4d0caf916d9967d5add5a870c2374ff04ead3  gfx_rp.h'
+3cee0f707102fe5456c3753ebe32bbcc955ab7c16094e1494b270f672d41337d  gfx_rp.c
+efd12538072db19cea5142ff9b2c34f42020669735b18fc0439c4a1bea8f651b  gfx_rp.h'
 DST="$OUT/ogfx-core"
 mkdir -p "$DST"
 if (cd "$DST" && echo "$SUMS" | sha256sum -c --quiet) >/dev/null 2>&1; then exit 0; fi

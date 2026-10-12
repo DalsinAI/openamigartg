@@ -21,7 +21,9 @@
  * copied to the other ways when the patches are not in). From 0.11 a
  * third of them draw in a layer (a simple refresh window with another in
  * front of it). From 0.12 BltBitMapRastPort too, from the way's other
- * bitmap. On AmigaChrome (OGFX_STATUS_AMIGACHROME)
+ * bitmap. From 0.13 ClipBlit (within the RastPort, or from the way's
+ * other one) and ScrollRaster too, and the window is a smart refresh one,
+ * where the core takes those two. On AmigaChrome (OGFX_STATUS_AMIGACHROME)
  * OpenGfx's leaves take Chip RAM, so the leaves are what is checked; on a
  * real Amiga they leave Chip RAM to the blitter.
  *
@@ -320,9 +322,9 @@ static UBYTE *core_arr[WAYS];          /* the pixel arrays, one a way */
 static struct RastPort core_tmp[WAYS]; /* WritePixelArray8's temporary RastPorts */
 static struct BitMap *core_tmpbm[WAYS];
 
-/* A window's RastPort on the Chip RAM ways' first bitmap: a simple refresh
- * layer with another in front of it (no backfill), so the core's calls are
- * checked cut to a layer's ClipRects too. Not on the Fast RAM way. */
+/* A window's RastPort on the Chip RAM ways' first bitmap: a smart refresh
+ * layer with a simple refresh one in front of it (no backfill), so the
+ * core's calls are checked cut to a layer's ClipRects too. Not on the Fast RAM way. */
 struct Library *LayersBase;
 static struct Layer_Info *lay_li[FAST];
 static struct Layer *lay_back[FAST], *lay_front[FAST];
@@ -347,7 +349,7 @@ static int make_layers(void)
     if (!LayersBase) return 0;
     for (w = 0; w < FAST; w++) {
         if (!(lay_li[w] = NewLayerInfo())) return 0;
-        lay_back[w] = CreateUpfrontHookLayer(lay_li[w], ways[w].bm[0], 13, 7, 150, 95, LAYERSIMPLE, LAYERS_NOBACKFILL, NULL);
+        lay_back[w] = CreateUpfrontHookLayer(lay_li[w], ways[w].bm[0], 13, 7, 150, 95, LAYERSMART, LAYERS_NOBACKFILL, NULL);
         lay_front[w] = lay_back[w] ? CreateUpfrontHookLayer(lay_li[w], ways[w].bm[0], 60, 30, 110, 70, LAYERSIMPLE,
                                                             LAYERS_NOBACKFILL, NULL) : NULL;
         if (!lay_front[w]) return 0;
@@ -391,6 +393,12 @@ static LONG core_call(int w, int k, int c, const LONG *a, const WORD *poly)
          * a[4] the minterm, a[5] a[6] where it lands */
         BltBitMapRastPort(ways[w].bm[1 - k], a[0], a[1], rp, a[5], a[6], a[2], a[3], (ULONG)a[4]);
         break;
+    case 10:
+        /* within the RastPort (a[4] & 0x100) or from the way's other one,
+         * as case 9 */
+        ClipBlit(a[4] & 0x100 ? rp : &ways[w].rp[1 - k], a[0], a[1], rp, a[5], a[6], a[2], a[3], (ULONG)a[4] & 0xF0);
+        break;
+    case 11: ScrollRaster(rp, a[5], a[6], a[0], a[1], a[2], a[3]); break;
     default:
         for (i = 0; i < CORE_ARR; i++) core_arr[w][i] = (UBYTE)(i * 5 + a[4]);
         WriteChunkyPixels(rp, a[0], a[1], a[2], a[3], core_arr[w], a[4] % 9 + a[2] - a[0] + 1);
@@ -402,12 +410,13 @@ static LONG core_call(int w, int k, int c, const LONG *a, const WORD *poly)
 static void one_core(void)
 {
     static const char *const name[] = { "Draw", "PolyDraw", "WritePixel", "ReadPixel", "SetRast", "BltPattern",
-                                        "WritePixelArray8", "ReadPixelArray8", "WriteChunkyPixels", "BltBitMapRastPort" };
+                                        "WritePixelArray8", "ReadPixelArray8", "WriteChunkyPixels", "BltBitMapRastPort",
+                                        "ClipBlit", "ScrollRaster" };
     LONG a[7], r0, r1, r2 = 0, x0 = rnd_in(0, W - 1), y0 = rnd_in(0, H - 1), x1 = rnd_in(x0, W - 1), y1 = rnd_in(y0, H - 1);
     ULONG fg = rnd() & 255, bg = rnd() & 255, mode = rnd() & 7, mask = rnd() & 3 ? 0xFF : rnd() & 255;
     UWORD lp = rnd() & 1 ? 0xFFFF : (UWORD)rnd();
     WORD poly[12];
-    int c = (int)(rnd() % 10), k = rnd() & 1, w, ptrn = (rnd() & 3) == 0, i;
+    int c = (int)(rnd() % 12), k = rnd() & 1, w, ptrn = (rnd() & 3) == 0, i;
     if (c == 4 && (rnd() & 3)) c = 2;               /* SetRast seldom */
     a[0] = x0; a[1] = y0; a[2] = x1; a[3] = y1; a[4] = 0;
     if (c == 0) { a[2] = rnd_in(0, W - 1); a[3] = rnd_in(0, H - 1); }
@@ -418,20 +427,27 @@ static void one_core(void)
         if (a[4] * (y1 - y0 + 1) > 2048) a[4] = 0;
         for (i = 0; i < 2048; i++) core_mask[i] = (UBYTE)rnd();
     }
-    if (c >= 6 && c != 9) { a[4] = rnd() & 255; if (c != 7) mode = JAM1; }
+    if (c >= 6 && c <= 8) { a[4] = rnd() & 255; if (c != 7) mode = JAM1; }
     use_layer = k == 0 && lay_back[0] && c != 5 && (rnd() % 3) == 0;  /* BltPattern's mask: not in a layer */
-    if (c == 9) {
+    if (c == 9 || c == 10) {
         /* inside the source always, and inside a bare bitmap: graphics.library
          * clips neither (past an edge it writes memory not the bitmap's); in
          * the layer it may hang over the layer's edges */
         a[2] = x1 - x0 + 1; a[3] = y1 - y0 + 1;
         a[4] = rnd() % 3 ? 0xC0 : rnd() & 0xF0;
+        if (c == 10 && (rnd() & 1)) a[4] |= 0x100;
         a[5] = use_layer ? rnd_in(-8, 150 - 13 + 8) : rnd_in(0, W - 1);
         a[6] = use_layer ? rnd_in(-8, 95 - 7 + 8) : rnd_in(0, H - 1);
         if (!use_layer) {
             if (a[5] + a[2] > W) a[2] = W - a[5];
             if (a[6] + a[3] > H) a[3] = H - a[6];
         }
+    }
+    if (c == 11) {
+        /* the rectangle inside a bare bitmap, and hanging over the layer's
+         * edges in the layer */
+        if (use_layer) { a[2] = rnd_in(x0, x0 + 150); a[3] = rnd_in(y0, y0 + 95); }
+        a[5] = rnd_in(-12, 12); a[6] = rnd_in(-8, 8);
     }
     for (w = 0; w < WAYS; w++) {
         struct RastPort *rp = use_layer && w < FAST ? &lay_rp[w] : &ways[w].rp[k];
@@ -441,13 +457,18 @@ static void one_core(void)
     sprintf(args, "%ld,%ld,%ld,%ld fg %lu bg %lu mode %lu mask %02lx%s ptrn %04x arg %ld%s", (long)a[0], (long)a[1], (long)a[2], (long)a[3],
             (unsigned long)fg, (unsigned long)bg, (unsigned long)mode, (unsigned long)mask, ptrn ? " pattern" : "", lp, (long)a[4],
             use_layer ? " in a layer" : "");
-    if (c == 9) sprintf(args + strlen(args), " to %ld,%ld", (long)a[5], (long)a[6]);
+    if (c == 9 || c == 10) sprintf(args + strlen(args), " to %ld,%ld", (long)a[5], (long)a[6]);
+    if (c == 11) sprintf(args + strlen(args), " by %ld,%ld", (long)a[5], (long)a[6]);
     kind = 5;
     on(0); r0 = core_call(REF, k, c, a, poly);
     on(1);
     if (patched) { r1 = core_call(LVO, k, c, a, poly); r2 = core_call(PAT, k, c, a, poly); }
     else { sync_way(LVO); r1 = r0; }
-    if (have_fast && patched && !use_layer) fast_r = core_call(FAST, k, c, a, poly);
+    /* a scroll of the rectangle's size or more is graphics.library's, whose
+     * blitter can't reach the Fast RAM way (as in one_scroll) */
+    if (have_fast && patched && !use_layer &&
+        !(c == 11 && ((a[5] < 0 ? -a[5] : a[5]) > a[2] - a[0] || (a[6] < 0 ? -a[6] : a[6]) > a[3] - a[1])))
+        fast_r = core_call(FAST, k, c, a, poly);
     else sync_fast(r0);
     compare(name[c], r0, r1, r2);
     use_layer = 0;
