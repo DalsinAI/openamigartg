@@ -58,6 +58,8 @@ The old library is kept in amigachrome-guest, archived in place (`libraries/open
 
 - **opengpu.library 0.11 (12 October 2026): the core draws in windows.** The same ten calls now go through the core on a layered RastPort too (openamigagfx 20c7465, its #3: 0 of 3664 layered checks differ from OS 3.2's graphics 47.10 and layers 46.2). OpenGfx locks the layer (LockLayerRom) and draws only when the screen's bitmap and every covered part a smart refresh layer keeps are standard planar bitmaps the CPU may touch; super bitmap layers and BltPattern through a mask in a layer stay with `graphics.library`. OpenGfxCheck draws a third of the core calls in a simple refresh layer with another in front of it.
 
+- **opengpu.library 0.12 (12 October 2026): BltBitMapRastPort through the core.** Where no provider takes it, `BltBitMapRastPort` draws through the core (openamigagfx cbe192b, its #4: 0 of 3743 plain and 3682 layered checks differ from OS 3.2), in a layer too, when its source is also a standard planar bitmap the CPU may touch. `BltBitMap` keeps its own leaf, which already matched `graphics.library`. OpenGfxCheck adds `BltBitMapRastPort` to the core calls.
+
 ## Compatibility
 
 - **`opengfx.library` 1.2, the stub** (amigachrome-guest `libraries/opengfx/stub`, 1.7 KB): opening it opens opengpu.library; each of its six calls jumps to the same LVO there. With no opengpu.library, or one older than 0.6, opening it fails, as when it is not installed, so programs fall back as they always have.
