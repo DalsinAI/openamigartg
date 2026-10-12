@@ -10,11 +10,34 @@ SYS="$P/m68k-amigaos"
 OLD_STOVE=${OLD_STOVE:-"$HOME/AmigaChrome/stoves/os32"}
 OLD_SYS="$OLD_STOVE/prefix/m68k-amigaos"
 CC="$P/bin/m68k-amigaos-gcc"
+PYTHON=${PYTHON:-python3}
 VERSION=0.2.0
 PACKAGE="OpenTensor-Beyond-First-Light-$VERSION.zip"
 
 [ -x "$CC" ] || { echo "OpenTensor: missing compiler $CC" >&2; exit 2; }
 [ -f "$SYS/include/GL/gl.h" ] || { echo "OpenTensor: OpenGL headers are missing" >&2; exit 4; }
+
+ICON_WRITER=${AMIGAICON_WRITER:-}
+if [ -z "$ICON_WRITER" ]; then
+    for candidate in \
+        "$ROOT/../amigachrome-guest/tools/icons/amigaicon.py" \
+        "$HOME/AmigaChromeGuest/tools/icons/amigaicon.py" \
+        "$HOME/AmigaChrome/tools/icons/amigaicon.py"
+    do
+        if [ -f "$candidate" ]; then
+            ICON_WRITER=$candidate
+            break
+        fi
+    done
+fi
+[ -n "$ICON_WRITER" ] && [ -f "$ICON_WRITER" ] || {
+    echo "OpenTensor: set AMIGAICON_WRITER to AmigaChrome guest tools/icons/amigaicon.py" >&2
+    exit 6
+}
+"$PYTHON" -c 'import PIL' >/dev/null 2>&1 || {
+    echo "OpenTensor: Pillow is required to generate the Workbench GlowIcons" >&2
+    exit 7
+}
 
 rm -rf "$OUT"
 mkdir -p "$OUT/package/OpenTensor" "$OUT/work"
@@ -74,7 +97,20 @@ GL_DIR=$(dirname "$GL_LIB")
     -o "$OUT/package/OpenTensor/OpenTensor"
 
 file "$OUT/package/OpenTensor/OpenTensor"
-sha256sum "$OUT/package/OpenTensor/OpenTensor" > "$OUT/package/OpenTensor/SHA256SUMS"
+
+cat > "$OUT/package/OpenTensor/Launch" <<'AMIGA'
+FailAt 21
+Stack 1000000
+CD DH1:OpenTensor
+OpenTensor
+AMIGA
+
+cat > "$OUT/package/OpenTensor/Launch-ActII" <<'AMIGA'
+FailAt 21
+Stack 1000000
+CD DH1:OpenTensor
+OpenTensor START 64
+AMIGA
 
 cat > "$OUT/package/OpenTensor/README.txt" <<'TXT'
 OpenTensor: Beyond First Light
@@ -82,7 +118,13 @@ OpenTensor: Beyond First Light
 
 A 164-second AmigaOS 3.x demo using Mesa/GLA/OpenGPU, OpenRTG and ahi.device.
 
-Recommended AmigaChrome launch:
+Workbench:
+
+    Double-click Launch              complete production
+    Double-click Launch-ActII        begin after First Light
+    Double-click OpenTensor          run the executable directly
+
+AmigaShell:
 
     Stack 1000000
     OpenTensor
@@ -119,12 +161,33 @@ Compiler: $("$CC" --version | head -1)
 Graphics: Mesa / GLA / OpenGPU / OpenRTG
 Audio: ahi.device, generated 44.1 kHz signed 16-bit stereo
 Sequence: 164 seconds, 11 scenes
+Workbench: custom 64x64 GlowIcons with classic four-colour fallbacks
 libGL: $GL_LIB
 EOF2
 
+"$PYTHON" "$HERE/make_workbench_icons.py" \
+    --writer "$ICON_WRITER" \
+    --out "$OUT/package" \
+    --preview "$OUT/OpenTensor-icons-preview.png"
+
+test -s "$OUT/package/OpenTensor.info"
+test -s "$OUT/package/OpenTensor/OpenTensor.info"
+test -s "$OUT/package/OpenTensor/Launch.info"
+test -s "$OUT/package/OpenTensor/Launch-ActII.info"
+test -s "$OUT/OpenTensor-icons-preview.png"
+
+(
+    cd "$OUT/package/OpenTensor"
+    sha256sum \
+        OpenTensor OpenTensor.info \
+        Launch Launch.info \
+        Launch-ActII Launch-ActII.info \
+        > SHA256SUMS
+)
+
 (
     cd "$OUT/package"
-    zip -qr "$OUT/$PACKAGE" OpenTensor
+    zip -qr "$OUT/$PACKAGE" OpenTensor OpenTensor.info
 )
 sha256sum "$OUT/$PACKAGE" > "$OUT/SHA256SUMS"
 printf 'OPENTENSOR_PACKAGE=%s\n' "$OUT/$PACKAGE"
