@@ -21,13 +21,14 @@
 #define OGFX_REG(r, decl) register decl __asm(#r)
 
 /* graphics.library's calls OpenGfx owns, in this order everywhere: 1.1's
- * eight, then the fourteen of 0.8 (gfx.h). */
+ * eight, the fourteen of 0.8 (gfx.h), then 0.14's six. */
 enum {
     OGFX_P_TEXT, OGFX_P_TEXTLENGTH, OGFX_P_TEXTEXTENT, OGFX_P_TEXTFIT,
     OGFX_P_RECTFILL, OGFX_P_BLTBITMAP, OGFX_P_BLTTEMPLATE, OGFX_P_SCROLLRASTER,
     OGFX_P_BLTPATTERN, OGFX_P_SETRAST, OGFX_P_DRAW, OGFX_P_POLYDRAW,
     OGFX_P_WRITEPIXEL, OGFX_P_READPIXEL, OGFX_P_BLTBMRP, OGFX_P_BLTMASKBMRP,
     OGFX_P_CLIPBLIT, OGFX_P_WCP, OGFX_P_WPA8, OGFX_P_WPL8, OGFX_P_RPL8, OGFX_P_RPA8,
+    OGFX_P_AREAMOVE, OGFX_P_AREADRAW, OGFX_P_AREAELLIPSE, OGFX_P_AREAEND, OGFX_P_DRAWELLIPSE, OGFX_P_ERASERECT,
     OGFX_P_COUNT
 };
 

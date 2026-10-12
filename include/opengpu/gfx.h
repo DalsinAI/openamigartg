@@ -63,10 +63,12 @@
 /* OGFX_Version(): (version << 16) | revision of the OpenGfx interface.
  * 1.2 is opengfx.library 1.1's interface inside opengpu.library, with the
  * eight drawing LVOs added; 1.3 adds the look hook (opengpu.library 0.7);
- * 1.4 patches every drawing call, 22 in all (opengpu.library 0.8). */
+ * 1.4 patches every drawing call, 22 in all (opengpu.library 0.8); 1.5
+ * the area fills, DrawEllipse and EraseRect too, 28 in all (0.14). */
 #define OGFX_INTERFACE_VERSION  1
-#define OGFX_INTERFACE_REVISION 4
+#define OGFX_INTERFACE_REVISION 5
 #define OGFX_PATCHES_ALL 22               /* 1.4: the graphics.library calls OpenGfx owns */
+#define OGFX_PATCHES_AREA 28              /* 1.5: and AreaMove, AreaDraw, AreaEllipse, AreaEnd, DrawEllipse, EraseRect */
 
 /* The rest is opengfx.library 1.1's public header (libraries/opengfx.h), the
  * same names and layouts, so either header may come first. */
