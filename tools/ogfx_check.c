@@ -20,7 +20,8 @@
  * LVO, so they go through the patches (graphics.library's pixels are
  * copied to the other ways when the patches are not in). From 0.11 a
  * third of them draw in a layer (a simple refresh window with another in
- * front of it). On AmigaChrome (OGFX_STATUS_AMIGACHROME)
+ * front of it). From 0.12 BltBitMapRastPort too, from the way's other
+ * bitmap. On AmigaChrome (OGFX_STATUS_AMIGACHROME)
  * OpenGfx's leaves take Chip RAM, so the leaves are what is checked; on a
  * real Amiga they leave Chip RAM to the blitter.
  *
@@ -85,7 +86,7 @@ struct way {
 
 static struct way ways[WAYS];
 static int depth, patched, fails, calls, shown, verbose;
-static char args[96];                  /* the call's arguments, for a report */
+static char args[128];                 /* the call's arguments, for a report */
 static int fails_of[6];                /* by call: RectFill, BltBitMap, ScrollRaster, BltTemplate, text, core */
 static int kind;
 static UWORD area_ptrn[4] = { 0xAAAA, 0x5555, 0xF0F0, 0x0F0F };
@@ -385,6 +386,11 @@ static LONG core_call(int w, int k, int c, const LONG *a, const WORD *poly)
                 for (x = 0; x <= a[2] - a[0]; x++) r = r * 31 + core_arr[w][y * bpr + x];
         }
         break;
+    case 9:
+        /* from the way's other bitmap: a[0..3] source x, y, width, height,
+         * a[4] the minterm, a[5] a[6] where it lands */
+        BltBitMapRastPort(ways[w].bm[1 - k], a[0], a[1], rp, a[5], a[6], a[2], a[3], (ULONG)a[4]);
+        break;
     default:
         for (i = 0; i < CORE_ARR; i++) core_arr[w][i] = (UBYTE)(i * 5 + a[4]);
         WriteChunkyPixels(rp, a[0], a[1], a[2], a[3], core_arr[w], a[4] % 9 + a[2] - a[0] + 1);
@@ -396,12 +402,12 @@ static LONG core_call(int w, int k, int c, const LONG *a, const WORD *poly)
 static void one_core(void)
 {
     static const char *const name[] = { "Draw", "PolyDraw", "WritePixel", "ReadPixel", "SetRast", "BltPattern",
-                                        "WritePixelArray8", "ReadPixelArray8", "WriteChunkyPixels" };
-    LONG a[5], r0, r1, r2 = 0, x0 = rnd_in(0, W - 1), y0 = rnd_in(0, H - 1), x1 = rnd_in(x0, W - 1), y1 = rnd_in(y0, H - 1);
+                                        "WritePixelArray8", "ReadPixelArray8", "WriteChunkyPixels", "BltBitMapRastPort" };
+    LONG a[7], r0, r1, r2 = 0, x0 = rnd_in(0, W - 1), y0 = rnd_in(0, H - 1), x1 = rnd_in(x0, W - 1), y1 = rnd_in(y0, H - 1);
     ULONG fg = rnd() & 255, bg = rnd() & 255, mode = rnd() & 7, mask = rnd() & 3 ? 0xFF : rnd() & 255;
     UWORD lp = rnd() & 1 ? 0xFFFF : (UWORD)rnd();
     WORD poly[12];
-    int c = (int)(rnd() % 9), k = rnd() & 1, w, ptrn = (rnd() & 3) == 0, i;
+    int c = (int)(rnd() % 10), k = rnd() & 1, w, ptrn = (rnd() & 3) == 0, i;
     if (c == 4 && (rnd() & 3)) c = 2;               /* SetRast seldom */
     a[0] = x0; a[1] = y0; a[2] = x1; a[3] = y1; a[4] = 0;
     if (c == 0) { a[2] = rnd_in(0, W - 1); a[3] = rnd_in(0, H - 1); }
@@ -412,8 +418,21 @@ static void one_core(void)
         if (a[4] * (y1 - y0 + 1) > 2048) a[4] = 0;
         for (i = 0; i < 2048; i++) core_mask[i] = (UBYTE)rnd();
     }
-    if (c >= 6) { a[4] = rnd() & 255; if (c != 7) mode = JAM1; }
+    if (c >= 6 && c != 9) { a[4] = rnd() & 255; if (c != 7) mode = JAM1; }
     use_layer = k == 0 && lay_back[0] && c != 5 && (rnd() % 3) == 0;  /* BltPattern's mask: not in a layer */
+    if (c == 9) {
+        /* inside the source always, and inside a bare bitmap: graphics.library
+         * clips neither (past an edge it writes memory not the bitmap's); in
+         * the layer it may hang over the layer's edges */
+        a[2] = x1 - x0 + 1; a[3] = y1 - y0 + 1;
+        a[4] = rnd() % 3 ? 0xC0 : rnd() & 0xF0;
+        a[5] = use_layer ? rnd_in(-8, 150 - 13 + 8) : rnd_in(0, W - 1);
+        a[6] = use_layer ? rnd_in(-8, 95 - 7 + 8) : rnd_in(0, H - 1);
+        if (!use_layer) {
+            if (a[5] + a[2] > W) a[2] = W - a[5];
+            if (a[6] + a[3] > H) a[3] = H - a[6];
+        }
+    }
     for (w = 0; w < WAYS; w++) {
         struct RastPort *rp = use_layer && w < FAST ? &lay_rp[w] : &ways[w].rp[k];
         set_rp(rp, fg, bg, mode, mask, ptrn);
@@ -422,6 +441,7 @@ static void one_core(void)
     sprintf(args, "%ld,%ld,%ld,%ld fg %lu bg %lu mode %lu mask %02lx%s ptrn %04x arg %ld%s", (long)a[0], (long)a[1], (long)a[2], (long)a[3],
             (unsigned long)fg, (unsigned long)bg, (unsigned long)mode, (unsigned long)mask, ptrn ? " pattern" : "", lp, (long)a[4],
             use_layer ? " in a layer" : "");
+    if (c == 9) sprintf(args + strlen(args), " to %ld,%ld", (long)a[5], (long)a[6]);
     kind = 5;
     on(0); r0 = core_call(REF, k, c, a, poly);
     on(1);
