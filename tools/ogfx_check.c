@@ -18,7 +18,9 @@
  * WritePixel, ReadPixel, SetRast, BltPattern, WritePixelArray8,
  * ReadPixelArray8 and WriteChunkyPixels, every DrawMode; these have no
  * LVO, so they go through the patches (graphics.library's pixels are
- * copied to the other ways when the patches are not in). On AmigaChrome (OGFX_STATUS_AMIGACHROME)
+ * copied to the other ways when the patches are not in). From 0.11 a
+ * third of them draw in a layer (a simple refresh window with another in
+ * front of it). On AmigaChrome (OGFX_STATUS_AMIGACHROME)
  * OpenGfx's leaves take Chip RAM, so the leaves are what is checked; on a
  * real Amiga they leave Chip RAM to the blitter.
  *
@@ -42,9 +44,12 @@
 #include <graphics/gfxbase.h>
 #include <graphics/rastport.h>
 #include <graphics/gfxmacros.h>
+#include <graphics/clip.h>
+#include <graphics/layers.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <proto/graphics.h>
+#include <proto/layers.h>
 #include <proto/timer.h>
 #include <proto/opengpu.h>
 #include <stdio.h>
@@ -314,11 +319,49 @@ static UBYTE *core_arr[WAYS];          /* the pixel arrays, one a way */
 static struct RastPort core_tmp[WAYS]; /* WritePixelArray8's temporary RastPorts */
 static struct BitMap *core_tmpbm[WAYS];
 
+/* A window's RastPort on the Chip RAM ways' first bitmap: a simple refresh
+ * layer with another in front of it (no backfill), so the core's calls are
+ * checked cut to a layer's ClipRects too. Not on the Fast RAM way. */
+struct Library *LayersBase;
+static struct Layer_Info *lay_li[FAST];
+static struct Layer *lay_back[FAST], *lay_front[FAST];
+static struct RastPort lay_rp[FAST];
+static int use_layer;
+
+static void free_layers(void)
+{
+    int w;
+    for (w = 0; w < FAST; w++) {
+        if (lay_front[w]) DeleteLayer(0, lay_front[w]);
+        if (lay_back[w]) DeleteLayer(0, lay_back[w]);
+        if (lay_li[w]) DisposeLayerInfo(lay_li[w]);
+        lay_front[w] = lay_back[w] = NULL;
+        lay_li[w] = NULL;
+    }
+}
+
+static int make_layers(void)
+{
+    int w;
+    if (!LayersBase) return 0;
+    for (w = 0; w < FAST; w++) {
+        if (!(lay_li[w] = NewLayerInfo())) return 0;
+        lay_back[w] = CreateUpfrontHookLayer(lay_li[w], ways[w].bm[0], 13, 7, 150, 95, LAYERSIMPLE, LAYERS_NOBACKFILL, NULL);
+        lay_front[w] = lay_back[w] ? CreateUpfrontHookLayer(lay_li[w], ways[w].bm[0], 60, 30, 110, 70, LAYERSIMPLE,
+                                                            LAYERS_NOBACKFILL, NULL) : NULL;
+        if (!lay_front[w]) return 0;
+        InitRastPort(&lay_rp[w]);
+        lay_rp[w].Layer = lay_back[w];
+        lay_rp[w].BitMap = ways[w].bm[0];
+    }
+    return 1;
+}
+
 /* One call of the core's on way w's RastPort k: c says which, a[] its
  * arguments. The result, or a sum of the array read. */
 static LONG core_call(int w, int k, int c, const LONG *a, const WORD *poly)
 {
-    struct RastPort *rp = &ways[w].rp[k];
+    struct RastPort *rp = use_layer && w < FAST ? &lay_rp[w] : &ways[w].rp[k];
     LONG r = 0, i;
     switch (c) {
     case 0: Move(rp, a[0], a[1]); Draw(rp, a[2], a[3]); break;
@@ -370,20 +413,24 @@ static void one_core(void)
         for (i = 0; i < 2048; i++) core_mask[i] = (UBYTE)rnd();
     }
     if (c >= 6) { a[4] = rnd() & 255; if (c != 7) mode = JAM1; }
+    use_layer = k == 0 && lay_back[0] && c != 5 && (rnd() % 3) == 0;  /* BltPattern's mask: not in a layer */
     for (w = 0; w < WAYS; w++) {
-        set_rp(&ways[w].rp[k], fg, bg, mode, mask, ptrn);
-        SetDrPt(&ways[w].rp[k], lp);
+        struct RastPort *rp = use_layer && w < FAST ? &lay_rp[w] : &ways[w].rp[k];
+        set_rp(rp, fg, bg, mode, mask, ptrn);
+        SetDrPt(rp, lp);
     }
-    sprintf(args, "%ld,%ld,%ld,%ld fg %lu bg %lu mode %lu mask %02lx%s ptrn %04x arg %ld", (long)a[0], (long)a[1], (long)a[2], (long)a[3],
-            (unsigned long)fg, (unsigned long)bg, (unsigned long)mode, (unsigned long)mask, ptrn ? " pattern" : "", lp, (long)a[4]);
+    sprintf(args, "%ld,%ld,%ld,%ld fg %lu bg %lu mode %lu mask %02lx%s ptrn %04x arg %ld%s", (long)a[0], (long)a[1], (long)a[2], (long)a[3],
+            (unsigned long)fg, (unsigned long)bg, (unsigned long)mode, (unsigned long)mask, ptrn ? " pattern" : "", lp, (long)a[4],
+            use_layer ? " in a layer" : "");
     kind = 5;
     on(0); r0 = core_call(REF, k, c, a, poly);
     on(1);
     if (patched) { r1 = core_call(LVO, k, c, a, poly); r2 = core_call(PAT, k, c, a, poly); }
     else { sync_way(LVO); r1 = r0; }
-    if (have_fast && patched) fast_r = core_call(FAST, k, c, a, poly);
+    if (have_fast && patched && !use_layer) fast_r = core_call(FAST, k, c, a, poly);
     else sync_fast(r0);
     compare(name[c], r0, r1, r2);
+    use_layer = 0;
 }
 
 static int alloc_ways(int d)
@@ -418,6 +465,7 @@ static int alloc_ways(int d)
             if (font) SetFont(&ways[FAST].rp[k], font);
         }
     }
+    if (!make_layers()) free_layers();
     return 1;
 }
 
@@ -425,6 +473,7 @@ static void free_ways(void)
 {
     int w, k;
     WaitBlit();
+    free_layers();
     for (w = 0; w < FAST; w++)
         for (k = 0; k < 2; k++) { if (ways[w].bm[k]) FreeBitMap(ways[w].bm[k]); ways[w].bm[k] = NULL; }
     for (w = 0; w < WAYS; w++) { if (core_tmpbm[w]) FreeBitMap(core_tmpbm[w]); core_tmpbm[w] = NULL; }
@@ -656,6 +705,7 @@ int main(int argc, char **argv)
         CloseLibrary(OpenGPUBase);
         return 20;
     }
+    LayersBase = OpenLibrary((CONST_STRPTR)"layers.library", 39);
     v = OGFX_Version();
     if (install && !OGFX_InstallPatches()) { printf("OpenGfxCheck: the patches would not go in\n"); rc = 10; }
     if (set >= 0) printf("OpenGfx's own drawing: %s (was %s)\n", set ? "on" : "off", OGFX_SetEnabled(set) ? "on" : "off");
@@ -711,6 +761,7 @@ int main(int argc, char **argv)
         if ((OpenGPUBase->lib_Version > 0 || OpenGPUBase->lib_Revision >= OPENGPU_OGFX_LOOK_REVISION) && look_check())
             rc = 10;
     }
+    if (LayersBase) CloseLibrary(LayersBase);
     CloseLibrary(OpenGPUBase);
     return rc;
 }
