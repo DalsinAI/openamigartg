@@ -86,6 +86,16 @@ static int av_need(struct acvirgl *v, size_t n)
     return 1;
 }
 
+/* libepoxy aborts the program when the GL library it needs isn't there,
+ * where virglrenderer would have failed: so look first. */
+static int av_has_lib(const char *a, const char *b)
+{
+    void *h = dlopen(a, RTLD_LAZY | RTLD_LOCAL);
+    if (!h && b) h = dlopen(b, RTLD_LAZY | RTLD_LOCAL);
+    if (h) dlclose(h);
+    return h != NULL;
+}
+
 /* The host's renderer as virglrenderer tells the guest: capset 2 (struct
  * virgl_caps_v2 in virglrenderer's virgl_hw.h, an ABI shared with Mesa)
  * carries the host GL_RENDERER at byte 696, 64 bytes, e.g. "V3D 7.1". */
@@ -131,10 +141,12 @@ struct acvirgl *acvirgl_create(const char *lib, char *err, int errlen)
      * may not make the context virglrenderer asks for. AC_VIRGL_GLES=1
      * asks for GLES only, AC_VIRGL_GLES=0 for desktop GL only. */
     gles = getenv("AC_VIRGL_GLES");
-    if ((!gles || strcmp(gles, "1")) && !v->vr.init(v, VR_USE_EGL | VR_USE_SURFACELESS, &v->cb)) v->api = "GL";
-    else if ((!gles || strcmp(gles, "0")) && !v->vr.init(v, VR_USE_EGL | VR_USE_SURFACELESS | VR_USE_GLES, &v->cb)) v->api = "GLES";
+    if ((!gles || strcmp(gles, "1")) && av_has_lib("libOpenGL.so.0", "libGL.so.1")
+        && !v->vr.init(v, VR_USE_EGL | VR_USE_SURFACELESS, &v->cb)) v->api = "GL";
+    else if ((!gles || strcmp(gles, "0")) && av_has_lib("libGLESv2.so.2", NULL)
+             && !v->vr.init(v, VR_USE_EGL | VR_USE_SURFACELESS | VR_USE_GLES, &v->cb)) v->api = "GLES";
     else {
-        snprintf(err, (size_t)errlen, "virgl_renderer_init failed (no EGL with surfaceless %s contexts?)",
+        snprintf(err, (size_t)errlen, "virgl_renderer_init failed (no EGL with surfaceless %s contexts, or no libOpenGL/libGLESv2?)",
                  !gles ? "GL or GLES" : !strcmp(gles, "1") ? "GLES" : "GL");
         goto fail;
     }
