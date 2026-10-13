@@ -277,6 +277,8 @@ OpenRTG patches the fourteen itself as before; with no OpenGfx, all of them.
 | BltBitMapRastPort, BltMaskBitMapRastPort, ClipBlit | -606, -636, -552 | OpenGfx (0.8) | OpenRTG |
 | WriteChunkyPixels, WritePixelArray8, WritePixelLine8 | -1056, -786, -774 | OpenGfx (0.8) | OpenRTG |
 | ReadPixelLine8, ReadPixelArray8 | -768, -780 | OpenGfx (0.8) | OpenRTG |
+| AreaMove, AreaDraw, AreaEllipse, AreaEnd | -252, -258, -186, -264 | OpenGfx (0.14) | graphics.library |
+| DrawEllipse, EraseRect | -180, -810 | OpenGfx (0.14) | graphics.library |
 | AllocBitMap, FreeBitMap, GetBitMapAttr | -918, -924, -960 | OpenRTG | (bitmaps, not drawing) |
 | MakeVPort, MrgCop, LoadView | -216, -210, -222 | OpenRTG | (the display) |
 | LoadRGB32, SetRGB32, LoadRGB4, SetRGB4 | -882, -852, -192, -288 | OpenRTG | (palettes) |
@@ -284,10 +286,11 @@ OpenRTG patches the fourteen itself as before; with no OpenGfx, all of them.
 | NextDisplayInfo, FindDisplayInfo, GetDisplayInfoData, ModeNotAvailable, BestModeIDA | -732, -726, -756, -798, -1050 | OpenRTG (displaydb.c) | (the display database) |
 | intuition: OpenScreenTagList, CloseScreen, MakeScreen, RemakeDisplay, RethinkDisplay | -612, -66, -378, -384, -390 | OpenRTG | (screens) |
 
-On Picasso96 (no OpenRTG) OpenGfx's 22 patches sit in front of Picasso96's
+On Picasso96 (no OpenRTG) OpenGfx's 28 patches sit in front of Picasso96's
 own (rtg.library patches some of the same calls, among them BltPattern, the
 pixel calls and the chunky and *8 calls): OpenGfx has no provider there and
-passes each call on, so Picasso96 draws as before. OpenLook 0.6 asks OpenGfx
+passes each call on, so Picasso96 draws as before (the area calls, DrawEllipse
+and EraseRect draw through OpenGfx's core on standard planar bitmaps only). OpenLook 0.6 asks OpenGfx
 to put its patches in.
 
 
@@ -391,6 +394,40 @@ to put its patches in.
   (buffers, pictures), and in 0.14.2 each took a table copied from the moment it
   was made, so pens obtained later drew in stale colours (white boxes on the bar,
   speckled icons). A bitmap asked for with a friend takes the friend's table.
+- **Pixels at another size through OpenGPU (0.16, 12 October 2026):** a
+  pixel array written at another size (`ORTG_WritePixels` with `dest_width`
+  or `dest_height`; CyberGraphX's `ScalePixelArray`) is drawn by OpenGPU's
+  COMPOSITE, nearest, one visible piece at a time, from ARGB or 0RGB colours
+  (16 and 32-bit bitmaps) or from a 16-bit bitmap's own pixels (RAW). A
+  32-bit pixel's top byte stays 0: the bitmap is seen as XRGB32 where
+  OpenGPU has stream v1.3, and elsewhere (a v1.2 runtime) as ARGB32, with an
+  INVERT of the piece by 0xFF000000 in the same batch after the opaque
+  COMPOSITE has written 255 there. Before, every pixel was
+  sampled and written by the 68k. The CPU code now takes the source pixel
+  under each target pixel's centre, as COMPOSITE does, so the two give the
+  same pixels; before it took `r * n / d`, which can pick the pixel one to
+  the left. This is what OpenPlay's films use to fit a window: the film plays
+  on a screen behind, and each new frame is scaled into the window on the
+  host (Team, 12 October 2026: "use opengpu to do the leg work").
+  `ortg_ogpu_scale()` in `library/screens.c`, `scaled()` and
+  `scaled_source()` in `library/pixels.c`; checked by `OpenRTGScaleExact`.
+- **Native modes (0.17, 12 October 2026; the native screen mode's step 3,
+  amigachrome `Design-Native-Screen-Mode`):** on an ACRTG board of protocol
+  v5 or later, the host's window can ask for the Amiga screen's size
+  (`WANT_W`, `WANT_H`, `WANT_GEN`, `LIMIT`, `ASK`). While a size is asked
+  for, each RTG monitor lists three more modes, last: "OpenRTG.n: Native
+  8-bit", "16-bit" and "32-bit", at place 0x22 of the table, so their
+  ModeIDs (`0x6n221000`, `0x6n221100`, `0x6n221200`) never move. Their
+  size, their display database records and their pointer ticks are made
+  again when `WANT_GEN` moves (one register read when nothing changed). A
+  screen opened on one keeps the size of that moment. `BestModeIDA` never
+  picks one. `ORTG_NativeSize` (LVO -126) gives a program (OpenBench) the
+  size, `WANT_GEN`, `ASK` and the board's limit, so no program reads the
+  board itself. The board's largest picture comes from `LIMIT`, and
+  `ORTG_SetModeList` keeps each board's own video RAM (before, a 64 MiB
+  board's table was made again with the 16 MiB board's). Without a size the
+  table is exactly 0.16's (`tests/modes_golden.c`). `C:OpenRTG NATIVE`
+  shows it all.
 - **Boards:** a small driver interface (find, init, mode, pan, fill, copy,
   template, line, sprite, 3D) with the ACRTG driver built in.
 
@@ -715,7 +752,7 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
 ##### include/: the one include tree for programs
 
 - `opengpu/`:
-  - library owner: `opengpu.h`, `stream.h` (v1.2), `build.h` (batch builders), `driver.h`, `module.h`, `virgl.h` (the ACVirgl request format);
+  - library owner: `opengpu.h`, `stream.h` (v1.3), `build.h` (batch builders), `driver.h`, `module.h`, `virgl.h` (the ACVirgl request format);
   - Warp3D helper: `stream3d.h`, plus `build3d.h` with `ogpu_build3d.c` for its builders;
   - `gfx.h`: the OpenGfx fork's public calls.
 - `proto/`, `inline/`: `opengpu.h`.
@@ -735,6 +772,7 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
   - the `gla/` core and the OS 3 presenter;
   - the virgl winsys over `OGPU_OP_VIRGL`.
   - It builds softpipe and virgl. virgl is used when `OGPU_Query(OGPU_OP_VIRGL)` answers "full", softpipe otherwise.
+  - **The direct present** (12 October 2026, design: amigachrome `docs/design/Design-OpenGPU-Virgl-Direct-Present.md`, approved by Dale). A finished virgl frame is no longer read back into Fast RAM and written again. When HELLO's flags carry `ACV_HOST_PRESENT`, the present hook hands openrtg.library 0.15's `ORTG_PresentVirgl` the resource; openrtg.library walks the RastPort's visible pieces under the layer's lock, and sends one ACVirgl block of `ACV_PRESENT` commands (one per target bitmap: the screen, or a smart-refresh backing bitmap) and a fence. The host writes the pixels into each rectangle. A CLUT or planar screen, an older library or an older runtime returns −1, and the frame is read back and shown as before. GLA counts its frames both ways (`gla_get_stats`); openrtg.library counts the pieces under `ORTG_STAT_VIRGL` ("virgl" in `C:OpenRTG STATS`).
   - openamigamesa keeps OpenDemos only, built against `libGL.a`.
 - `modules/common/` (library owner): what a module has in place of libnix's startup (`module_start.S`, `module_rt.c`).
 - `modules/sdl2/` (SDL 2 helper): SDL2.module, with the backends (video on openrtg, render on opengpu, audio on AHI, input, threads) and the SDL build (source fetched pinned).

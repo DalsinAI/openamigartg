@@ -311,6 +311,28 @@ static void test_random(int rounds) {
     }
 }
 
+/* v1.3's XRGB32 in video RAM: the shader doesn't take it, so the core draws
+ * it inside this back end, and an XRGB32 source never reaches the shader's
+ * COMPOSITE, which doesn't read it. */
+static void test_xrgb32(void) {
+    unsigned long t = VBASE + 0x10000, s = VBASE + 0x20000;
+    noise_both(1, 0, (long)VSIZE);
+    noise_both(0, 0, RAM);
+    begin();
+    ogpu_surface(&B, 0, t, 64 * 4, 64, 8, OGPU_FMT_XRGB32);
+    ogpu_surface(&B, 1, s, 16 * 4, 16, 1, OGPU_FMT_XRGB32);
+    ogpu_surface(&B, 2, t, 64 * 4, 64, 8, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_pixels(&B, 0x1000, 16 * 4, OGPU_FMT_ARGB32, 0, 0, 0, 16, 1);
+    ogpu_fill(&B, 0, 1, 16, 1, 0xFF336699UL);
+    ogpu_invert(&B, 0, 1, 8, 1, 0xFFFFFFFFUL);
+    ogpu_composite(&B, 1, 0, 0, 16, 1, 0, 2, 32, 2, 200, OGPU_COMP_SRCALPHA);
+    ogpu_target(&B, 2);
+    ogpu_composite(&B, 1, 0, 0, 16, 1, 0, 4, 16, 1, 255, OGPU_COMP_SRCALPHA);
+    ogpu_fence(&B, 9);
+    if (run_both("XRGB32")) CHECK(vram_vk[0x10000] == 0 && vram_vk[0x10000 + 64 * 4] == 0, "XRGB32's X is 0");
+}
+
 int main(int argc, char **argv) {
     struct ogpu_vk_config cfg;
     struct ogpu_vk_stats st;
@@ -381,6 +403,7 @@ int main(int argc, char **argv) {
     ogpu_vk_reset(V);
     ogpu_core_init(&C);
     C.map = map_ref; C.fence = fence_ref; C.user = 0;
+    test_xrgb32();
     test_random(rounds);
     ogpu_vk_stats(V, &st);
     printf("opengpu vulkan: golden scene %08lx and %08lx; %lu commands on the GPU, %lu on the core, %lu submits; %s\n",

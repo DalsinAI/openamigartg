@@ -360,6 +360,11 @@ jobs:
           retention-days: 7
 
   build:
+    # A branch push must not silently build with an old shared workstation stove.
+    # Local release-qualified Open2 build evidence is attached to this PR.
+    if: github.event_name == 'workflow_dispatch'
+    env:
+      STOVE: ${{ vars.OPENAMIGAGCC_OPEN2_PREFIX }}
     name: Build SDL2.module and SDLTextCheck
     runs-on: self-hosted
     timeout-minutes: 90
@@ -375,12 +380,13 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          : "${STOVE:?Set repository OPENAMIGAGCC_OPEN2_PREFIX to the qualified Open2 prefix}"
           hostname
           uname -a
           echo "HOME=$HOME"
           git rev-parse HEAD
-          test -x "$HOME/AmigaChrome/stoves/os32-gcc16/prefix/bin/m68k-amigaos-gcc"
-          "$HOME/AmigaChrome/stoves/os32-gcc16/prefix/bin/m68k-amigaos-gcc" --version | head -1
+          test -x "$STOVE/bin/m68k-amigaos-gcc"
+          "$STOVE/bin/m68k-amigaos-gcc" --version | head -1
 
       - name: Build shared and static SDL2
         shell: bash
@@ -396,7 +402,7 @@ jobs:
         run: |
           set -euxo pipefail
           OUT="$GITHUB_WORKSPACE/build/sdl2-text-input"
-          CC="$HOME/AmigaChrome/stoves/os32-gcc16/prefix/bin/m68k-amigaos-gcc"
+          CC="$STOVE/bin/m68k-amigaos-gcc"
           mkdir -p "$OUT/tests/sdl2"
           "$CC" -O2 -m68040 -m68881 -fno-delete-null-pointer-checks -noixemul \
             -I"$OUT/include/SDL2" -o "$OUT/tests/sdl2/textinput.m" \

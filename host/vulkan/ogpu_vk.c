@@ -504,6 +504,7 @@ static int gpu_composite(struct ogpu_vk *vk, const ogpu_u8 *a) {
     if (!t || slot >= OGPU_MAX_SLOTS || !vk->core.slot[slot].pixels) return 0;
     s = &vk->core.slot[slot];
     if (t->format == OGPU_FMT_CLUT8 || s->format == OGPU_FMT_CLUT8) return 0;
+    if (!bytes_per_pixel(s->format)) return 0;      /* a format the shader doesn't read: the core's */
     if ((flags & OGPU_COMP_ADD) && (flags & OGPU_COMP_IN)) return 0;
     if (flags & ~(ogpu_u32)(OGPU_COMP_SRCALPHA | OGPU_COMP_BILINEAR | OGPU_COMP_MASK | OGPU_COMP_ADD | OGPU_COMP_IN))
         return 0;
@@ -540,7 +541,7 @@ static int gpu_composite(struct ogpu_vk *vk, const ogpu_u8 *a) {
                 unsigned long m0 = (unsigned long)mo + (unsigned long)(my * m->bpr + mx);
                 unsigned long m1 = (unsigned long)mo + (unsigned long)((my + h0 - 1) * m->bpr + mx + w0);
                 if (overlap(m0, m1, d0, d1)) return 0;
-            } else if (!arena_room(vk, (unsigned long)w0 * (unsigned long)h0
+            } else if (!arena_room(vk, (((unsigned long)w0 * (unsigned long)h0 + 3) & ~3UL)   /* as arena_take rounds it */
                                        + (so >= 0 ? 0 : (unsigned long)sw * sbpp * (unsigned long)sh)))
                 return 0;
             if (mo >= 0) {

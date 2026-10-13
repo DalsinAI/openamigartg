@@ -7,7 +7,7 @@
 #define OPENRTG_NAME    "openrtg.library"
 #define OPENRTG_VERSION 0
 
-/* One mode of a monitor (the same layout as library/modes.h's ortg_mode). */
+/* One mode of a monitor (ORTG_GetMode). */
 struct OpenRTGMode {
     unsigned long  mode_id;
     unsigned short width, height;
@@ -15,6 +15,25 @@ struct OpenRTGMode {
     unsigned char  format;         /* 0: 8-bit CLUT, 1: 16-bit, 2: 32-bit ARGB */
     unsigned char  standard;       /* 1: in the Standard list */
     char           name[32];       /* "OpenRTG.1: 1920x1080 32-bit" */
+    unsigned char  native;         /* 0.17: 1 for a Native mode (the struct's last byte, padding before) */
+};
+
+/* The Native modes (0.17, the native screen mode): on an ACRTG board of protocol v5 or later, the
+ * host's window can ask for the size of the Amiga's screen. While it does, each RTG monitor lists three
+ * more modes, last: "OpenRTG.n: Native 8-bit", "16-bit" and "32-bit", at that size. Their ModeIDs never
+ * change (the place 0x22 of the mode table): 0x6n221000, 0x6n221100 and 0x6n221200. A screen opened on
+ * one gets the size of that moment and keeps it until it is opened again. BestModeIDA never picks one:
+ * a program gets a Native mode only by naming it. */
+#define ORTG_NATIVE_PLACE   0x22
+#define ORTG_IS_NATIVE(id)  ((((id) >> 16) & 0xFFUL) == ORTG_NATIVE_PLACE && ((id) & 0x1000UL))
+
+/* What the host asks of a monitor's board, for ORTG_NativeSize (0.17). */
+struct OpenRTGNativeSize {
+    unsigned short width, height;              /* the size the host's window asks for; 0 x 0 when none is */
+    unsigned long  gen;                        /* up by one each time that size changes (WANT_GEN) */
+    unsigned long  ask;                        /* up by one each time a page asks the Amiga to follow now (ASK) */
+    unsigned short limit_width, limit_height;  /* the board's largest picture (LIMIT) */
+    unsigned long  mode_id;                    /* the monitor's Native 32-bit ModeID */
 };
 
 /* A rectangle of pixels in memory, for ORTG_WritePixels and ORTG_ReadPixels
@@ -27,7 +46,8 @@ struct OpenRTGPixels {
     unsigned long        format;            /* ORTG_PIX_ */
     const unsigned long *ctable;            /* ORTG_PIX_INDEX: 256 colours, 0x00RRGGBB */
     long                 width, height;     /* the rectangle */
-    long                 dest_width, dest_height;   /* written at this size (0: the same) */
+    long                 dest_width, dest_height;   /* written at this size (0: the same); 0.16: through OpenGPU
+                                                       for ARGB, 0RGB, and RAW on 16-bit */
 };
 
 #define ORTG_PIX_RGB      0UL     /* 3 bytes: R, G, B */
@@ -55,6 +75,20 @@ struct OpenRTGBitMapInfo {
     unsigned char  monitor;         /* 1-4: in that board's video RAM; 0: fast RAM */
     unsigned char  pad;
 };
+
+/* A frame the host's GPU rendered through ACVirgl, for ORTG_PresentVirgl
+ * (0.15). The host copies the resource's damage box straight into the
+ * window's visible rectangles (ACV_PRESENT); nothing passes through the
+ * 68k's memory twice. The 68k still decides where, and what is visible. */
+struct OpenRTGVirglFrame {
+    unsigned long  context;         /* ACVirgl context of the resource */
+    unsigned long  handle;          /* the resource (its colour buffer) */
+    unsigned short width, height;   /* of the resource */
+    short          damage_x, damage_y;  /* the part that changed, in the resource; */
+    unsigned short damage_w, damage_h;  /* 0 by 0: all of it */
+    unsigned long  flags;           /* ORTG_VIRGL_FLIP_Y: row 0 is the bottom (GL) */
+};
+#define ORTG_VIRGL_FLIP_Y       1
 
 /* ORTG_DrawStats (0.11): how OpenRTG drew on its bitmaps, by kind of
  * drawing, since it started or was last reset. Each kind has four counts:
@@ -86,9 +120,10 @@ struct OpenRTGBitMapInfo {
 #define ORTG_STAT_BLIT_PLANAR   17  /* blits from or to a planar bitmap */
 #define ORTG_STAT_BLIT_CONVERT  18  /* copies between OpenRTG bitmaps of two formats */
 #define ORTG_STAT_BLIT_MASKED   19  /* blits through a mask (BltMaskBitMapRastPort) */
-#define ORTG_STAT_COUNT         20
+#define ORTG_STAT_VIRGL         20  /* ORTG_PresentVirgl: GL frames the host wrote straight in (0.15) */
+#define ORTG_STAT_COUNT         21
 #define ORTG_STAT_NAMES { "fill", "invert", "pattern", "template", "copy", "blit", "scroll", "setrast", "line", \
     "pixel", "chunky", "chunky read", "pixels", "pixels read", "pixels fill", "pixels invert", "alpha", \
-    "blit planar", "blit convert", "blit masked" }
+    "blit planar", "blit convert", "blit masked", "virgl" }
 
 #endif

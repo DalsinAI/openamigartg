@@ -11,5 +11,7 @@
  * "full": the Cradle's ring with virglrenderer); 0 when it doesn't, and
  * the caller uses softpipe. */
 int gla_os3_virgl_transport(struct gla_virgl_transport *t);
+/* Close what the transport opened (timer.device, for timing the waits). */
+void gla_os3_virgl_close(void);
 
 #endif
