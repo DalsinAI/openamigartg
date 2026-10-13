@@ -601,6 +601,13 @@ OGFX_CALL LONG do_text(struct ogfx_state *st, struct GfxBase *gfx, struct RastPo
             return r.result;
     }
 
+    /* the core, unless the font is a colour one or drawn right to left */
+    if (rp && ogfx_rp_takes_text(rp) && core_begin(st, gfx, rp, 0)) {
+        LONG done = ogfx_rp_Text(rp, (CONST_STRPTR)text, length);
+        core_end(gfx, rp);
+        if (done) return 0;
+    }
+
     return ((text_fn)original(st, gfx, OGFX_P_TEXT))(rp, text, length, gfx);
 }
 
@@ -662,8 +669,10 @@ OGFX_CALL void do_scroll(struct ogfx_state *st, struct GfxBase *gfx, struct Rast
 }
 
 /* The text measurement calls and BltTemplate: the provider (OpenRTG, and
- * through OpenGfx OpenFont's metrics when they come), else graphics.library's
- * own code, so a program measures text as it is drawn. */
+ * through OpenGfx OpenFont's metrics when they come); else TextLength and
+ * TextExtent from the core, which measures as it draws (as OS 3.2 does);
+ * else graphics.library's own code, so a program measures text as it is
+ * drawn. */
 OGFX_CALL WORD do_textlength(struct ogfx_state *st, struct GfxBase *gfx, struct RastPort *rp,
                           STRPTR text, ULONG length)
 {
@@ -675,6 +684,8 @@ OGFX_CALL WORD do_textlength(struct ogfx_state *st, struct GfxBase *gfx, struct 
         if (st->provider.v1.textlength(st->provider.v1.userdata, &r))
             return (WORD)r.result;
     }
+    if (st->enabled && rp && ogfx_rp_takes_text(rp))
+        return ogfx_rp_TextLength(rp, (CONST_STRPTR)text, length);
 
     return ((textlength_fn)original(st, gfx, OGFX_P_TEXTLENGTH))(rp, text, length, gfx);
 }
@@ -689,6 +700,10 @@ OGFX_CALL void do_textextent(struct ogfx_state *st, struct GfxBase *gfx, struct 
         r.rp = rp; r.text = text; r.length = length; r.extent = extent;
         if (st->provider.v1.textextent(st->provider.v1.userdata, &r))
             return;
+    }
+    if (st->enabled && rp && extent && ogfx_rp_takes_text(rp)) {
+        ogfx_rp_TextExtent(rp, (CONST_STRPTR)text, length, extent);
+        return;
     }
 
     ((textextent_fn)original(st, gfx, OGFX_P_TEXTEXTENT))(rp, text, length, extent, gfx);

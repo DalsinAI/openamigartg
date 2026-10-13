@@ -284,14 +284,18 @@ static void one_template(void)
 static void one_text(void)
 {
     static const char words[] = "OpenGfx inside opengpu.library: one library for all the drawing";
-    LONG n = rnd_in(1, 20), at = rnd_in(0, (LONG)sizeof words - 1 - n), x = rnd_in(0, W - 8 * n > 0 ? W - 8 * n : 0), y = rnd_in(8, H - 2);
+    LONG n = rnd_in(1, 18), at = rnd_in(0, (LONG)sizeof words - 1 - n), x = rnd_in(2, W - 8 * n - 6 > 2 ? W - 8 * n - 6 : 2), y = rnd_in(8, H - 2);
     struct TextExtent te[WAYS], ce;
     ULONG fit[WAYS], len[WAYS], drawn[WAYS];
-    ULONG fg = rnd() & 255, bg = rnd() & 255;
+    ULONG fg = rnd() & 255, bg = rnd() & 255, mode = rnd() & 3 ? JAM2 : rnd() & 7, style = rnd() & 3 ? 0 : rnd() & 7;
     int k = rnd() & 1, i;
-    for (i = 0; i < WAYS; i++) { set_rp(&ways[i].rp[k], fg, bg, JAM2, 0xFF, 0); Move(&ways[i].rp[k], x, y); }
+    for (i = 0; i < WAYS; i++) {
+        set_rp(&ways[i].rp[k], fg, bg, mode, 0xFF, 0);
+        SetSoftStyle(&ways[i].rp[k], style, 0xFF);
+        Move(&ways[i].rp[k], x, y);
+    }
     memset(te, 0, sizeof te); memset(&ce, 0, sizeof ce);
-    sprintf(args, "%ld chars at %ld,%ld", (long)n, (long)x, (long)y);
+    sprintf(args, "%ld chars at %ld,%ld, mode %lu, style %lu", (long)n, (long)x, (long)y, (unsigned long)mode, (unsigned long)style);
     kind = 4;
     ce.te_Width = (WORD)rnd_in(0, 100); ce.te_Height = 20; ce.te_Extent.MinX = 0; ce.te_Extent.MinY = -8;
     ce.te_Extent.MaxX = ce.te_Width; ce.te_Extent.MaxY = 8;
@@ -311,14 +315,23 @@ static void one_text(void)
         TextExtent(&ways[PAT].rp[k], (STRPTR)words + at, n, &te[PAT]);
         fit[PAT] = TextFit(&ways[PAT].rp[k], (STRPTR)words + at, n, &te[PAT], &ce, 1, ce.te_Width, 20);
     } else { drawn[PAT] = drawn[REF]; len[PAT] = len[REF]; fit[PAT] = fit[REF]; te[PAT] = te[REF]; }
-    sync_fast((LONG)drawn[REF]);
+    /* the Fast RAM way is the one a real Amiga's core draws text on (the
+     * default font is one the core takes, so nothing reaches the blitter) */
+    if (have_fast) {
+        drawn[FAST] = (ULONG)OGFX_Text(&ways[FAST].rp[k], (STRPTR)words + at, n);
+        len[FAST] = (ULONG)OGFX_TextLength(&ways[FAST].rp[k], (STRPTR)words + at, n);
+        OGFX_TextExtent(&ways[FAST].rp[k], (STRPTR)words + at, n, &te[FAST]);
+        fit[FAST] = OGFX_TextFit(&ways[FAST].rp[k], (STRPTR)words + at, n, &te[FAST], &ce, 1, ce.te_Width, 20);
+        fast_r = (LONG)drawn[FAST];
+    } else sync_fast((LONG)drawn[REF]);
     compare("Text", (LONG)drawn[REF], (LONG)drawn[LVO], (LONG)drawn[PAT]);
     calls += 3;
-    for (i = LVO; i < FAST; i++)
+    for (i = LVO; i < (have_fast ? WAYS : FAST); i++)
         if (len[i] != len[REF] || fit[i] != fit[REF] || memcmp(&te[i], &te[REF], sizeof te[0])) {
             fails++;
             if (shown++ < 12) printf("  DIFFERENT: TextLength/TextExtent/TextFit, %s\n", way_name[i]);
         }
+    for (i = 0; i < WAYS; i++) SetSoftStyle(&ways[i].rp[k], 0, 0xFF);
 }
 
 /* ---- the core's calls: through graphics.library (the patches) ---------------- */
