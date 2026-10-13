@@ -52,6 +52,8 @@ int main(void)
     struct acvirgl *v = acvirgl_create(NULL, err, sizeof err);
     uint32_t c, i;
     if (!v) { printf("acvirgl: skipped (%s)\n", err); return 0; }
+    printf("acvirgl: drawing with %s on %s\n", acvirgl_api(v), acvirgl_renderer(v));
+    CHECK(strcmp(acvirgl_renderer(v), "unknown") != 0, "the host's renderer is unknown");
 
     begin();
     uint32_t a_hello[1] = { 0 }, a_info[3] = { 2, 0, 0 }, a_caps[4] = { 2, 2, 0x20000, 0x8000 };

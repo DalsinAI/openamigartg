@@ -35,6 +35,8 @@ if [ -n "${ACVIRGL_LIB:-}" ] && [ -f "${VIRGL_SRC:-/nonexistent}/virgl_protocol.
     cc -std=gnu11 -O1 -g -Wall -Wextra -Werror -I"$VIRGL_SRC" -o "$OUT/test_acvirgl" "$HERE/test_acvirgl.c" \
         "$HERE/../host/virgl/acvirgl.c" -ldl
     "$OUT/test_acvirgl"
+    # again on GLES, as a Pi's V3D may give it (skipped without libGLESv2)
+    AC_VIRGL_GLES=1 "$OUT/test_acvirgl"
 else
     echo "no ACVIRGL_LIB and VIRGL_SRC; the virgl run is skipped"
 fi
