@@ -54,7 +54,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 9
+#define LIB_REVISION 15
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -73,6 +73,7 @@ struct OpenGPUBase {
     struct Library *drv_lib;                    /* the driver's library, kept open */
     struct OGPUDriver *drv;                     /* its table, or NULL: the CPU does everything */
     UBYTE drv_ok[256];                          /* opcodes the driver carries out (for some format) */
+    UBYTE drv_fmt[OGPU_FMT_COUNT];              /* surface formats it draws in (for some opcode) */
     unsigned long drv_last;                     /* the driver's last fence, before a batch runs on the CPU */
     char drv_names[MAX_DRIVERS][32];            /* drivers_load's scratch, under drv_lock */
     struct ogpu_modules modules;                /* shared modules loaded (ogpu_module.c) */
@@ -93,9 +94,9 @@ const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 int start(void) { return -1; }
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.9 (8.10.2026) OpenGPU, Dalsin Limited\r\n";
+static const char lib_id[] = "opengpu.library 0.15 (13.10.2026) OpenGPU, Dalsin Limited\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.9 (8.10.2026) OpenGPU, Dalsin Limited";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.15 (13.10.2026) OpenGPU, Dalsin Limited";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";
@@ -324,6 +325,11 @@ static int driver_try(struct OpenGPUBase *base, const char *name)
                 if (d->supports(op, f, 0) != OGPU_NONE) base->drv_ok[op] = 1;
         }
         base->drv_ok[OGPU_OP_NOP] = 1;
+        for (f = 1; f < OGPU_FMT_COUNT; f++) {
+            base->drv_fmt[f] = 0;
+            for (op = 0; op < 256 && !base->drv_fmt[f]; op++)
+                if (op != OGPU_OP_NOP && d->supports(op, f, 0) != OGPU_NONE) base->drv_fmt[f] = 1;
+        }
     }
     return 1;
 }
@@ -396,6 +402,13 @@ static int driver_takes(struct OpenGPUBase *base, const UBYTE *s, ULONG words)
         UWORD op = (UWORD)(s[at * 4] << 8 | s[at * 4 + 1]), len = (UWORD)(s[at * 4 + 2] << 8 | s[at * 4 + 3]);
         if (op > 255 || !base->drv_ok[op]) return 0;
         if (!len) return 1;                     /* a bad length: the driver says so, as the CPU would */
+        /* A surface in a format the driver doesn't know (a newer stream's,
+         * against an older runtime): the CPU draws the batch. Depth and
+         * stencil (stream3d.h) are the 3D commands' to answer. */
+        if (op == OGPU_OP_SURFACE && len >= 6 && at + 5 < words) {
+            ULONG f = (ULONG)s[(at + 5) * 4] << 24 | (ULONG)s[(at + 5) * 4 + 1] << 16 | (ULONG)s[(at + 5) * 4 + 2] << 8 | s[(at + 5) * 4 + 3];
+            if (f > 0 && f < OGPU_FMT_COUNT && !base->drv_fmt[f]) return 0;
+        }
         at += len;
     }
     return 1;

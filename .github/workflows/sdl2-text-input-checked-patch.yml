@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - implement/opengpu-sdl-keyboard-fix
+      - main
+  pull_request:
+    paths:
+      - "library/modules/sdl2/**"
+      - "tests/sdl2/**"
+      - ".github/workflows/sdl2-text-input*.yml"
   workflow_dispatch:
 
 concurrency:
@@ -12,7 +18,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Apply checked-in 0001 and 0002
+    name: Apply checked-in AmigaOS patch series
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -53,3 +59,6 @@ jobs:
           tar xzf SDL2-2.32.10.tar.gz
           cc -std=c11 -Wall -Wextra -Werror \
             -I SDL2-2.32.10/include -fsyntax-only tests/sdl2/textinput.c
+
+      - name: Exercise the actual text-conversion helpers and modifier contract
+        run: python3 -m unittest discover -s tests/sdl2 -p 'test_textinput_patch.py' -v

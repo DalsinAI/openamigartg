@@ -623,6 +623,65 @@ static void test_formats_v12(void) {
     }
 }
 
+/* v1.3's XRGB32: whatever is drawn, the top byte stays 0, and what is read
+ * from one is opaque. */
+static unsigned long raw32(long base, int x) {
+    const ogpu_u8 *p = arena + base + x * 4;
+    return ((unsigned long)p[0] << 24) | ((unsigned long)p[1] << 16) | ((unsigned long)p[2] << 8) | p[3];
+}
+static void test_xrgb32(void) {
+    static const unsigned long src[4] = { 0xFF102030UL, 0x80405060UL, 0x00708090UL, 0x12A0B0C0UL };
+    long bpr = W * 4;
+    int x, ok;
+    for (x = 0; x < 4; x++) setpx(D0, 16, OGPU_FMT_ARGB32, x, 0, src[x]);
+    for (x = 0; x < 256; x++) setpx(D0 + 0x1000, 0, OGPU_FMT_ARGB32, x, 0, ((unsigned long)x << 24) | ((unsigned long)x << 8) | 0x55);
+    for (x = 0; x < 4; x++) arena[D0 + 0x2000 + x] = (ogpu_u8)(x * 80 + 7);
+    memset(arena + T0, 0xEE, (size_t)(bpr * H));
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_XRGB32); ogpu_target(&B, 0);
+    ogpu_pixels(&B, D0, 16, OGPU_FMT_ARGB32, 0, 0, 0, 4, 1);                   /* row 0: ARGB32 */
+    ogpu_pixels(&B, D0 + 0x2000, 4, OGPU_FMT_INDEX8, D0 + 0x1000, 0, 1, 4, 1); /* row 1: a table with alpha */
+    ogpu_pixels(&B, D0, 16, OGPU_FMT_XRGB32, 0, 0, 2, 4, 1);                  /* row 2: XRGB32 with X set */
+    ogpu_fill(&B, 0, 3, 4, 1, 0xFF112233UL);                                    /* row 3: FILL */
+    ogpu_fill(&B, 0, 4, 4, 1, 0x00112233UL);                                    /* row 4: then INVERT */
+    ogpu_invert(&B, 0, 4, 4, 1, 0xFFFFFFFFUL);
+    ogpu_fill_blend(&B, 0, 5, 4, 1, 0x80FF0000UL, OGPU_BLEND_BLEND);          /* row 5: over 0xEE */
+    run();
+    CHECK(C.last_error == OGPU_OK, "XRGB32 ran (%d)", C.last_error);
+    for (ok = 1, x = 0; x < 4; x++) ok &= raw32(T0, x) == (src[x] & 0xFFFFFFUL);
+    CHECK(ok, "ARGB32 into XRGB32 keeps the colour, X 0: %08lx %08lx", raw32(T0, 1), raw32(T0, 3));
+    for (ok = 1, x = 0; x < 4; x++) ok &= raw32(T0 + bpr, x) == ((unsigned long)(x * 80 + 7) << 8 | 0x55);
+    CHECK(ok, "INDEX8 into XRGB32 drops the table's alpha: %08lx", raw32(T0 + bpr, 1));
+    for (ok = 1, x = 0; x < 4; x++) ok &= raw32(T0 + 2 * bpr, x) == (src[x] & 0xFFFFFFUL);
+    CHECK(ok, "XRGB32 into XRGB32 clears X: %08lx", raw32(T0 + 2 * bpr, 0));
+    CHECK(raw32(T0 + 3 * bpr, 0) == 0x00112233UL && raw32(T0 + 3 * bpr, 3) == 0x00112233UL, "FILL clears X: %08lx", raw32(T0 + 3 * bpr, 0));
+    CHECK(raw32(T0 + 4 * bpr, 0) == 0x00EEDDCCUL, "INVERT leaves X 0: %08lx", raw32(T0 + 4 * bpr, 0));
+    CHECK(raw32(T0 + 5 * bpr, 0) >> 24 == 0 && ((raw32(T0 + 5 * bpr, 0) >> 16) & 255) > 0xEE, "FILL_BLEND leaves X 0: %08lx", raw32(T0 + 5 * bpr, 0));
+    /* COMPOSITE onto it, and from it: X is never alpha. */
+    memset(arena + T0, 0, (size_t)(bpr * H));
+    memset(arena + S0, 0, 64);
+    for (x = 0; x < 4; x++) setpx(S0, 16, OGPU_FMT_ARGB32, x, 0, src[x]);
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_XRGB32);
+    ogpu_surface(&B, 1, S0, 16, 4, 1, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 2, S0, 16, 4, 1, OGPU_FMT_XRGB32);
+    ogpu_surface(&B, 3, T0 + 8 * bpr, bpr, W, 4, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_composite(&B, 1, 0, 0, 4, 1, 0, 0, 4, 1, 255, OGPU_COMP_SRCALPHA);
+    ogpu_target(&B, 3);
+    ogpu_composite(&B, 2, 0, 0, 4, 1, 0, 0, 4, 1, 255, OGPU_COMP_SRCALPHA);
+    ogpu_pixels(&B, S0, 16, OGPU_FMT_XRGB32, 0, 0, 1, 4, 1);
+    run();
+    CHECK(C.last_error == OGPU_OK, "XRGB32 composites ran (%d)", C.last_error);
+    for (ok = 1, x = 0; x < 4; x++) ok &= raw32(T0, x) >> 24 == 0;
+    CHECK(ok && raw32(T0, 0) == 0x00102030UL && raw32(T0, 2) == 0, "COMPOSITE onto XRGB32: %08lx %08lx", raw32(T0, 0), raw32(T0, 2));
+    for (ok = 1, x = 0; x < 4; x++) ok &= raw32(T0 + 8 * bpr, x) == (0xFF000000UL | (src[x] & 0xFFFFFFUL))
+                                         && raw32(T0 + 9 * bpr, x) == (0xFF000000UL | (src[x] & 0xFFFFFFUL));
+    CHECK(ok, "XRGB32 reads as opaque: %08lx %08lx", raw32(T0 + 8 * bpr, 2), raw32(T0 + 9 * bpr, 2));
+    CHECK(ogpu_core_supports(OGPU_OP_PIXELS, OGPU_FMT_XRGB32) == OGPU_FULL
+          && ogpu_core_supports(OGPU_OP_COMPOSITE, OGPU_FMT_XRGB32) == OGPU_FULL, "XRGB32 supported");
+}
+
 static void test_composite_v11(void) {
     long bpr = W * 4, abpr = W;
     unsigned long d;
@@ -878,6 +937,7 @@ int main(int argc, char **argv) {
     test_affine();
     test_yuv();
     test_formats_v12();
+    test_xrgb32();
     test_errors();
     test_ext();
     test_random_streams();

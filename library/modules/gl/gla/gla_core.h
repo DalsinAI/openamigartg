@@ -39,10 +39,52 @@ struct gla_frame {
     int         x0, y0, x1, y1;
 };
 
+/* A frame the host's graphics chip drew through virgl, still in the host's
+ * memory: the ACVirgl context and resource (its colour buffer), row 0 at
+ * the top, and the part that changed. */
+struct gla_virgl_frame {
+    unsigned long context, handle;
+    unsigned      w, h;
+    int           x0, y0, x1, y1;
+};
+
 struct gla_present {
     void (*present)(void *user, const struct gla_frame *frame);
     void  *user;
+    /* When there is one, virgl's frames go here first, and the host writes
+     * them straight into the display (ACV_PRESENT): the pixels it wrote, or
+     * -1, and then the frame is read back into this CPU's memory and comes
+     * to present as before. */
+    long (*present_virgl)(void *user, const struct gla_virgl_frame *frame);
 };
+
+/* What GLA did with its frames, since it started or was last reset. */
+struct gla_stats {
+    unsigned long frames;           /* virgl frames finished (flush_frontbuffer) */
+    unsigned long direct;           /* ... the host wrote straight into the display */
+    unsigned long direct_pixels;
+    unsigned long readback;         /* ... read back into this CPU's memory and presented from there */
+    unsigned long readback_pixels;
+    unsigned long wpa_pixels;       /* frame pixels drawn with WritePixelArray (OS 3.2) */
+    unsigned long fences;           /* request blocks waited for (OS 3.2's transport) */
+    unsigned long fence_wait_us;    /* ... and the time spent waiting, when it can be timed */
+    int direct_state;               /* GLA_DIRECT_: the last frame's way, and why not straight in */
+};
+/* gla_stats' direct_state. On OS 3.2 the GL module also keeps it in the
+ * global variable GLAPresent (GetEnv GLAPresent), in words. */
+enum {
+    GLA_DIRECT_UNKNOWN = 0,         /* no virgl frame yet */
+    GLA_DIRECT_ON = 1,              /* written straight in by the host */
+    GLA_DIRECT_NO_HOST = 2,         /* the host has no ACV_PRESENT (HELLO's flags) */
+    GLA_DIRECT_NO_HOOK = 3,         /* the present hook has no present_virgl */
+    GLA_DIRECT_REFUSED = 4,         /* present_virgl said no (openrtg.library's -1) */
+    GLA_DIRECT_NO_LIBRARY = 5,      /* OS 3.2: no openrtg.library 0.15 or later */
+    GLA_DIRECT_NO_TARGET = 6        /* OS 3.2: neither a RastPort nor a bitmap to present to */
+};
+/* The counts into s (when s isn't 0); reset puts them back to 0. */
+void gla_get_stats(struct gla_stats *s, int reset);
+/* The GLA core's own files count here. */
+extern struct gla_stats gla_counts;
 
 struct gla_display;
 struct gla_context;

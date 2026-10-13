@@ -1,0 +1,31 @@
+diff --git a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3events.c
+--- a/src/video/amigaos3/SDL_os3events.c
++++ b/src/video/amigaos3/SDL_os3events.c
+@@ -151,10 +151,10 @@
+     /* 0x61 */ SDL_SCANCODE_RSHIFT,
+     /* 0x62 */ SDL_SCANCODE_CAPSLOCK,
+     /* 0x63 */ SDL_SCANCODE_LCTRL,
+-    /* 0x64 */ SDL_SCANCODE_LGUI,        /* Left Amiga key */
+-    /* 0x65 */ SDL_SCANCODE_RGUI,        /* Right Amiga key */
+-    /* 0x66 */ SDL_SCANCODE_LALT,
+-    /* 0x67 */ SDL_SCANCODE_RALT,
++    /* 0x64 */ SDL_SCANCODE_LALT,        /* Left Alt key */
++    /* 0x65 */ SDL_SCANCODE_RALT,        /* Right Alt key */
++    /* 0x66 */ SDL_SCANCODE_LGUI,        /* Left Amiga key */
++    /* 0x67 */ SDL_SCANCODE_RGUI,        /* Right Amiga key */
+     /* 0x68 */ SDL_SCANCODE_UNKNOWN,     /* (undefined) */
+     /* 0x69 */ SDL_SCANCODE_UNKNOWN,     /* (undefined) */
+     /* 0x6A */ SDL_SCANCODE_UNKNOWN,     /* (undefined) */
+@@ -370,7 +370,11 @@
+             /* Now process the copied data */
+             switch (class) {
+             case IDCMP_RAWKEY:
+-                OS3_HandleRawKey(sdlwin, code, mapped, mapped_len);
++                /* Inactive-window messages must not restore a modifier that
++                 * SDL_SetKeyboardFocus(NULL) has just released. */
++                if (SDL_GetKeyboardFocus() == sdlwin) {
++                    OS3_HandleRawKey(sdlwin, code, mapped, mapped_len);
++                }
+                 break;
+ 
+             case IDCMP_MOUSEBUTTONS:

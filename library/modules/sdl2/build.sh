@@ -98,7 +98,7 @@ cp "$TREE"/include/*.h "$OUT/include/SDL2/"
 
 SDL_TARGETS=$(echo " $TARGETS " | sed 's/ satellites / /')
 if [ -n "$(echo $SDL_TARGETS)" ]; then
-    make -f "$HERE/Makefile" -j"$(nproc)" SDL="$TREE" OUT="$OUT" WORK="$WORK" VASM="$VASM" ${CPU:+CPU="$CPU"} $SDL_TARGETS
+    make -f "$HERE/Makefile" -j"${JOBS:-$(nproc)}" SDL="$TREE" OUT="$OUT" WORK="$WORK" VASM="$VASM" ${CPU:+CPU="$CPU"} $SDL_TARGETS
 fi
 
 # 6. The satellite libraries, against the headers in OUT/include/SDL2.
@@ -114,7 +114,7 @@ case " $TARGETS " in
         done
     done
     rm -rf "$WORK/obj-satellites"
-    make -f "$HERE/satellites/Makefile" -j"$(nproc)" OUT="$OUT" WORK="$WORK" ${CPU:+CPU="$CPU"} satellites
+    make -f "$HERE/satellites/Makefile" -j"${JOBS:-$(nproc)}" OUT="$OUT" WORK="$WORK" ${CPU:+CPU="$CPU"} satellites
     ;;
 esac
 # 7. GCC 16's FPCR clash (fpcr_check.py) must not be in anything built.

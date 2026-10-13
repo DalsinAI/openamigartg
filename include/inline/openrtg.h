@@ -43,4 +43,8 @@
     LP3(0x6c, ULONG, ORTG_DrawStats, ULONG *, counts, a0, ULONG, kinds, d0, ULONG, flags, d1, , OPENRTG_BASE_NAME)
 #define ORTG_WritePixelsAlpha(rp, x, y, pixels, alpha) \
     LP5(0x72, LONG, ORTG_WritePixelsAlpha, struct RastPort *, rp, a1, LONG, x, d0, LONG, y, d1, const struct OpenRTGPixels *, pixels, a0, ULONG, alpha, d2, , OPENRTG_BASE_NAME)
+#define ORTG_PresentVirgl(rp, x, y, frame) \
+    LP4(0x78, LONG, ORTG_PresentVirgl, struct RastPort *, rp, a1, LONG, x, d0, LONG, y, d1, const struct OpenRTGVirglFrame *, frame, a0, , OPENRTG_BASE_NAME)
+#define ORTG_NativeSize(monitor, size) \
+    LP2(0x7e, BOOL, ORTG_NativeSize, ULONG, monitor, d0, struct OpenRTGNativeSize *, size, a0, , OPENRTG_BASE_NAME)
 #endif

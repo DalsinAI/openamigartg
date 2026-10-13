@@ -89,8 +89,8 @@ static void bytes_of(ogpu_u32 v, ogpu_u8 *b) {
 
 /* Format tables. (A switch over grouped formats becomes GCC's "1 << format,
  * then AND" bit test: a shift by a register, slow on the AC090's JIT.) */
-static const unsigned char fmt_bpp[OGPU_FMT_COUNT] = { 0, 1, 2, 4, 1, 1, 2, 2, 2, 4 };
-static const unsigned char fmt_colour[OGPU_FMT_COUNT] = { 0, 0, 1, 1, 0, 0, 1, 1, 1, 1 };
+static const unsigned char fmt_bpp[OGPU_FMT_COUNT] = { 0, 1, 2, 4, 1, 1, 2, 2, 2, 4, 4 };
+static const unsigned char fmt_colour[OGPU_FMT_COUNT] = { 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1 };
 
 static int bytes_per_pixel(int format) {
     return format > 0 && format < OGPU_FMT_COUNT ? fmt_bpp[format] : 0;
@@ -114,6 +114,7 @@ PX_FN void ld(const ogpu_u8 *p, int f, struct ch *o) {
     switch (f) {
     case OGPU_FMT_ARGB32: o->a = p[0]; o->r = p[1]; o->g = p[2]; o->b = p[3]; return;
     case OGPU_FMT_BGRA32: o->b = p[0]; o->g = p[1]; o->r = p[2]; o->a = p[3]; return;
+    case OGPU_FMT_XRGB32: o->a = 255; o->r = p[1]; o->g = p[2]; o->b = p[3]; return;
     case OGPU_FMT_RGB565: hi = p[0]; lo = p[1]; goto c565;
     case OGPU_FMT_RGB565PC: lo = p[0]; hi = p[1];
     c565:
@@ -135,6 +136,7 @@ PX_FN void st(ogpu_u8 *p, int f, unsigned a, unsigned r, unsigned g, unsigned b)
     switch (f) {
     case OGPU_FMT_ARGB32: p[0] = (ogpu_u8)a; p[1] = (ogpu_u8)r; p[2] = (ogpu_u8)g; p[3] = (ogpu_u8)b; return;
     case OGPU_FMT_BGRA32: p[0] = (ogpu_u8)b; p[1] = (ogpu_u8)g; p[2] = (ogpu_u8)r; p[3] = (ogpu_u8)a; return;
+    case OGPU_FMT_XRGB32: p[0] = 0; p[1] = (ogpu_u8)r; p[2] = (ogpu_u8)g; p[3] = (ogpu_u8)b; return;
     case OGPU_FMT_RGB565:
         p[0] = (ogpu_u8)((r & 0xF8) | (g >> 5)); p[1] = (ogpu_u8)(((g & 0x1C) << 3) | (b >> 3)); return;
     case OGPU_FMT_RGB565PC:
@@ -158,7 +160,7 @@ static void raw_bytes(ogpu_u32 v, int f, ogpu_u8 *b) {
     bytes_of(v, w);
     b[1] = b[2] = b[3] = 0;
     switch (bytes_per_pixel(f)) {
-    case 4: b[0] = w[0]; b[1] = w[1]; b[2] = w[2]; b[3] = w[3]; return;
+    case 4: b[0] = f == OGPU_FMT_XRGB32 ? 0 : w[0]; b[1] = w[1]; b[2] = w[2]; b[3] = w[3]; return;
     case 2:
         if (f == OGPU_FMT_RGB565PC || f == OGPU_FMT_RGB555PC) { b[0] = w[3]; b[1] = w[2]; }
         else { b[0] = w[2]; b[1] = w[3]; }
@@ -171,7 +173,7 @@ static void raw_bytes(ogpu_u32 v, int f, ogpu_u8 *b) {
  * colour (not the alpha) of a 32-bit one. */
 static void flip_bytes(int f, ogpu_u8 *b) {
     b[0] = b[1] = b[2] = b[3] = 0xFF;
-    if (f == OGPU_FMT_ARGB32) b[0] = 0;
+    if (f == OGPU_FMT_ARGB32 || f == OGPU_FMT_XRGB32) b[0] = 0;
     if (f == OGPU_FMT_BGRA32) b[3] = 0;
 }
 
@@ -368,7 +370,8 @@ OP_FN op_fill(struct ogpu_core *c, const ogpu_u8 *a, int invert) {
     raw_bytes(v, t->format, pv);
     if (invert) {
         flip_bytes(t->format, m);
-        if (bpp == 4) m[0] = m[1] = m[2] = m[3] = 0xFF;     /* INVERT's mask reaches the alpha too */
+        if (bpp == 4 && t->format != OGPU_FMT_XRGB32)       /* INVERT's mask reaches the alpha too, */
+            m[0] = m[1] = m[2] = m[3] = 0xFF;               /* but XRGB32's X stays 0 */
         for (i = 0; i < 4; i++) pv[i] &= m[i];
     }
     row = px_at(t, x, y);
@@ -545,7 +548,7 @@ OP_FN op_pixels(struct ogpu_core *c, const ogpu_u8 *a) {
         if (format == OGPU_FMT_CLUT8) return OGPU_ERR_UNSUPPORTED;
         /* A8 goes only to A8: coverage has no colour, and colours no coverage. */
         if ((format == OGPU_FMT_A8) != (t->format == OGPU_FMT_A8)) return OGPU_ERR_UNSUPPORTED;
-        raw = (int)format == t->format;
+        raw = (int)format == t->format && format != OGPU_FMT_XRGB32;
         if (format == OGPU_FMT_INDEX8) {
             if (!table) return OGPU_ERR_UNSUPPORTED;
             ctab = c->map(c->user, table, 1024);
@@ -565,6 +568,11 @@ OP_FN op_pixels(struct ogpu_core *c, const ogpu_u8 *a) {
         if (raw) {
             int n = w * dbpp;
             for (i = 0; i < n; i++) dp[i] = sp[i];
+            continue;
+        }
+        if (t->format == OGPU_FMT_XRGB32 && (format == OGPU_FMT_ARGB32 || format == OGPU_FMT_XRGB32)) {
+            /* The colour as it is, X 0: a 32-bit OpenRTG screen's ARGB pixels. */
+            for (i = 0; i < w; i++, sp += 4, dp += 4) { dp[0] = 0; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = sp[3]; }
             continue;
         }
         for (i = 0; i < w; i++, sp += sbpp, dp += dbpp) {

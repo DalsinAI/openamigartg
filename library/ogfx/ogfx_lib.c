@@ -12,7 +12,8 @@
  * ScrollRaster, and from 0.8 BltPattern, SetRast, Draw, PolyDraw,
  * WritePixel, ReadPixel, BltBitMapRastPort, BltMaskBitMapRastPort, ClipBlit,
  * WriteChunkyPixels, WritePixelArray8, WritePixelLine8, ReadPixelLine8 and
- * ReadPixelArray8 (22 in all). OpenFont patches nothing: it supplies glyphs, shaping and
+ * ReadPixelArray8, and from 0.14 AreaMove, AreaDraw, AreaEllipse, AreaEnd,
+ * DrawEllipse and EraseRect (28 in all). OpenFont patches nothing: it supplies glyphs, shaping and
  * metrics. OpenRTG and other RTG systems register a provider for these calls
  * instead of installing competing vectors. A call no provider and no leaf
  * takes goes to graphics.library's own code.
@@ -34,12 +35,14 @@
 #include <graphics/gfx.h>
 #include <graphics/gfxbase.h>
 #include <graphics/rastport.h>
+#include <graphics/clip.h>
 #include <proto/exec.h>
 #include <proto/graphics.h>
 #include <proto/expansion.h>
 
 #include "ogfx.h"
 #include "ogfx_leaves.h"
+#include "gfx_rp.h"     /* OpenGfx's core, from openamigagfx (tools/fetch_ogfx_core.sh) */
 
 #define REG OGFX_REG
 
@@ -73,6 +76,13 @@ static const WORD lvo_of[OGFX_P_COUNT] = {
     -774,   /* WritePixelLine8 */
     -768,   /* ReadPixelLine8 */
     -780,   /* ReadPixelArray8 */
+    /* 0.14: area fills, ellipses and EraseRect */
+    -252,   /* AreaMove */
+    -258,   /* AreaDraw */
+    -186,   /* AreaEllipse */
+    -264,   /* AreaEnd */
+    -180,   /* DrawEllipse */
+    -810,   /* EraseRect */
 };
 
 static const char gfx_name[] = "graphics.library";
@@ -446,6 +456,54 @@ static LONG try_planar_rect(struct ogfx_state *st, struct GfxBase *GfxBase,
     return 1;
 }
 
+/* Whether OpenGfx's own core (openamigagfx library/core, measured byte for
+ * byte against OS 3.2's graphics.library) draws a call on this RastPort,
+ * and if so with its layer locked (core_end unlocks it). It does when every
+ * bitmap the call may touch is a standard, non-interleaved planar bitmap of
+ * 1 to 8 planes the CPU may touch now (Fast RAM, or Chip RAM on AmigaChrome
+ * after WaitBlit: cpu_may_draw): the RastPort's, and in a layer each
+ * covered part a smart refresh layer keeps. Super bitmap layers, and
+ * BltPattern through a mask in a layer (masked), stay with
+ * graphics.library (ogfx_rp_takes). On a real Amiga, Chip RAM stays with
+ * the blitter. */
+static int core_planar(struct GfxBase *GfxBase, struct BitMap *bm)
+{
+    ULONG flags;
+
+    if (!bm || !bm->Depth || bm->Depth > 8)
+        return 0;
+    flags = GetBitMapAttr(bm, BMA_FLAGS);
+    return (flags & BMF_STANDARD) && !(flags & BMF_INTERLEAVED);
+}
+
+static int core_begin(struct ogfx_state *st, struct GfxBase *GfxBase, struct RastPort *rp, int masked)
+{
+    struct Layer *l;
+    struct ClipRect *cr;
+
+    if (!st->enabled || !rp || !core_planar(GfxBase, rp->BitMap) || !ogfx_rp_takes(rp, masked))
+        return 0;
+    if (!(l = rp->Layer))
+        return cpu_may_draw(st, GfxBase, rp->BitMap, NULL);
+    LockLayerRom(l);
+    if (cpu_may_draw(st, GfxBase, rp->BitMap, NULL)) {
+        for (cr = l->ClipRect; cr; cr = cr->Next)
+            if (cr->obscured && cr->BitMap &&
+                !(core_planar(GfxBase, cr->BitMap) && cpu_may_draw(st, GfxBase, cr->BitMap, NULL)))
+                break;
+        if (!cr)
+            return 1;
+    }
+    UnlockLayerRom(l);
+    return 0;
+}
+
+static void core_end(struct GfxBase *GfxBase, struct RastPort *rp)
+{
+    if (rp->Layer)
+        UnlockLayerRom(rp->Layer);
+}
+
 /* ---- the look (gfx.h): asked first on RectFill and Text ---------------------
  * look_busy counts the calls inside the look, so its owner knows when its
  * code is free to go after OGFX_UnregisterLook. A one-instruction add and
@@ -516,6 +574,11 @@ OGFX_CALL void do_rectfill(struct ogfx_state *st, struct GfxBase *gfx, struct Ra
 
     if (st->enabled && try_planar_rect(st, gfx, rp, x0, y0, x1, y1))
         return;
+    if (core_begin(st, gfx, rp, 0)) {     /* a layer, an area pattern, or INVERSVID */
+        ogfx_rp_RectFill(rp, x0, y0, x1, y1);
+        core_end(gfx, rp);
+        return;
+    }
 
     ((rectfill_fn)original(st, gfx, OGFX_P_RECTFILL))(rp, x0, y0, x1, y1, gfx);
 }
@@ -536,6 +599,13 @@ OGFX_CALL LONG do_text(struct ogfx_state *st, struct GfxBase *gfx, struct RastPo
         r.rp = rp; r.text = text; r.length = length; r.result = 0;
         if (st->provider.v1.text(st->provider.v1.userdata, &r))
             return r.result;
+    }
+
+    /* the core, unless the font is a colour one or drawn right to left */
+    if (rp && ogfx_rp_takes_text(rp) && core_begin(st, gfx, rp, 0)) {
+        LONG done = ogfx_rp_Text(rp, (CONST_STRPTR)text, length);
+        core_end(gfx, rp);
+        if (done) return 0;
     }
 
     return ((text_fn)original(st, gfx, OGFX_P_TEXT))(rp, text, length, gfx);
@@ -584,6 +654,14 @@ OGFX_CALL void do_scroll(struct ogfx_state *st, struct GfxBase *gfx, struct Rast
             return;
     }
 
+    /* in a layer, the core where it takes the layer and the call (it
+     * returns 0 for a call graphics.library must make); unlayered, the
+     * leaf, which already matched graphics.library */
+    if (st->enabled && rp && rp->Layer && ogfx_rp_takes_copy(rp) && core_begin(st, gfx, rp, 0)) {
+        LONG done = ogfx_rp_ScrollRaster(rp, dx, dy, x0, y0, x1, y1);
+        core_end(gfx, rp);
+        if (done) return;
+    }
     if (st->enabled && try_planar_scroll(st, gfx, rp, dx, dy, x0, y0, x1, y1))
         return;
 
@@ -591,8 +669,10 @@ OGFX_CALL void do_scroll(struct ogfx_state *st, struct GfxBase *gfx, struct Rast
 }
 
 /* The text measurement calls and BltTemplate: the provider (OpenRTG, and
- * through OpenGfx OpenFont's metrics when they come), else graphics.library's
- * own code, so a program measures text as it is drawn. */
+ * through OpenGfx OpenFont's metrics when they come); else TextLength and
+ * TextExtent from the core, which measures as it draws (as OS 3.2 does);
+ * else graphics.library's own code, so a program measures text as it is
+ * drawn. */
 OGFX_CALL WORD do_textlength(struct ogfx_state *st, struct GfxBase *gfx, struct RastPort *rp,
                           STRPTR text, ULONG length)
 {
@@ -604,6 +684,8 @@ OGFX_CALL WORD do_textlength(struct ogfx_state *st, struct GfxBase *gfx, struct 
         if (st->provider.v1.textlength(st->provider.v1.userdata, &r))
             return (WORD)r.result;
     }
+    if (st->enabled && rp && ogfx_rp_takes_text(rp))
+        return ogfx_rp_TextLength(rp, (CONST_STRPTR)text, length);
 
     return ((textlength_fn)original(st, gfx, OGFX_P_TEXTLENGTH))(rp, text, length, gfx);
 }
@@ -618,6 +700,10 @@ OGFX_CALL void do_textextent(struct ogfx_state *st, struct GfxBase *gfx, struct 
         r.rp = rp; r.text = text; r.length = length; r.extent = extent;
         if (st->provider.v1.textextent(st->provider.v1.userdata, &r))
             return;
+    }
+    if (st->enabled && rp && extent && ogfx_rp_takes_text(rp)) {
+        ogfx_rp_TextExtent(rp, (CONST_STRPTR)text, length, extent);
+        return;
     }
 
     ((textextent_fn)original(st, gfx, OGFX_P_TEXTEXTENT))(rp, text, length, extent, gfx);
@@ -699,6 +785,11 @@ OGFX_CALL void do_bltpattern(struct ogfx_state *st, struct GfxBase *gfx, struct 
         r.mask_bpr = (WORD)bpr;
         if (st->provider.bltpattern(st->provider.v1.userdata, &r)) return;
     }
+    if (core_begin(st, gfx, rp, mask != NULL)) {
+        ogfx_rp_BltPattern(rp, mask, (WORD)x0, (WORD)y0, (WORD)x1, (WORD)y1, (UWORD)bpr);
+        core_end(gfx, rp);
+        return;
+    }
     ((bltpattern_fn)original(st, gfx, OGFX_P_BLTPATTERN))(rp, mask, x0, y0, x1, y1, bpr, gfx);
 }
 
@@ -708,6 +799,11 @@ OGFX_CALL void do_setrast(struct ogfx_state *st, struct GfxBase *gfx, struct Ras
         struct OGFXSetRastRequest r;
         r.rp = rp; r.pen = (UBYTE)pen;
         if (st->provider.setrast(st->provider.v1.userdata, &r)) return;
+    }
+    if (core_begin(st, gfx, rp, 0)) {
+        ogfx_rp_SetRast(rp, (UBYTE)pen);
+        core_end(gfx, rp);
+        return;
     }
     ((setrast_fn)original(st, gfx, OGFX_P_SETRAST))(rp, pen, gfx);
 }
@@ -719,6 +815,11 @@ OGFX_CALL void do_draw(struct ogfx_state *st, struct GfxBase *gfx, struct RastPo
         r.rp = rp; r.x = (WORD)x; r.y = (WORD)y;
         if (st->provider.draw(st->provider.v1.userdata, &r)) return;
     }
+    if (core_begin(st, gfx, rp, 0)) {
+        ogfx_rp_Draw(rp, (WORD)x, (WORD)y);
+        core_end(gfx, rp);
+        return;
+    }
     ((draw_fn)original(st, gfx, OGFX_P_DRAW))(rp, x, y, gfx);
 }
 
@@ -728,6 +829,11 @@ OGFX_CALL void do_polydraw(struct ogfx_state *st, struct GfxBase *gfx, struct Ra
         struct OGFXPolyDrawRequest r;
         r.rp = rp; r.count = (WORD)n; r.array = xy;
         if (st->provider.polydraw(st->provider.v1.userdata, &r)) return;
+    }
+    if (core_begin(st, gfx, rp, 0)) {
+        ogfx_rp_PolyDraw(rp, (WORD)n, xy);
+        core_end(gfx, rp);
+        return;
     }
     ((polydraw_fn)original(st, gfx, OGFX_P_POLYDRAW))(rp, n, xy, gfx);
 }
@@ -739,6 +845,11 @@ OGFX_CALL LONG do_pixel(struct ogfx_state *st, struct GfxBase *gfx, int p, struc
         struct OGFXPixelRequest r;
         r.rp = rp; r.x = (WORD)x; r.y = (WORD)y; r.result = 0;
         if (fn(st->provider.v1.userdata, &r)) return r.result;
+    }
+    if (core_begin(st, gfx, rp, 0)) {
+        LONG r = p == OGFX_P_WRITEPIXEL ? ogfx_rp_WritePixel(rp, (WORD)x, (WORD)y) : ogfx_rp_ReadPixel(rp, (WORD)x, (WORD)y);
+        core_end(gfx, rp);
+        return r;
     }
     return ((pixel_fn)original(st, gfx, p))(rp, x, y, gfx);
 }
@@ -754,6 +865,17 @@ OGFX_CALL void do_bltbmrp(struct ogfx_state *st, struct GfxBase *gfx, int p, str
         r.width = (WORD)w; r.height = (WORD)h; r.minterm = (UBYTE)minterm; r.mask = mask;
         if (fn(st->provider.v1.userdata, &r)) return;
     }
+    /* the source must be one the core reads too: a standard planar bitmap
+     * the CPU may touch now (cpu_may_draw waits for the blitter on Chip RAM),
+     * and not a second BitMap over the RastPort's own planes, whose overlap
+     * the core can't order (as in BltBitMap: planar_bitmaps_alias) */
+    if (p == OGFX_P_BLTBMRP && st->enabled && core_planar(gfx, src) && rp && rp->BitMap &&
+        !planar_bitmaps_alias(src, rp->BitMap, src->Depth < rp->BitMap->Depth ? src->Depth : rp->BitMap->Depth) &&
+        cpu_may_draw(st, gfx, src, NULL) && core_begin(st, gfx, rp, 0)) {
+        ogfx_rp_BltBitMapRastPort(src, (WORD)sx, (WORD)sy, rp, (WORD)dx, (WORD)dy, (WORD)w, (WORD)h, (UBYTE)minterm);
+        core_end(gfx, rp);
+        return;
+    }
     if (p == OGFX_P_BLTBMRP)
         ((bltbmrp_fn)original(st, gfx, p))(src, sx, sy, rp, dx, dy, w, h, minterm, gfx);
     else
@@ -768,6 +890,28 @@ OGFX_CALL void do_clipblit(struct ogfx_state *st, struct GfxBase *gfx, struct Ra
         r.src_rp = srp; r.sx = (WORD)sx; r.sy = (WORD)sy; r.rp = rp; r.dx = (WORD)dx; r.dy = (WORD)dy;
         r.width = (WORD)w; r.height = (WORD)h; r.minterm = (UBYTE)minterm;
         if (st->provider.clipblit(st->provider.v1.userdata, &r)) return;
+    }
+    /* the core, with both RastPorts' layers locked, when it takes both (a
+     * smart refresh layer with no clip region, or none) and their bitmaps
+     * are standard planar ones that are one bitmap or don't share planes;
+     * it returns 0 for a call graphics.library must make */
+    if (st->enabled && srp && rp && srp->BitMap && rp->BitMap && ogfx_rp_takes_copy(srp) && ogfx_rp_takes_copy(rp) &&
+        core_planar(gfx, srp->BitMap) &&
+        !planar_bitmaps_alias(srp->BitMap, rp->BitMap,
+                              srp->BitMap->Depth < rp->BitMap->Depth ? srp->BitMap->Depth : rp->BitMap->Depth)) {
+        /* two layers lock in address order, so two ClipBlits between the
+         * same layers in opposite directions can't each hold one */
+        struct RastPort *first = srp, *second = rp;
+        LONG done = 0;
+        if (srp->Layer && rp->Layer && (ULONG)rp->Layer < (ULONG)srp->Layer) { first = rp; second = srp; }
+        if (core_begin(st, gfx, first, 0)) {
+            if (core_begin(st, gfx, second, 0)) {
+                done = ogfx_rp_ClipBlit(srp, (WORD)sx, (WORD)sy, rp, (WORD)dx, (WORD)dy, (WORD)w, (WORD)h, (UBYTE)minterm);
+                core_end(gfx, second);
+            }
+            core_end(gfx, first);
+        }
+        if (done) return;
     }
     ((clipblit_fn)original(st, gfx, OGFX_P_CLIPBLIT))(srp, sx, sy, rp, dx, dy, w, h, minterm, gfx);
 }
@@ -793,6 +937,15 @@ OGFX_CALL LONG do_array(struct ogfx_state *st, struct GfxBase *gfx, int p, struc
         }
         if (fn(st->provider.v1.userdata, &r)) return r.result;
     }
+    if (!line && core_begin(st, gfx, rp, 0)) {
+        LONG r = 0;
+        x0 = (UWORD)x0; y0 = (UWORD)y0; x1 = (UWORD)x1; y1 = (UWORD)y1;
+        if (p == OGFX_P_WCP) ogfx_rp_WriteChunkyPixels(rp, x0, y0, x1, y1, array, bpr);
+        else r = p == OGFX_P_WPA8 ? ogfx_rp_WritePixelArray8(rp, x0, y0, x1, y1, array, tmp)
+                                  : ogfx_rp_ReadPixelArray8(rp, x0, y0, x1, y1, array, tmp);
+        core_end(gfx, rp);
+        return r;
+    }
     if (p == OGFX_P_WCP) {
         ((wcp_fn)original(st, gfx, p))(rp, x0, y0, x1, y1, array, bpr, gfx);
         return 0;
@@ -800,6 +953,66 @@ OGFX_CALL LONG do_array(struct ogfx_state *st, struct GfxBase *gfx, int p, struc
     if (line)
         return ((line8_fn)original(st, gfx, p))(rp, x0, y0, x1, array, tmp, gfx);
     return ((array8_fn)original(st, gfx, p))(rp, x0, y0, x1, y1, array, tmp, gfx);
+}
+
+/* ---- 0.14: area fills, DrawEllipse and EraseRect through the core -------------
+ * No provider takes these yet. AreaMove, AreaDraw and AreaEllipse only add
+ * to the AreaInfo table, which the core keeps byte for byte as OS 3.2 does
+ * (openamigagfx's AREAPROBE2 and AREAPROBE4), so graphics.library's
+ * AreaEnd takes a table the core built, and the core's AreaEnd one it
+ * built. AreaEnd builds its mask in the RastPort's TmpRas with the CPU:
+ * a blit still using it ends first. */
+typedef LONG (*areapt_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(a6, struct GfxBase *));
+typedef LONG (*areaellipse_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(d2, LONG), REG(d3, LONG),
+                               REG(a6, struct GfxBase *));
+typedef LONG (*areaend_fn)(REG(a1, struct RastPort *), REG(a6, struct GfxBase *));
+typedef void (*rect4_fn)(REG(a1, struct RastPort *), REG(d0, LONG), REG(d1, LONG), REG(d2, LONG), REG(d3, LONG),
+                         REG(a6, struct GfxBase *));
+
+OGFX_CALL LONG do_areapt(struct ogfx_state *st, struct GfxBase *gfx, int p, struct RastPort *rp, LONG x, LONG y)
+{
+    if (st->enabled && rp && rp->AreaInfo)
+        return p == OGFX_P_AREAMOVE ? ogfx_rp_AreaMove(rp, (WORD)x, (WORD)y) : ogfx_rp_AreaDraw(rp, (WORD)x, (WORD)y);
+    return ((areapt_fn)original(st, gfx, p))(rp, x, y, gfx);
+}
+
+OGFX_CALL LONG do_areaellipse(struct ogfx_state *st, struct GfxBase *gfx, struct RastPort *rp, LONG xc, LONG yc, LONG a, LONG b)
+{
+    if (st->enabled && rp && rp->AreaInfo)
+        return ogfx_rp_AreaEllipse(rp, (WORD)xc, (WORD)yc, (WORD)a, (WORD)b);
+    return ((areaellipse_fn)original(st, gfx, OGFX_P_AREAELLIPSE))(rp, xc, yc, a, b, gfx);
+}
+
+OGFX_CALL LONG do_areaend(struct ogfx_state *st, struct GfxBase *GfxBase, struct RastPort *rp)
+{
+    /* the core where it takes the table (not NOCROSSFILL, a pattern it
+     * knows, an outline inside its layer) */
+    if (rp && rp->AreaInfo && core_begin(st, GfxBase, rp, 0)) {
+        if (ogfx_rp_takes_area(rp)) {
+            LONG r;
+            WaitBlit();
+            r = ogfx_rp_AreaEnd(rp);
+            core_end(GfxBase, rp);
+            return r;
+        }
+        core_end(GfxBase, rp);
+    }
+    return ((areaend_fn)original(st, GfxBase, OGFX_P_AREAEND))(rp, GfxBase);
+}
+
+/* DrawEllipse and EraseRect: the core answers 0 for a call graphics.library
+ * must make (DrawEllipse in COMPLEMENT, INVERSVID or with a line pattern;
+ * EraseRect in a layer). */
+OGFX_CALL void do_rect4(struct ogfx_state *st, struct GfxBase *gfx, int p, struct RastPort *rp,
+                        LONG d0, LONG d1, LONG d2, LONG d3)
+{
+    if (core_begin(st, gfx, rp, 0)) {
+        int done = p == OGFX_P_DRAWELLIPSE ? ogfx_rp_DrawEllipse(rp, (WORD)d0, (WORD)d1, (WORD)d2, (WORD)d3)
+                                           : ogfx_rp_EraseRect(rp, (WORD)d0, (WORD)d1, (WORD)d2, (WORD)d3);
+        core_end(gfx, rp);
+        if (done) return;
+    }
+    ((rect4_fn)original(st, gfx, p))(rp, d0, d1, d2, d3, gfx);
 }
 
 /* ---- the patches: thin entries, called through tramp[] with the state in A4 ---- */
@@ -950,6 +1163,41 @@ static LONG rpl8_patch(REG(a0, struct RastPort *rp), REG(d0, ULONG x0), REG(d1, 
     return do_array(st, gfx, OGFX_P_RPL8, rp, x0, y0, w, 0, a, 0, tmp);
 }
 
+static LONG areamove_patch(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y),
+                           REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_areapt(st, gfx, OGFX_P_AREAMOVE, rp, x, y);
+}
+
+static LONG areadraw_patch(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y),
+                           REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_areapt(st, gfx, OGFX_P_AREADRAW, rp, x, y);
+}
+
+static LONG areaellipse_patch(REG(a1, struct RastPort *rp), REG(d0, LONG xc), REG(d1, LONG yc), REG(d2, LONG a),
+                              REG(d3, LONG b), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_areaellipse(st, gfx, rp, xc, yc, a, b);
+}
+
+static LONG areaend_patch(REG(a1, struct RastPort *rp), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    return do_areaend(st, gfx, rp);
+}
+
+static void drawellipse_patch(REG(a1, struct RastPort *rp), REG(d0, LONG xc), REG(d1, LONG yc), REG(d2, LONG a),
+                              REG(d3, LONG b), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    do_rect4(st, gfx, OGFX_P_DRAWELLIPSE, rp, xc, yc, a, b);
+}
+
+static void eraserect_patch(REG(a1, struct RastPort *rp), REG(d0, LONG x0), REG(d1, LONG y0), REG(d2, LONG x1),
+                            REG(d3, LONG y1), REG(a6, struct GfxBase *gfx), REG(a4, struct ogfx_state *st))
+{
+    do_rect4(st, gfx, OGFX_P_ERASERECT, rp, x0, y0, x1, y1);
+}
+
 /* In OGFX_P_ order. */
 static const APTR patch_entry[OGFX_P_COUNT] = {
     (APTR)text_patch, (APTR)textlength_patch, (APTR)textextent_patch, (APTR)textfit_patch,
@@ -957,6 +1205,8 @@ static const APTR patch_entry[OGFX_P_COUNT] = {
     (APTR)bltpattern_patch, (APTR)setrast_patch, (APTR)draw_patch, (APTR)polydraw_patch,
     (APTR)writepixel_patch, (APTR)readpixel_patch, (APTR)bltbmrp_patch, (APTR)bltmaskbmrp_patch,
     (APTR)clipblit_patch, (APTR)wcp_patch, (APTR)wpa8_patch, (APTR)wpl8_patch, (APTR)rpl8_patch, (APTR)rpa8_patch,
+    (APTR)areamove_patch, (APTR)areadraw_patch, (APTR)areaellipse_patch, (APTR)areaend_patch,
+    (APTR)drawellipse_patch, (APTR)eraserect_patch,
 };
 
 /* ---- set-up ------------------------------------------------------------------- */

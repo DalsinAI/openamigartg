@@ -11,6 +11,8 @@
  *   OpenRTG LISTDB                  every mode the display database lists
  *   OpenRTG STATS [RESET]           how its drawing went: through OpenGPU or on
  *                                 the CPU, by kind (openrtg.library 0.11 on)
+ *   OpenRTG NATIVE [MONITOR n]      the size the host's window asks for, and the
+ *                                 Native modes (openrtg.library 0.17 on)
  */
 #include <exec/types.h>
 #include <dos/dos.h>
@@ -21,13 +23,13 @@
 #include <graphics/modeid.h>
 #include <proto/openrtg.h>
 
-static const char version[] __attribute__((used)) = "$VER: OpenRTG 0.3 (8.10.2026) Dalsin Limited";
+static const char version[] __attribute__((used)) = "$VER: OpenRTG 0.4 (12.10.2026) Dalsin Limited";
 struct Library *OpenRTGBase;
 
 int main(void)
 {
-    LONG args[11] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    struct RDArgs *rd = ReadArgs("MODES/S,ALL/S,STANDARD/S,MONITOR/K/N,ACTIVATE/S,OFF/S,FORCE/S,LISTDB/S,SCREENS/S,STATS/S,RESET/S", args, NULL);
+    LONG args[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    struct RDArgs *rd = ReadArgs("MODES/S,ALL/S,STANDARD/S,MONITOR/K/N,ACTIVATE/S,OFF/S,FORCE/S,LISTDB/S,SCREENS/S,STATS/S,RESET/S,NATIVE/S", args, NULL);
     int rc = RETURN_OK;
     (void)version;
     if (!rd) { PrintFault(IoErr(), "OpenRTG"); return RETURN_FAIL; }
@@ -53,12 +55,40 @@ int main(void)
         ULONG id = 0, modes = 0;
         while ((id = ORTG_NextMode(n, id)) != 0) modes++;
         Printf("Monitor %ld: ACRTG at $%08lx, %ld modes listed\n", (LONG)n, (ULONG)board, (LONG)modes);
+        if (args[11]) {
+            /* 0.17: what the host asks of this board */
+            struct OpenRTGNativeSize ns;
+            struct OpenRTGMode nm;
+            if (OpenRTGBase->lib_Version == 0 && OpenRTGBase->lib_Revision < 17)
+                Printf("  Native: this openrtg.library has no Native modes (0.17 on).\n");
+            else if (!ORTG_NativeSize(n, &ns))
+                Printf("  Native: this board can't be asked for a size (ACRTG v5 on).\n");
+            else {
+                if (ns.width)
+                    Printf("  Native: the host asks for %ldx%ld (WANT_GEN %lu, ASK %lu); largest %ldx%ld\n", (LONG)ns.width,
+                           (LONG)ns.height, ns.gen, ns.ask, (LONG)ns.limit_width, (LONG)ns.limit_height);
+                else
+                    Printf("  Native: no size asked for (WANT_GEN %lu, ASK %lu); largest %ldx%ld\n", ns.gen, ns.ask,
+                           (LONG)ns.limit_width, (LONG)ns.limit_height);
+                for (ULONG f = 0; f < 3; f++) {
+                    ULONG nid = ns.mode_id - 0x200 + (f << 8);
+                    nm.native = 0;
+                    if (ORTG_GetMode(nid, &nm))
+                        Printf("  $%08lx  %s, %ldx%ld%s\n", nid, (LONG)nm.name, (LONG)nm.width, (LONG)nm.height,
+                               nm.native ? (LONG)"" : (LONG)" (not Native?)");
+                    else
+                        Printf("  $%08lx  not listed\n", nid);
+                }
+            }
+        }
         if (!args[0]) continue;
         struct OpenRTGMode m;
+        m.native = 0;                       /* an openrtg.library before 0.17 leaves it */
         id = 0;
         while ((id = ORTG_NextMode(n, id)) != 0)
             if (ORTG_GetMode(id, &m))
-                Printf("  $%08lx  %s%s\n", m.mode_id, (LONG)m.name, m.standard ? (LONG)"" : (LONG)"  (All)");
+                Printf("  $%08lx  %s%s%s\n", m.mode_id, (LONG)m.name, m.standard ? (LONG)"" : (LONG)"  (All)",
+                       m.native ? (LONG)"  (the host's size)" : (LONG)"");
     }
     if (args[4] || args[5]) {
         int p96;

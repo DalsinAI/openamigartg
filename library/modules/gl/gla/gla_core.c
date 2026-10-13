@@ -153,6 +153,14 @@ static struct sw_winsys *gla_winsys_create(void)
     return ws;
 }
 
+struct gla_stats gla_counts;
+
+void gla_get_stats(struct gla_stats *s, int reset)
+{
+    if (s) *s = gla_counts;
+    if (reset) memset(&gla_counts, 0, sizeof gla_counts);
+}
+
 /* ---- the front end ---- */
 
 struct gla_display {

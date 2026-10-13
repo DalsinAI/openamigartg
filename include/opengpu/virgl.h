@@ -52,6 +52,11 @@
                                    z, w, h, d, address, bytes, swap: Amiga memory into
                                    the resource's box                                16 */
 #define ACV_GET            12   /* the same, the box into Amiga memory               16 */
+#define ACV_PRESENT        13   /* context, handle, layer, source origin (xy), target
+                                   address, bytes per row, format, wh, flags, count,
+                                   then count rectangles (xy, wh): the resource
+                                   straight into Amiga memory at those rectangles;
+                                   result: pixels written                       12 + 2n */
 
 /* PUT's and GET's swap: the units turned round on the way. */
 #define ACV_SWAP_NONE       1
@@ -62,6 +67,17 @@
 /* HELLO's flags. */
 #define ACV_HOST_GPU        1   /* virglrenderer draws on a graphics chip (else llvmpipe or the like) */
 #define ACV_HOST_GLES       2   /* ... through GLES */
+#define ACV_HOST_PRESENT    4   /* ACV_PRESENT is there */
+
+/* ACV_PRESENT (DalsinAI/amigachrome docs/design/Design-OpenGPU-Virgl-Direct-
+ * Present.md). Target pixel (x, y) comes from resource pixel (x - sx, y - sy),
+ * or from row (height - 1 - (y - sy)) with FLIP_Y. The target's format is
+ * an OGPU_FMT_: XRGB32 (the top byte written 0), ARGB32 (the resource's
+ * alpha, 255 where it has none) or RGB565. The host clamps every rectangle
+ * to the target's size and to the resource, reads the resource back once
+ * (the rectangles' bounding box) and writes only the rectangles. */
+#define ACV_PRESENT_FLIP_Y  1
+#define ACV_PRESENT_MAX     64  /* rectangles in one command; more go in more commands */
 
 /* Results. */
 #define ACV_OK              0
