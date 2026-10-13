@@ -1,0 +1,132 @@
+{
+  "source_base_main": "714636f",
+  "tested_integration_commit": "828a8ccd93705d7edd6f385d39136fcd3f1851e4",
+  "compiler_release": "16.2.0-open2",
+  "compiler_archive_sha256": "5ece099a6fb8923a35eacf420bfa5fced06546ac1822714c76a2ae52466c978c",
+  "artifacts": {
+    "libSDL2_net.a": {
+      "bytes": 10764,
+      "sha256": "aee7d8bd5add1df8b3a98d6d1786d8e4d0d2a6c3316bb57473f9489df7bcfbdd"
+    },
+    "libSDL2_image_static.a": {
+      "bytes": 166140,
+      "sha256": "8d9b46451c3336e1f481137f29e33e508c1651cec404c3c8ed76997192b18e5f"
+    },
+    "libSDL2_ttf.a": {
+      "bytes": 596032,
+      "sha256": "ac2d5ac950335c76d28551f4c4ee6c9191992a9a599780419538fa0f6ec6b005"
+    },
+    "SDL2.module": {
+      "bytes": 992812,
+      "sha256": "5be275cf95809038a865837a3905d11d38b7016c27ae81bd58e88507b9b9b077"
+    },
+    "libSDL2_mixer_static.a": {
+      "bytes": 989708,
+      "sha256": "6356e6d8c13fe01ae0c9c56f4a4da5f1cde2c3f50a0bfa81a125126ca0495bcd"
+    },
+    "SDL2_image.module": {
+      "bytes": 210176,
+      "sha256": "869a8dae00e4d5d406c4f78301b499e29affd4023fc4944fd2db3792f4d44065"
+    },
+    "libSDL2_test.a": {
+      "bytes": 213972,
+      "sha256": "67bdbae27d38a222f1bee4fb978a503cfdb63694ef169322ae532d5b27bee5d8"
+    },
+    "SDL2_mixer.module": {
+      "bytes": 918264,
+      "sha256": "1b47f2ec820e6734367842d223e1ad43299681f07b7e3984525b70b0db3aca0c"
+    },
+    "libSDL2_mixer.a": {
+      "bytes": 13924,
+      "sha256": "35b012194e516bafb82f96c3a2a433484df89f59b03deb781b54c00b81431ee9"
+    },
+    "libSDL2_static.a": {
+      "bytes": 1018952,
+      "sha256": "0582e3b8de3410c0c16fc46cac010ef85ddccd061dd3d9dc0b92627d568b11f8"
+    },
+    "libSDL2_image.a": {
+      "bytes": 8980,
+      "sha256": "b417d6b5ef3000d9b1f555669c991cf7a3d8da5dcb71e47236a88fc71fe2f2fe"
+    },
+    "libSDL2.a": {
+      "bytes": 116488,
+      "sha256": "4ce9d618b8c8d46234a74b22f1e5552aa164c8d0d20a4ef0bd60716f8d5aa995"
+    }
+  },
+  "native_raw_modifier_contract": {
+    "0x64": "LALT",
+    "0x65": "RALT",
+    "0x66": "LGUI",
+    "0x67": "RGUI"
+  },
+  "shared_static_text_checks": {
+    "shared": {
+      "text_bytes": [
+        "61",
+        "41",
+        "31",
+        "C2 A3",
+        "C3 A9",
+        "C3 84",
+        "7A"
+      ],
+      "expected": [
+        "61",
+        "41",
+        "31",
+        "C2 A3",
+        "C3 A9",
+        "C3 84",
+        "7A"
+      ],
+      "text_matches": true,
+      "commands_do_not_add_text": true,
+      "stopped_does_not_add_text": true,
+      "alt_is_alt": true,
+      "amiga_is_gui": true,
+      "right_amiga_is_gui": true,
+      "exit_zero": true
+    },
+    "static": {
+      "text_bytes": [
+        "61",
+        "41",
+        "31",
+        "C2 A3",
+        "C3 A9",
+        "C3 84",
+        "7A"
+      ],
+      "expected": [
+        "61",
+        "41",
+        "31",
+        "C2 A3",
+        "C3 A9",
+        "C3 84",
+        "7A"
+      ],
+      "text_matches": true,
+      "commands_do_not_add_text": true,
+      "stopped_does_not_add_text": true,
+      "alt_is_alt": true,
+      "amiga_is_gui": true,
+      "right_amiga_is_gui": true,
+      "exit_zero": true
+    }
+  },
+  "held_key_focus_checks": {
+    "focus_loss_observed": true,
+    "held_shift_release_observed": true,
+    "no_unfocused_text": true,
+    "focus_return_observed": true,
+    "plain_a_after_return": true,
+    "modifiers_clear_after_return": true,
+    "exit_zero": true
+  },
+  "astro_profile_gate": "DALEX typed, Backspace to DALE, created, quit and observed DALE after relaunch",
+  "astro_binary": "existing copied engine; see astro-identity.json; not rebuilt here",
+  "audio": "muted, not verified",
+  "full_gameplay": "not tested",
+  "production_deployment": false
+}

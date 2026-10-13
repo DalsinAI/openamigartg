@@ -1,0 +1,6 @@
+{
+  "binary_sha256": "1eadc25ce680a5a1d050d0424a1201af1b0d665e7f761ef55989b7344222f8be",
+  "bytes": 4848960,
+  "status": "existing copied game binary, not rebuilt in this pass",
+  "purpose": "SDL text/profile acceptance test"
+}

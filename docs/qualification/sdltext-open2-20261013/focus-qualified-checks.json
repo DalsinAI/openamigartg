@@ -1,0 +1,9 @@
+{
+  "focus_loss_observed": true,
+  "held_shift_release_observed": true,
+  "no_unfocused_text": true,
+  "focus_return_observed": true,
+  "plain_a_after_return": true,
+  "modifiers_clear_after_return": true,
+  "exit_zero": true
+}
