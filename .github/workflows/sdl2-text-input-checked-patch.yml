@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: openrtg-sdl2-text-input-checked-patch
+  group: openrtg-sdl2-text-input-checked-patch-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
