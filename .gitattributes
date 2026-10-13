@@ -1,3 +1,6 @@
 
 # Unified diff context intentionally retains its leading space.
 library/modules/sdl2/patches/amigaos3/0003-modifier-focus.patch -whitespace
+
+docs/qualification/sdltext-open2-20261013/** -text
+docs/qualification/sdltext-open2-20261013/*.txt -whitespace

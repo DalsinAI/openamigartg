@@ -1,0 +1,56 @@
+{
+  "shared": {
+    "text_bytes": [
+      "61",
+      "41",
+      "31",
+      "C2 A3",
+      "C3 A9",
+      "C3 84",
+      "7A"
+    ],
+    "expected": [
+      "61",
+      "41",
+      "31",
+      "C2 A3",
+      "C3 A9",
+      "C3 84",
+      "7A"
+    ],
+    "text_matches": true,
+    "commands_do_not_add_text": true,
+    "stopped_does_not_add_text": true,
+    "alt_is_alt": true,
+    "amiga_is_gui": true,
+    "right_amiga_is_gui": true,
+    "exit_zero": true
+  },
+  "static": {
+    "text_bytes": [
+      "61",
+      "41",
+      "31",
+      "C2 A3",
+      "C3 A9",
+      "C3 84",
+      "7A"
+    ],
+    "expected": [
+      "61",
+      "41",
+      "31",
+      "C2 A3",
+      "C3 A9",
+      "C3 84",
+      "7A"
+    ],
+    "text_matches": true,
+    "commands_do_not_add_text": true,
+    "stopped_does_not_add_text": true,
+    "alt_is_alt": true,
+    "amiga_is_gui": true,
+    "right_amiga_is_gui": true,
+    "exit_zero": true
+  }
+}

@@ -1,0 +1,2 @@
+TEXT_shared_BEGIN
+TEXT_shared_EXIT 0
