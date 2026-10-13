@@ -20,6 +20,7 @@
 #define VR_USE_EGL          1
 #define VR_THREAD_SYNC      2
 #define VR_USE_SURFACELESS  (1 << 3)
+#define VR_USE_GLES         (1 << 4)
 
 struct vr_callbacks {
     int version;
@@ -69,6 +70,8 @@ struct acvirgl {
     struct av_res *res;         /* the table: res_cap slots, a power of 2 */
     uint32_t res_cap, res_used;
     struct acvirgl_stats st;
+    const char *api;            /* "GL" or "GLES": the context virglrenderer got */
+    char renderer[64];          /* and the GPU it draws on, from capset 2 */
 };
 
 static void av_no_fence(void *cookie, uint32_t fence) { (void)cookie; (void)fence; }
@@ -83,10 +86,34 @@ static int av_need(struct acvirgl *v, size_t n)
     return 1;
 }
 
+/* libepoxy aborts the program when the GL library it needs isn't there,
+ * where virglrenderer would have failed: so look first. */
+static int av_has_lib(const char *a, const char *b)
+{
+    void *h = dlopen(a, RTLD_LAZY | RTLD_LOCAL);
+    if (!h && b) h = dlopen(b, RTLD_LAZY | RTLD_LOCAL);
+    if (h) dlclose(h);
+    return h != NULL;
+}
+
+/* The host's renderer as virglrenderer tells the guest: capset 2 (struct
+ * virgl_caps_v2 in virglrenderer's virgl_hw.h, an ABI shared with Mesa)
+ * carries the host GL_RENDERER at byte 696, 64 bytes, e.g. "V3D 7.1". */
+#define AV_CAPS_RENDERER 696
+static void av_renderer(struct acvirgl *v)
+{
+    uint32_t mv = 0, ms = 0;
+    v->vr.get_cap_set(2, &mv, &ms);
+    if (ms < AV_CAPS_RENDERER + sizeof v->renderer || !av_need(v, ms + 4096)) return;
+    memset(v->tmp, 0, ms + 4096);
+    v->vr.fill_caps(2, mv, v->tmp);
+    memcpy(v->renderer, v->tmp + AV_CAPS_RENDERER, sizeof v->renderer - 1);
+}
+
 struct acvirgl *acvirgl_create(const char *lib, char *err, int errlen)
 {
     struct acvirgl *v = calloc(1, sizeof *v);
-    const char *path = lib ? lib : getenv("ACVIRGL_LIB");
+    const char *path = lib ? lib : getenv("ACVIRGL_LIB"), *drv, *gles;
     if (!v) { snprintf(err, (size_t)errlen, "no memory"); return NULL; }
     if (!path) { snprintf(err, (size_t)errlen, "no virglrenderer (ACVIRGL_LIB not set)"); free(v); return NULL; }
     if (!(v->dl = dlopen(path, RTLD_NOW | RTLD_LOCAL))) { snprintf(err, (size_t)errlen, "%s", dlerror()); free(v); return NULL; }
@@ -107,10 +134,23 @@ struct acvirgl *acvirgl_create(const char *lib, char *err, int errlen)
 #undef SYM
     v->cb.version = 1;
     v->cb.write_fence = av_no_fence;
-    if (v->vr.init(v, VR_USE_EGL | VR_USE_SURFACELESS, &v->cb)) {
-        snprintf(err, (size_t)errlen, "virgl_renderer_init failed (no EGL with surfaceless contexts?)");
+    /* AC_VIRGL_DRIVER names Mesa's driver for the context, e.g. zink (GL
+     * over the host's Vulkan, as on a Pi 5's V3DV); unset: the GPU's own. */
+    if ((drv = getenv("AC_VIRGL_DRIVER")) && *drv) setenv("MESA_LOADER_DRIVER_OVERRIDE", drv, 1);
+    /* Desktop GL, else GLES: a Pi's V3D gives GLES 3.1 where its desktop GL
+     * may not make the context virglrenderer asks for. AC_VIRGL_GLES=1
+     * asks for GLES only, AC_VIRGL_GLES=0 for desktop GL only. */
+    gles = getenv("AC_VIRGL_GLES");
+    if ((!gles || strcmp(gles, "1")) && av_has_lib("libOpenGL.so.0", "libGL.so.1")
+        && !v->vr.init(v, VR_USE_EGL | VR_USE_SURFACELESS, &v->cb)) v->api = "GL";
+    else if ((!gles || strcmp(gles, "0")) && av_has_lib("libGLESv2.so.2", NULL)
+             && !v->vr.init(v, VR_USE_EGL | VR_USE_SURFACELESS | VR_USE_GLES, &v->cb)) v->api = "GLES";
+    else {
+        snprintf(err, (size_t)errlen, "virgl_renderer_init failed (no EGL with surfaceless %s contexts, or no libOpenGL/libGLESv2?)",
+                 !gles ? "GL or GLES" : !strcmp(gles, "1") ? "GLES" : "GL");
         goto fail;
     }
+    av_renderer(v);
     return v;
 fail:
     dlclose(v->dl);
@@ -129,6 +169,9 @@ void acvirgl_destroy(struct acvirgl *v)
 }
 
 void acvirgl_stats(const struct acvirgl *v, struct acvirgl_stats *s) { *s = v->st; }
+
+const char *acvirgl_api(const struct acvirgl *v) { return v->api; }
+const char *acvirgl_renderer(const struct acvirgl *v) { return v->renderer[0] ? v->renderer : "unknown"; }
 
 /* ---- the block ------------------------------------------------------------------------ */
 

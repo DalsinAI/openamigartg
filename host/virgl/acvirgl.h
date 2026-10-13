@@ -10,7 +10,9 @@
  * virglrenderer (MIT) is opened with dlopen, so a runtime without it still
  * starts: acvirgl_create says why not, and OGPU_OP_VIRGL stays unknown. It
  * makes its own GL context (EGL, surfaceless) on the thread that calls
- * acvirgl_run; every call must come from that thread. */
+ * acvirgl_run; every call must come from that thread. Desktop GL first,
+ * else GLES (a Pi's V3D); AC_VIRGL_GLES=1 or 0 picks one, and
+ * AC_VIRGL_DRIVER names Mesa's driver (zink: GL over the host's Vulkan). */
 #ifndef ACVIRGL_H
 #define ACVIRGL_H
 
@@ -36,5 +38,10 @@ struct acvirgl_stats {
     uint64_t presents, present_rects, present_pixels;   /* ACV_PRESENT: frames written straight into a bitmap */
 };
 void acvirgl_stats(const struct acvirgl *v, struct acvirgl_stats *s);
+
+/* "GL" or "GLES": the kind of context virglrenderer is drawing with. */
+const char *acvirgl_api(const struct acvirgl *v);
+/* The GPU it draws on, the host's GL_RENDERER: "V3D 7.1", "zink Vulkan 1.3(V3D 7.1 ...)", "unknown". */
+const char *acvirgl_renderer(const struct acvirgl *v);
 
 #endif
