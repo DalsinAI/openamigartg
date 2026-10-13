@@ -1,0 +1,14 @@
+baserel_check: allowed (baserel.allow): table of _DUMMYAUDIO_bootstrap (.data+0x0 of libSDL2core.a(SDL_dummyaudio.o)), from the code at _SDL_MixAudio_REAL+0x11c (.text of libSDL2core.a(SDL_audio.o))
+baserel_check: allowed (baserel.allow): address of .data+0x0 of libSDL2core.a(SDL_wave.o), from the code at _SDL_LoadWAV_RW_REAL+0x1e64 (.text of libSDL2core.a(SDL_wave.o))
+baserel_check: allowed (baserel.allow): address of .data+0x0 of libSDL2core.a(SDL_wave.o), from the code at _SDL_LoadWAV_RW_REAL+0x205c (.text of libSDL2core.a(SDL_wave.o))
+baserel_check: allowed (baserel.allow): table of _OPENGPU_RenderDriver (.data+0x1c of libSDL2core.a(SDL_render_opengpu.o)), from the code at _SDL_RenderSetVSync_REAL+0xac (.text of libSDL2core.a(SDL_render.o))
+baserel_check: allowed (baserel.allow): table of _SW_RenderDriver (.data+0x1c of libSDL2core.a(SDL_render_sw.o)), from the code at _SDL_RenderSetVSync_REAL+0xb0 (.text of libSDL2core.a(SDL_render.o))
+baserel_check: allowed (baserel.allow): address of .data+0x0 of libSDL2core.a(SDL_assert.o), from the code at _SDL_IsTablet_REAL+0x120 (.text of libSDL2core.a(SDL_assert.o))
+baserel_check: the data is written only through A4
+built $WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/sdl-build/SDL2.module (992812 bytes)
+built $WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/sdl-build/libSDL2_static.a
+$WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/open2-stove/prefix/bin/m68k-amigaos-gcc -std=gnu11 -O2 -fomit-frame-pointer -mno-bitfield -m68040 -m68881 -fno-delete-null-pointer-checks -noixemul -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-but-set-variable -I$WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/sdl-build/sdl2-work/SDL2-2.32.10/include -I$WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/sdl-build/sdl2-work/SDL2-2.32.10/src -I$WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/sdl-build/sdl2-work/sdk-include -I$WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/rtg-integration/include -I$WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/rtg-integration/stubs/sdl2 -I$WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/rtg-integration/library/modules/common -I$WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/rtg-integration/library/modules/sdl2/include/openinput -DSDL_VIDEO_RENDER_OPENGPU=1 -D__AMIGAOS3__ -o $WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/sdl-build/tests/sdl2/textinput $WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/rtg-integration/tests/sdl2/textinput.c -L$WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/sdl-build -lSDL2_static -lm -lamiga
+fpcr_check: none
+SDL 2 built in $WORKSPACE/AmigaChrome-Ports-Open2-20261012/build/merge-20261013/sdl-build
+EXIT 0
+FULL_LOG_SHA256 0ab844797ffee1192985ea55b15656847c709742df8ec7b2fa1bb966ab0573d7

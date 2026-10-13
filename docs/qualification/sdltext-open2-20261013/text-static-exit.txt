@@ -1,0 +1,2 @@
+TEXT_static_BEGIN
+TEXT_static_EXIT 0
