@@ -1,0 +1,12 @@
+SDLTextCheck ready. Escape quits; F1 clears; F2 toggles text input.
+Expected printable press: one KEYDOWN, one TEXTINPUT, one KEYUP.
+FOCUS gained
+KEYDOWN  scancode=225 name="Left Shift" key=1073742049 keyname="Left Shift" mods=0x0001 repeat=0
+KEYUP    scancode=225 name="Left Shift" key=1073742049 keyname="Left Shift" mods=0x0000 repeat=0
+FOCUS lost
+FOCUS gained
+KEYDOWN  scancode=4 name="A" key=97 keyname="A" mods=0x0000 repeat=0
+TEXTINPUT window=1 bytes=61 text="a"
+KEYUP    scancode=4 name="A" key=97 keyname="A" mods=0x0000 repeat=0
+KEYDOWN  scancode=41 name="Escape" key=27 keyname="Escape" mods=0x0000 repeat=0
+SDLTextCheck done: keydown=3 keyup=2 text=1

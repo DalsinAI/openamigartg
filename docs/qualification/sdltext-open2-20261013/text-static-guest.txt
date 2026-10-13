@@ -1,0 +1,66 @@
+SDLTextCheck ready. Escape quits; F1 clears; F2 toggles text input.
+Expected printable press: one KEYDOWN, one TEXTINPUT, one KEYUP.
+FOCUS gained
+KEYDOWN  scancode=4 name="A" key=97 keyname="A" mods=0x0000 repeat=0
+TEXTINPUT window=1 bytes=61 text="a"
+KEYUP    scancode=4 name="A" key=97 keyname="A" mods=0x0000 repeat=0
+KEYDOWN  scancode=225 name="Left Shift" key=1073742049 keyname="Left Shift" mods=0x0001 repeat=0
+KEYDOWN  scancode=4 name="A" key=97 keyname="A" mods=0x0001 repeat=0
+TEXTINPUT window=1 bytes=41 text="A"
+KEYUP    scancode=4 name="A" key=97 keyname="A" mods=0x0001 repeat=0
+KEYUP    scancode=225 name="Left Shift" key=1073742049 keyname="Left Shift" mods=0x0000 repeat=0
+KEYDOWN  scancode=30 name="1" key=49 keyname="1" mods=0x0000 repeat=0
+TEXTINPUT window=1 bytes=31 text="1"
+KEYUP    scancode=30 name="1" key=49 keyname="1" mods=0x0000 repeat=0
+KEYDOWN  scancode=226 name="Left Alt" key=1073742050 keyname="Left Alt" mods=0x0100 repeat=0
+KEYDOWN  scancode=15 name="L" key=108 keyname="L" mods=0x0100 repeat=0
+TEXTINPUT window=1 bytes=C2 A3 text="£"
+KEYUP    scancode=15 name="L" key=108 keyname="L" mods=0x0100 repeat=0
+KEYUP    scancode=226 name="Left Alt" key=1073742050 keyname="Left Alt" mods=0x0000 repeat=0
+KEYDOWN  scancode=226 name="Left Alt" key=1073742050 keyname="Left Alt" mods=0x0100 repeat=0
+KEYDOWN  scancode=9 name="F" key=102 keyname="F" mods=0x0100 repeat=0
+KEYUP    scancode=9 name="F" key=102 keyname="F" mods=0x0100 repeat=0
+KEYUP    scancode=226 name="Left Alt" key=1073742050 keyname="Left Alt" mods=0x0000 repeat=0
+KEYDOWN  scancode=8 name="E" key=101 keyname="E" mods=0x0000 repeat=0
+TEXTINPUT window=1 bytes=C3 A9 text="é"
+KEYUP    scancode=8 name="E" key=101 keyname="E" mods=0x0000 repeat=0
+KEYDOWN  scancode=226 name="Left Alt" key=1073742050 keyname="Left Alt" mods=0x0100 repeat=0
+KEYDOWN  scancode=14 name="K" key=107 keyname="K" mods=0x0100 repeat=0
+KEYUP    scancode=14 name="K" key=107 keyname="K" mods=0x0100 repeat=0
+KEYUP    scancode=226 name="Left Alt" key=1073742050 keyname="Left Alt" mods=0x0000 repeat=0
+KEYDOWN  scancode=225 name="Left Shift" key=1073742049 keyname="Left Shift" mods=0x0001 repeat=0
+KEYDOWN  scancode=4 name="A" key=97 keyname="A" mods=0x0001 repeat=0
+TEXTINPUT window=1 bytes=C3 84 text="Ä"
+KEYUP    scancode=4 name="A" key=97 keyname="A" mods=0x0001 repeat=0
+KEYUP    scancode=225 name="Left Shift" key=1073742049 keyname="Left Shift" mods=0x0000 repeat=0
+KEYDOWN  scancode=224 name="Left Ctrl" key=1073742048 keyname="Left Ctrl" mods=0x0040 repeat=0
+KEYDOWN  scancode=4 name="A" key=97 keyname="A" mods=0x0040 repeat=0
+KEYUP    scancode=4 name="A" key=97 keyname="A" mods=0x0040 repeat=0
+KEYUP    scancode=224 name="Left Ctrl" key=1073742048 keyname="Left Ctrl" mods=0x0000 repeat=0
+KEYDOWN  scancode=227 name="Left GUI" key=1073742051 keyname="Left GUI" mods=0x0400 repeat=0
+KEYDOWN  scancode=4 name="A" key=97 keyname="A" mods=0x0400 repeat=0
+KEYUP    scancode=4 name="A" key=97 keyname="A" mods=0x0400 repeat=0
+KEYUP    scancode=227 name="Left GUI" key=1073742051 keyname="Left GUI" mods=0x0000 repeat=0
+KEYDOWN  scancode=231 name="Right GUI" key=1073742055 keyname="Right GUI" mods=0x0800 repeat=0
+KEYDOWN  scancode=4 name="A" key=97 keyname="A" mods=0x0800 repeat=0
+KEYUP    scancode=4 name="A" key=97 keyname="A" mods=0x0800 repeat=0
+KEYUP    scancode=231 name="Right GUI" key=1073742055 keyname="Right GUI" mods=0x0000 repeat=0
+KEYDOWN  scancode=42 name="Backspace" key=8 keyname="Backspace" mods=0x0000 repeat=0
+KEYUP    scancode=42 name="Backspace" key=8 keyname="Backspace" mods=0x0000 repeat=0
+KEYDOWN  scancode=40 name="Return" key=13 keyname="Return" mods=0x0000 repeat=0
+KEYUP    scancode=40 name="Return" key=13 keyname="Return" mods=0x0000 repeat=0
+KEYDOWN  scancode=79 name="Right" key=1073741903 keyname="Right" mods=0x0000 repeat=0
+KEYUP    scancode=79 name="Right" key=1073741903 keyname="Right" mods=0x0000 repeat=0
+KEYDOWN  scancode=59 name="F2" key=1073741883 keyname="F2" mods=0x0000 repeat=0
+TEXTSTATE disabled
+KEYUP    scancode=59 name="F2" key=1073741883 keyname="F2" mods=0x0000 repeat=0
+KEYDOWN  scancode=29 name="Z" key=122 keyname="Z" mods=0x0000 repeat=0
+KEYUP    scancode=29 name="Z" key=122 keyname="Z" mods=0x0000 repeat=0
+KEYDOWN  scancode=59 name="F2" key=1073741883 keyname="F2" mods=0x0000 repeat=0
+TEXTSTATE enabled
+KEYUP    scancode=59 name="F2" key=1073741883 keyname="F2" mods=0x0000 repeat=0
+KEYDOWN  scancode=29 name="Z" key=122 keyname="Z" mods=0x0000 repeat=0
+TEXTINPUT window=1 bytes=7A text="z"
+KEYUP    scancode=29 name="Z" key=122 keyname="Z" mods=0x0000 repeat=0
+KEYDOWN  scancode=41 name="Escape" key=27 keyname="Escape" mods=0x0000 repeat=0
+SDLTextCheck done: keydown=27 keyup=26 text=7

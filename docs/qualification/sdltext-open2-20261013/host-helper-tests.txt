@@ -1,0 +1,10 @@
+test_inactive_raw_messages_are_gated (test_textinput_patch.ModifierFocusPatchTests.test_inactive_raw_messages_are_gated) ... ok
+test_raw_modifier_mapping_matches_amiga_rkm (test_textinput_patch.ModifierFocusPatchTests.test_raw_modifier_mapping_matches_amiga_rkm) ... ok
+test_actual_helper_bodies (test_textinput_patch.TextInputPatchTests.test_actual_helper_bodies) ... ok
+test_message_and_focus_ownership_contract (test_textinput_patch.TextInputPatchTests.test_message_and_focus_ownership_contract) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.145s
+
+OK
+TEXTINPUT_HELPERS_PASS 30 checks; host helper contract, not guest runtime

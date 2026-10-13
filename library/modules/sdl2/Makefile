@@ -257,3 +257,17 @@ $(addprefix $(TEST_DIR)/,$(OWN_TESTS)): $(TEST_DIR)/%: $(TEST_DIR)/obj/%.o $(OUT
 	$(CC) $(CPU) -noixemul -o $@ $< -L$(OUT) -lSDL2_static -lm -lamiga
 $(addsuffix .m,$(addprefix $(TEST_DIR)/,$(OWN_TESTS))): $(TEST_DIR)/%.m: $(TEST_DIR)/obj/%.o $(OUT)/libSDL2.a
 	$(CC) $(CPU) -noixemul -o $@ $< -L$(OUT) -lSDL2 -lm -lamiga
+
+# Interactive native text-input probe. Build it against both implementations;
+# neither executable is run by this target or counted as a runtime test.
+.PHONY: textinput-tests
+textinput-tests: $(TEST_DIR)/textinput $(TEST_DIR)/textinput.m
+tests: textinput-tests
+
+$(TEST_DIR)/textinput: $(ROOT)/tests/sdl2/textinput.c $(OUT)/libSDL2_static.a
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_BASE) -o $@ $< -L$(OUT) -lSDL2_static -lm -lamiga
+
+$(TEST_DIR)/textinput.m: $(ROOT)/tests/sdl2/textinput.c $(OUT)/libSDL2.a
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_BASE) -o $@ $< -L$(OUT) -lSDL2 -lm -lamiga
