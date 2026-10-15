@@ -6,9 +6,9 @@
 #   library/build.sh [OUT_DIR]     (default build/)
 # or, with `library/build.sh module [OUT_DIR]` (OUT_DIR: $OUT, else build/), only
 # the ROM modules, in OUT_DIR/modules, built for size (OPT=, -Os by default):
-#   openrtg.module          openrtg.library
-#   cybergraphics.module    cybergraphics.library
-#   openrtg.monitor.module  the monitor driver's job, before DOS (openrtg_monitor_rom.c)
+#   openrtg.library.module        openrtg.library
+#   cybergraphics.library.module  cybergraphics.library
+#   openrtg.monitor.module        the monitor driver's job, before DOS (openrtg_monitor_rom.c)
 # Every build of these three fails if one keeps data or BSS: they run from a ROM.
 set -eu
 TARGET=all
@@ -46,15 +46,15 @@ if [ "$TARGET" = module ]; then
     OPT=${OPT:--Os}
     mkdir -p "$OUT/modules"
     # shellcheck disable=SC2086
-    build_ortg "$OUT/modules/openrtg.module" "$OPT" $ORTG_SRC
+    build_ortg "$OUT/modules/openrtg.library.module" "$OPT" $ORTG_SRC
     # shellcheck disable=SC2086
-    build_ortg "$OUT/modules/cybergraphics.module" "$OPT" $CGX_SRC
+    build_ortg "$OUT/modules/cybergraphics.library.module" "$OPT" $CGX_SRC
     "$CC" -m68020 $OPT -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-toplevel-reorder -fno-builtin -Wall -Wextra -Werror \
         -nostartfiles -nostdlib -I"$ROOT/include" -o "$OUT/modules/openrtg.monitor.module" "$HERE/openrtg_monitor_rom.c" -lgcc
     echo "$OUT/modules/openrtg.monitor.module ($(wc -c < "$OUT/modules/openrtg.monitor.module") bytes)"
-    for m in openrtg cybergraphics openrtg.monitor; do rom_clean "$OUT/modules/$m.module"; done
-    python3 "$ROOT/tools/fpcr_check.py" "${CC%gcc}objdump" "$OUT/modules/openrtg.module" "$OUT/modules/cybergraphics.module" "$OUT/modules/openrtg.monitor.module"
-    sha256sum "$OUT"/modules/openrtg.module "$OUT"/modules/cybergraphics.module "$OUT"/modules/openrtg.monitor.module
+    for m in openrtg.library cybergraphics.library openrtg.monitor; do rom_clean "$OUT/modules/$m.module"; done
+    python3 "$ROOT/tools/fpcr_check.py" "${CC%gcc}objdump" "$OUT/modules/openrtg.library.module" "$OUT/modules/cybergraphics.library.module" "$OUT/modules/openrtg.monitor.module"
+    sha256sum "$OUT"/modules/openrtg.library.module "$OUT"/modules/cybergraphics.library.module "$OUT"/modules/openrtg.monitor.module
     exit 0
 fi
 # shellcheck disable=SC2086

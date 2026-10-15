@@ -119,11 +119,11 @@ checks that (`tools/hunk_rw_check.py` and `nm`).
 
 | Module | What | RomTag |
 | --- | --- | --- |
-| `openrtg.module` | openrtg.library | `RTF_AUTOINIT`, priority 0, no start class: made at its first `OpenLibrary`, as from `LIBS:` |
-| `cybergraphics.module` | cybergraphics.library | the same |
-| `openrtg.monitor.module` | the monitor driver's job (`library/openrtg_monitor_rom.c`) | `RTF_COLDSTART`, priority -45 |
+| `openrtg.library.module` | openrtg.library | `RTF_AUTOINIT`, priority 0, no start class: made at its first `OpenLibrary`, as from `LIBS:` |
+| `cybergraphics.library.module` | cybergraphics.library | the same |
+| `openrtg.monitor.module` | the monitor driver's job (`library/openrtg_monitor_rom.c`) | `RTF_COLDSTART`, priority -38 |
 
-### openrtg.monitor: why COLDSTART at -45
+### openrtg.monitor: why COLDSTART at -38
 
 `DEVS:Monitors/OpenRTG` puts OpenRTG's modes in the display database,
 switches its screens on and opens cybergraphics.library. In a ROM,
@@ -131,14 +131,16 @@ switches its screens on and opens cybergraphics.library. In a ROM,
 modules by priority, highest first. In the 1M trial ROM's map:
 
 - **After** romboot (105), which configures the boards, so the ACRTG board
-  is in expansion's list; graphics (65); and intuition (10).
+  is in expansion's list; graphics (65); intuition (10); and syscheck (-35).
+- **Before** amigachrome-guest's openrtg.boot (-40), which loads its own copy
+  of openrtg.library into RAM unless one is in memory. With both in a ROM,
+  openrtg.boot finds this one's library and steps aside.
 - **Before** bootmenu (-50), the first module after it that may open a
   screen (its Early Startup page); strap (-60); and dos (-120). dos's boot
   opens the Workbench screen with the boot shell's first window, and IPrefs
   opens it again on the ScreenMode prefs' mode, which by then is in the
   display database.
-- syscheck (-35) is the module just above it. Nothing else in the ROM is at
-  -45.
+- Nothing else in the ROM is at -38.
 
 Its init steps aside, keeping nothing, when Picasso96's `rtg.library` is in
 memory or no ACRTG board is fitted. Otherwise it makes openrtg.library and

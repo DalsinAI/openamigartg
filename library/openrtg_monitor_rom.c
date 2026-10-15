@@ -6,15 +6,19 @@
  * (`library/build.sh module`) gives RTG with nothing of OpenRTG's on the
  * disk.
  *
- * Its RomTag is RTF_COLDSTART at priority -45. exec's InitCode runs the
- * COLDSTART modules by priority, highest first, so it runs:
+ * Its RomTag is RTF_COLDSTART at priority -38. exec's InitCode runs the
+ * COLDSTART modules by priority, highest first (the priorities below are
+ * those in amigachrome-guest's 1M trial ROM map), so it runs:
  *   - after romboot (105), which configures the boards: the ACRTG board is
  *     in expansion's list;
- *   - after graphics (65) and intuition (10), the last of what it uses;
+ *   - after graphics (65) and intuition (10), the last of what it uses, and
+ *     syscheck (-35);
+ *   - before amigachrome-guest's openrtg.boot (-40), which loads its own
+ *     copy of openrtg.library into RAM unless one is in memory: with this
+ *     module in the same ROM it finds this one's and steps aside;
  *   - before bootmenu (-50), the first module that may open a screen, strap
  *     (-60) and dos, whose boot opens the Workbench screen with its first
  *     window.
- * Not -40 or above: a module of the same priority may run before or after.
  *
  * Its init:
  *   - steps aside, keeping nothing, when Picasso96 (rtg.library) is in
@@ -50,7 +54,7 @@
 #define ACRTG_PRODUCT   9                       /* 16 MiB */
 #define ACRTG_PRODUCT_64 15                     /* 64 MiB */
 
-#define ORM_PRI (-45)
+#define ORM_PRI (-38)
 
 /* Run as a program, it does nothing. This must stay the first code in the
  * file: build.sh keeps source order (-fno-toplevel-reorder). */
