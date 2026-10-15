@@ -9,6 +9,7 @@
 #include <graphics/rastport.h>
 #include <graphics/view.h>
 #include "modes.h"
+#include "ortg_state.h"
 
 #define ORTG_BM_MAGIC 0x4F525447UL                     /* "ORTG" */
 
@@ -35,7 +36,8 @@ struct ortg_bitmap {
  * whenever it changes, whether it is in front or not, and its friends share it
  * (0.14.2); a monitor's shared table when the screens outnumber the tables. */
 #define ORTG_PEN_TABLES 16
-extern ULONG ortg_pen_rgb[ORTG_PEN_TABLES][256];
+/* 0.18: the tables are the first thing in screens.c's part of the library's state (ortg_state.h) */
+#define ortg_pen_rgb ((ULONG (*)[256])ortg_S->scr)
 
 /* 1 when any monitor shows an OpenRTG screen. */
 int ortg_any_shown(void);
@@ -88,7 +90,7 @@ typedef void (*ortg_piece_fn)(void *ctx, struct ortg_bitmap *bm, LONG x0, LONG y
 struct ortg_bitmap *ortg_find(struct BitMap *bm);
 int ortg_pieces(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1, ortg_piece_fn fn, void *ctx);
 struct ColorMap *ortg_colormap(struct RastPort *rp);
-extern volatile ULONG ortg_palette_gen;
+#define ortg_palette_gen (ortg_S->palette_gen)   /* 0.18: in the library's state (ortg_state.h) */
 
 /* For pixels.c: OpenGPU drawing a piece exactly as the CPU code would (1),
  * or nothing (0); and the draw statistics (ORTG_DrawStats). */
@@ -109,5 +111,7 @@ LONG ortg_present_virgl(struct RastPort *rp, LONG x, LONG y, const struct OpenRT
 
 /* OpenRTG's screens on: the patches go in (once). boards[n]: monitor n's board. */
 int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **tables, APTR *boards, const ULONG *board_sizes);
+int ortg_screens_are_on(void);
+void ortg_late_opengpu(void);
 
 #endif

@@ -12,10 +12,37 @@
  * work is openrtg.library's (ORTG_WritePixels and the rest), and the
  * numbers (attributes, tags, formats) are the CyberGraphX interface's.
  * Built bare by library/build.sh.
+ *
+ * 43.3: no data or BSS in the file, so the same file runs from a ROM
+ * (`library/build.sh module`: cybergraphics.module). The bases it opens are
+ * in its own library base, whose address is in A4 in all of its code (built
+ * -ffixed-a4); exec calls its functions through entry stubs that load A4
+ * (library/ortg_stub.h).
  */
 #include <exec/types.h>
 #include <exec/resident.h>
 #include <exec/libraries.h>
+#include <dos/dos.h>
+#include "../library/ortg_stub.h"
+
+#define CGX_STUBS 36                    /* the 32 calls from LVO -30 on, and room */
+
+struct CGXBase {
+    struct Library lib;
+    BPTR seglist;
+    struct ExecBase *sys;
+    struct GfxBase *gfx;
+    struct Library *utility;
+    struct Library *openrtg;
+    struct ortg_stubs stubs;
+    UBYTE stub_room[CGX_STUBS * ORTG_STUB_REG_BYTES];
+};
+
+register struct CGXBase *cgx_S __asm__("a4");
+#define EXEC_BASE_NAME      (cgx_S->sys)
+#define GRAPHICS_BASE_NAME  (cgx_S->gfx)
+#define UTILITY_BASE_NAME   (cgx_S->utility)
+#define OpenRTGBase         (cgx_S->openrtg)
 #include <exec/execbase.h>
 #include <exec/memory.h>
 #include <exec/lists.h>
@@ -40,7 +67,7 @@
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define NO_ID ((ULONG)INVALID_ID)
 #define LIB_VERSION 43
-#define LIB_REVISION 2
+#define LIB_REVISION 3
 
 /* ---- the CyberGraphX interface's numbers ---- */
 #define CYBRMATTR_XMOD          0x80000001UL
@@ -95,15 +122,6 @@ struct CDrawMsg {
     UWORD cdm_BytesPerRow, cdm_BytesPerPix, cdm_ColorModel;
 };
 
-struct CGXBase {
-    struct Library lib;
-    BPTR seglist;
-};
-
-struct ExecBase *SysBase;
-struct GfxBase *GfxBase;
-struct Library *UtilityBase;
-struct Library *OpenRTGBase;
 
 /* openrtg.library's calls (openrtg_lib.sfd), with its registers */
 static inline BOOL ortg_get_mode(ULONG id, struct OpenRTGMode *m)
@@ -215,7 +233,7 @@ static void trace(const char *t, ULONG v)
 int start(void) { return -1; }
 
 static const char lib_name[] = "cybergraphics.library";
-static const char lib_id[] = "cybergraphics.library 43.2 (5.10.2026) OpenRTG's CyberGraphX API, Dalsin Limited\r\n";
+static const char lib_id[] = "cybergraphics.library 43.3 (15.10.2026) OpenRTG's CyberGraphX API, Dalsin Limited\r\n";
 
 static struct Library *lib_init(REG(d0, struct CGXBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct CGXBase *base));
@@ -276,22 +294,32 @@ const struct Resident lib_romtag = {
 
 /* ---- the library ---------------------------------------------------------------- */
 
+/* A4 is the caller's on the way in and is put back on the way out; on the way it is the base. */
 static struct Library *lib_init(REG(d0, struct CGXBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys))
 {
-    SysBase = sys;
+    struct CGXBase *caller = cgx_S;
+    cgx_S = base;
+    base->sys = sys;
     base->seglist = seglist;
     base->lib.lib_Revision = LIB_REVISION;
-    GfxBase = (struct GfxBase *)OpenLibrary("graphics.library", 39);
-    UtilityBase = OpenLibrary("utility.library", 39);
-    OpenRTGBase = OpenLibrary(OPENRTG_NAME, 0);
-    if (!GfxBase || !UtilityBase || !OpenRTGBase || OpenRTGBase->lib_Revision < 4) {
+    base->gfx = (struct GfxBase *)OpenLibrary("graphics.library", 39);
+    base->utility = OpenLibrary("utility.library", 39);
+    base->openrtg = OpenLibrary(OPENRTG_NAME, 0);
+    if (!base->gfx || !base->utility || !base->openrtg || base->openrtg->lib_Revision < 4) {
         /* nothing to answer with: give the memory back */
-        if (OpenRTGBase) CloseLibrary(OpenRTGBase);
-        if (UtilityBase) CloseLibrary(UtilityBase);
-        if (GfxBase) CloseLibrary((struct Library *)GfxBase);
+        if (base->openrtg) CloseLibrary(base->openrtg);
+        if (base->utility) CloseLibrary(base->utility);
+        if (base->gfx) CloseLibrary((struct Library *)base->gfx);
         FreeMem((UBYTE *)base - base->lib.lib_NegSize, base->lib.lib_NegSize + base->lib.lib_PosSize);
+        cgx_S = caller;
         return NULL;
     }
+    /* exec calls the library's own calls with its A4: each goes through a stub in the base */
+    base->stubs.next = base->stub_room;
+    base->stubs.end = base->stub_room + sizeof base->stub_room;
+    ortg_stub_vectors(&base->stubs, base, &base->lib, 5);
+    CacheClearU();
+    cgx_S = caller;
     return &base->lib;
 }
 static struct Library *lib_open(REG(a6, struct CGXBase *base))
@@ -312,11 +340,16 @@ static BPTR lib_expunge(REG(a6, struct CGXBase *base))
     BPTR seglist;
     if (base->lib.lib_OpenCnt) { base->lib.lib_Flags |= LIBF_DELEXP; return 0; }
     seglist = base->seglist;
-    Remove(&base->lib.lib_Node);
-    CloseLibrary(OpenRTGBase);
-    CloseLibrary(UtilityBase);
-    CloseLibrary((struct Library *)GfxBase);
-    FreeMem((UBYTE *)base - base->lib.lib_NegSize, base->lib.lib_NegSize + base->lib.lib_PosSize);
+    {
+        struct CGXBase *caller = cgx_S;     /* exec's A4, or lib_close's */
+        cgx_S = base;
+        Remove(&base->lib.lib_Node);
+        CloseLibrary(base->openrtg);
+        CloseLibrary(base->utility);
+        CloseLibrary((struct Library *)base->gfx);
+        FreeMem((UBYTE *)base - base->lib.lib_NegSize, base->lib.lib_NegSize + base->lib.lib_PosSize);
+        cgx_S = caller;
+    }
     return seglist;
 }
 static ULONG lib_null(void) { return 0; }

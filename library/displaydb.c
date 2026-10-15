@@ -14,6 +14,7 @@
  * are re-entrant, and never call DOS or Wait().
  */
 #include <exec/types.h>
+#include "ortg_state.h"
 #include <exec/memory.h>
 #include <exec/execbase.h>
 #include <utility/tagitem.h>
@@ -48,33 +49,6 @@ typedef ULONG (*data_fn)(REG(a0, APTR), REG(a1, UBYTE *), REG(d0, ULONG), REG(d1
 typedef ULONG (*avail_fn)(REG(d0, ULONG), REG(a6, struct Library *));
 typedef ULONG (*best_fn)(REG(a0, struct TagItem *), REG(a6, struct Library *));
 
-static next_fn old_next;
-static find_fn old_find;
-static data_fn old_data;
-static avail_fn old_avail;
-static best_fn old_best;
-static struct ortg_mode_table **tables;        /* [1..4], the library's */
-static volatile int db_on, patched;
-static struct MonitorSpec mspec[ORTG_MAX_MONITORS + 1];
-static struct SpecialMonitor mspecial[ORTG_MAX_MONITORS + 1];
-
-/* A board's monitor has nothing of the chipset's to program. */
-static LONG __STDARGS__ do_monitor(struct MonitorSpec *ms) { (void)ms; return 0; }   /* the field is __stdargs */
-static char mspec_name[ORTG_MAX_MONITORS + 1][20];
-
-static struct ortg_mode_table *table_for(ULONG id)
-{
-    ULONG n = (id >> 24) - 0x60;
-    if ((id & 0x1000) == 0 || (id >> 28) != 6 || n < 1 || n > ORTG_MAX_MONITORS) return NULL;
-    return tables ? tables[n] : NULL;
-}
-
-static const struct ortg_mode *ours(ULONG id)
-{
-    struct ortg_mode_table *t = table_for(id);
-    return t ? ortg_find_mode(t, id) : NULL;
-}
-
 /* A DisplayInfoHandle is a pointer to graphics' own DisplayInfoRecord, and
  * graphics and intuition read some of its fields straight from the handle
  * (5 Oct 2026: with a handle to OpenRTG's mode table instead, intuition's
@@ -98,13 +72,60 @@ struct ortg_record {
     const struct ortg_mode *mode;   /* OpenRTG's own, after graphics' fields */
     ULONG gen;                      /* a Native mode's: native_gen[] when its data was filled (0.17) */
 };
+/* What the display database writes (0.18): its part of the library's state (ortg_state.h). */
+struct db_g {
+    next_fn old_next;
+    find_fn old_find;
+    data_fn old_data;
+    avail_fn old_avail;
+    best_fn old_best;
+    struct ortg_mode_table **tables;        /* [1..4], the library's */
+    volatile int db_on, patched;
+    struct MonitorSpec mspec[ORTG_MAX_MONITORS + 1];
+    struct SpecialMonitor mspecial[ORTG_MAX_MONITORS + 1];
+    char mspec_name[ORTG_MAX_MONITORS + 1][20];
+    /* Each monitor's records, one per slot (ortg_record_slot): a mode's place in the table, the Native
+     * modes' the last three (0.17), so a record stays where it is in graphics' tree while the Native size
+     * comes, changes and goes. */
+    struct ortg_record *records[ORTG_MAX_MONITORS + 1];
+    struct ortg_record *monitor_records[ORTG_MAX_MONITORS + 1];
+    ULONG native_gen[ORTG_MAX_MONITORS + 1];   /* up by one each time a monitor's Native modes are made again */
+};
+ULONG ortg_displaydb_size(void) { return sizeof(struct db_g); }
+#define DB ((struct db_g *)ortg_S->db)
+#define old_next (DB->old_next)
+#define old_find (DB->old_find)
+#define old_data (DB->old_data)
+#define old_avail (DB->old_avail)
+#define old_best (DB->old_best)
+#define tables (DB->tables)
+#define db_on (DB->db_on)
+#define patched (DB->patched)
+#define mspec (DB->mspec)
+#define mspecial (DB->mspecial)
+#define mspec_name (DB->mspec_name)
+#define records (DB->records)
+#define monitor_records (DB->monitor_records)
+#define native_gen (DB->native_gen)
+
+/* A board's monitor has nothing of the chipset's to program. Called by graphics with its own A4: it
+ * reads nothing of the library's. */
+static LONG __STDARGS__ do_monitor(struct MonitorSpec *ms) { (void)ms; return 0; }   /* the field is __stdargs */
+
+static struct ortg_mode_table *table_for(ULONG id)
+{
+    ULONG n = (id >> 24) - 0x60;
+    if ((id & 0x1000) == 0 || (id >> 28) != 6 || n < 1 || n > ORTG_MAX_MONITORS) return NULL;
+    return tables ? tables[n] : NULL;
+}
+
+static const struct ortg_mode *ours(ULONG id)
+{
+    struct ortg_mode_table *t = table_for(id);
+    return t ? ortg_find_mode(t, id) : NULL;
+}
+
 static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag);
-/* Each monitor's records, one per slot (ortg_record_slot): a mode's place in the table, the Native modes'
- * the last three (0.17), so a record stays where it is in graphics' tree while the Native size comes,
- * changes and goes. */
-static struct ortg_record *records[ORTG_MAX_MONITORS + 1];
-static struct ortg_record *monitor_records[ORTG_MAX_MONITORS + 1];
-static ULONG native_gen[ORTG_MAX_MONITORS + 1];   /* up by one each time a monitor's Native modes are made again */
 
 /* graphics' private AddDisplayInfo (LVO -738), as monitor drivers use it */
 static void add_info(APTR record, struct Library *gfx)
@@ -405,8 +426,13 @@ int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
         /* Each monitor's MonitorSpec starts as a copy of the default
          * monitor's: graphics and intuition call its functions (ms_transform,
          * ms_translate, ms_scale and the overscan ones) for any mode. */
-        struct GfxBase *GfxBase = (struct GfxBase *)gfx;
-        struct MonitorSpec *def = OpenMonitor(NULL, 0);
+        /* graphics' calls go through ortg_S->gfx (ortg_state.h), which screens.c sets only when
+         * OpenRTG's screens go on: gfx here, for these two calls */
+        struct GfxBase *gb = (struct GfxBase *)gfx, *was = ortg_S->gfx;
+        struct MonitorSpec *def;
+        ortg_S->gfx = gb;
+        def = OpenMonitor(NULL, 0);
+        ortg_S->gfx = was;
         for (int n = 1; n <= ORTG_MAX_MONITORS; n++) {
             char *s = mspec_name[n];
             if (def) mspec[n] = *def;
@@ -441,7 +467,7 @@ int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
             s[i] = 0;
             mspec[n].ms_Node.xln_Name = s;
         }
-        if (def) CloseMonitor(def);
+        if (def) { ortg_S->gfx = gb; CloseMonitor(def); ortg_S->gfx = was; }
         for (int n = 1; n <= ORTG_MAX_MONITORS; n++)
             if (tables && tables[n] && !records[n]) {
                 records[n] = AllocVec(sizeof(struct ortg_record) * ORTG_MAX_MODES, MEMF_PUBLIC | MEMF_CLEAR);
@@ -487,12 +513,13 @@ int ortg_displaydb(struct Library *gfx, struct ortg_mode_table **t, int on)
         }
         /* in graphics' list of monitors, as Picasso96's are */
         for (int n = 1; n <= ORTG_MAX_MONITORS; n++)
-            if (tables && tables[n]) AddTail(&GfxBase->MonitorList, (struct Node *)&mspec[n].ms_Node);
-        old_next = (next_fn)SetFunction(gfx, -732, (APTR)next_patch);
-        old_find = (find_fn)SetFunction(gfx, -726, (APTR)find_patch);
-        old_data = (data_fn)SetFunction(gfx, -756, (APTR)data_patch);
-        old_avail = (avail_fn)SetFunction(gfx, -798, (APTR)avail_patch);
-        old_best = (best_fn)SetFunction(gfx, -1050, (APTR)best_patch);
+            if (tables && tables[n]) AddTail(&gb->MonitorList, (struct Node *)&mspec[n].ms_Node);
+        /* graphics calls the patches with its own A4: each through an entry stub (ortg_state.h) */
+        old_next = (next_fn)SetFunction(gfx, -732, ortg_entry(next_patch));
+        old_find = (find_fn)SetFunction(gfx, -726, ortg_entry(find_patch));
+        old_data = (data_fn)SetFunction(gfx, -756, ortg_entry(data_patch));
+        old_avail = (avail_fn)SetFunction(gfx, -798, ortg_entry(avail_patch));
+        old_best = (best_fn)SetFunction(gfx, -1050, ortg_entry(best_patch));
         patched = 1;
         CacheClearU();
         Permit();

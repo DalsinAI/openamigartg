@@ -15,6 +15,7 @@
  * of 32x32x32 colours kept until the palette changes.
  */
 #include <exec/types.h>
+#include "ortg_state.h"
 #include <exec/memory.h>
 #include <exec/semaphores.h>
 #include <graphics/gfx.h>
@@ -29,17 +30,29 @@
 #include "screens.h"
 #include "pixels.h"
 
-extern struct GfxBase *GfxBase;
-
 /* ---- colours to pens ------------------------------------------------------------- */
 
-static struct SignalSemaphore lock;
-static int lock_ready;
-static struct ColorMap *pal_cm;
-static ULONG pal_gen, pal_n;
-static ULONG pal[256];                  /* 0x00RRGGBB */
-static UBYTE *near;                     /* 32768 pens, by 5-bit R, G, B */
-static UBYTE known[32768 / 8];
+/* What the pixel arrays write (0.18): their part of the library's state (ortg_state.h). */
+struct pix_g {
+    struct SignalSemaphore lock;
+    int lock_ready;
+    struct ColorMap *pal_cm;
+    ULONG pal_gen, pal_n;
+    ULONG pal[256];                     /* 0x00RRGGBB */
+    UBYTE *near;                        /* 32768 pens, by 5-bit R, G, B */
+    UBYTE known[32768 / 8];
+    ULONG rgb[3 * 256];                 /* use_palette's GetRGB32 */
+};
+ULONG ortg_pixels_size(void) { return sizeof(struct pix_g); }
+#define PX ((struct pix_g *)ortg_S->pix)
+#define lock (PX->lock)
+#define lock_ready (PX->lock_ready)
+#define pal_cm (PX->pal_cm)
+#define pal_gen (PX->pal_gen)
+#define pal_n (PX->pal_n)
+#define pal (PX->pal)
+#define near (PX->near)
+#define known (PX->known)
 
 static void obtain(void)
 {
@@ -52,7 +65,7 @@ static void obtain(void)
 /* The palette in pal[], and the cache emptied, when it isn't the one it was. */
 static void use_palette(struct ColorMap *cm)
 {
-    static ULONG rgb[3 * 256];
+    ULONG *rgb = PX->rgb;
     if (cm == pal_cm && pal_gen == ortg_palette_gen && pal_n) return;
     pal_cm = cm; pal_gen = ortg_palette_gen;
     pal_n = cm ? (cm->Count < 256 ? cm->Count : 256) : 0;
@@ -406,7 +419,7 @@ LONG ortg_write_pixels(struct RastPort *rp, LONG x, LONG y, const struct OpenRTG
     struct pix_ctx c;
     struct Layer *lay;
     LONG done;
-    if (!GfxBase || !rp || !px || !px->data || px->width <= 0 || px->height <= 0) return 0;
+    if (!ortg_S->gfx || !rp || !px || !px->data || px->width <= 0 || px->height <= 0) return 0;
     c.px = px; c.at_x = x; c.at_y = y;
     c.dw = px->dest_width > 0 ? px->dest_width : px->width;
     c.dh = px->dest_height > 0 ? px->dest_height : px->height;
@@ -433,7 +446,7 @@ LONG ortg_read_pixels(struct RastPort *rp, LONG x, LONG y, struct OpenRTGPixels 
 {
     struct pix_ctx c;
     struct Layer *lay;
-    if (!GfxBase || !rp || !px || !px->data || px->width <= 0 || px->height <= 0) return 0;
+    if (!ortg_S->gfx || !rp || !px || !px->data || px->width <= 0 || px->height <= 0) return 0;
     c.px = px; c.at_x = x; c.at_y = y; c.dw = px->width; c.dh = px->height; c.mask = 0xFF; c.value = 0;
     lay = begin(rp);
     if (!ortg_pieces(rp, x, y, x + px->width - 1, y + px->height - 1, read_piece, &c)) {
@@ -453,7 +466,7 @@ LONG ortg_fill_pixels(struct RastPort *rp, LONG x, LONG y, LONG w, LONG h, ULONG
 {
     struct pix_ctx c;
     struct Layer *lay;
-    if (!GfxBase || !rp || w <= 0 || h <= 0) return 0;
+    if (!ortg_S->gfx || !rp || w <= 0 || h <= 0) return 0;
     lay = begin(rp);
     c.px = NULL; c.mask = rp->Mask; c.value = pen_of(argb & 0xFFFFFF); c.argb = argb & 0xFFFFFF;
     if (!ortg_pieces(rp, x, y, x + w - 1, y + h - 1, fill_piece, &c)) {
@@ -469,7 +482,7 @@ LONG ortg_fill_pixels(struct RastPort *rp, LONG x, LONG y, LONG w, LONG h, ULONG
 LONG ortg_invert_pixels(struct RastPort *rp, LONG x, LONG y, LONG w, LONG h)
 {
     struct pix_ctx c;
-    if (!GfxBase || !rp || w <= 0 || h <= 0) return 0;
+    if (!ortg_S->gfx || !rp || w <= 0 || h <= 0) return 0;
     c.px = NULL; c.mask = rp->Mask; c.value = 0;
     if (!ortg_pieces(rp, x, y, x + w - 1, y + h - 1, invert_piece, &c)) {
         UBYTE old_mode = rp->DrawMode;
@@ -541,7 +554,7 @@ LONG ortg_write_pixels_alpha(struct RastPort *rp, LONG x, LONG y, const struct O
 {
     struct alpha_ctx c;
     struct Layer *lay;
-    if (!GfxBase || !rp || !px || !px->data || px->width <= 0 || px->height <= 0) return 0;
+    if (!ortg_S->gfx || !rp || !px || !px->data || px->width <= 0 || px->height <= 0) return 0;
     if (px->format != ORTG_PIX_ARGB) return ortg_write_pixels(rp, x, y, px);
     c.px = px; c.at_x = x; c.at_y = y; c.alpha = alpha & 255; c.mask = rp->Mask;
     lay = begin(rp);
