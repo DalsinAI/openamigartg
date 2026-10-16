@@ -1,6 +1,6 @@
 ==id $Id: warp3d_lib.sfd 5.0 (8.10.2026) $
 * "Warp3D.library": OpenRTG's Warp3D, version 5's 68k function table (a
-* superset of version 4). Copyright (c) 2026 Dalsin Limited, MIT licence.
+* superset of version 4). Copyright (c) 2026 AmigaChrome Team, MIT licence.
 * The order and the registers are what existing programs call; the four
 * Tags forms and SetTextureBlendTags are link-library stubs, not entries.
 ==base _Warp3DBase

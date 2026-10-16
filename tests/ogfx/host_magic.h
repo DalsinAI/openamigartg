@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  * For the host run of OpenGfx's leaves (tests/ogfx/run.sh): the 68k tag
  * ac_magic.h puts before each leaf is 68k code, so on the host each leaf is

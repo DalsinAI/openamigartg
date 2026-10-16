@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  * Made by library/minigl/gen_api.py from library/minigl/minigl_api.txt. */
 /* The table minigl.library hands out (dispatch ABI 5). Positional: the

@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * opengpu.library 0.5 (G2 with stream v1.2, DESIGN.md section 5): the library, its
@@ -94,9 +94,9 @@ const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 int start(void) { return -1; }
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.16 (15.10.2026) OpenGPU, Dalsin Limited\r\n";
+static const char lib_id[] = "opengpu.library 0.16 (15.10.2026) OpenGPU, AmigaChrome Team\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.16 (15.10.2026) OpenGPU, Dalsin Limited";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.16 (15.10.2026) OpenGPU, AmigaChrome Team";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";

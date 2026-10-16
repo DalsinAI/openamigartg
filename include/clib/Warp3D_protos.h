@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  * Made by sfdc from library/warp3d/warp3d_lib.sfd (library/warp3d/build.sh headers). */
 /* Automatically generated header (sfdc 1.12)! Do not edit! */
@@ -26,7 +26,7 @@ extern "C" {
 
 
 /* "Warp3D.library": OpenRTG's Warp3D, version 5's 68k function table (a */
-/* superset of version 4). Copyright (c) 2026 Dalsin Limited, MIT licence. */
+/* superset of version 4). Copyright (c) 2026 AmigaChrome Team, MIT licence. */
 /* The order and the registers are what existing programs call; the four */
 /* Tags forms and SetTextureBlendTags are link-library stubs, not entries. */
 /* Contexts */

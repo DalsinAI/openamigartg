@@ -6,7 +6,7 @@
 +
    Simple DirectMedia Layer
    Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
-+  Altered by Dalsin Limited, 2026: this is SDL's software renderer
++  Altered by the AmigaChrome Team, 2026: this is SDL's software renderer
 +  (src/render/software/SDL_render_sw.c) with its drawing sent to OpenGPU
 +  where OpenGPU can do it. It is not the original software.
  

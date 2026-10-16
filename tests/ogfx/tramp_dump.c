@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  * Writes one patch entry (library/ogfx/ogfx_tramp.h), for state 0x12345678
  * and entry 0x00ABCDEF, as big-endian bytes on stdout; tests/ogfx/run.sh

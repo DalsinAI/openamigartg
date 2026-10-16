@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenGPU developer kit, MIT licence.
+/* Copyright (c) 2026 AmigaChrome Team. OpenGPU developer kit, MIT licence.
  * SPDX-License-Identifier: MIT
  *
  * GLSpin: OpenGL through SDL 2 (SDL_WINDOW_OPENGL, SDL_GL_CreateContext,

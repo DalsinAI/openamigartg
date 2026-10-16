@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * tinygl.library 53 for AmigaOS 3: a stand-in. TinyGL programs open
@@ -35,8 +35,8 @@ struct TGLBase {
 int start(void) { return -1; }
 
 static const char lib_name[] = "tinygl.library";
-static const char lib_id[] = "tinygl.library 53.1 (8.10.2026) TinyGL on OpenGPU, Dalsin Limited\r\n";
-static const char lib_ver[] __attribute__((used)) = "\0$VER: tinygl.library 53.1 (8.10.2026) TinyGL on OpenGPU, Dalsin Limited";
+static const char lib_id[] = "tinygl.library 53.1 (8.10.2026) TinyGL on OpenGPU, AmigaChrome Team\r\n";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: tinygl.library 53.1 (8.10.2026) TinyGL on OpenGPU, AmigaChrome Team";
 
 static struct Library *lib_init(REG(d0, struct TGLBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct TGLBase *base));

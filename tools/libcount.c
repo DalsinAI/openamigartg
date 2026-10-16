@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT */
 /* LibCount: how often each function of some libraries is called, for OpenRTG
  *'s phase 0 (DESIGN.md): which graphics,

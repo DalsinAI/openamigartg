@@ -86,7 +86,7 @@
  ; "Anyone can do as they please with the code, feel free to use it
  ;  for non-commercial as well as commercial purposes."
  ;
-+; Changed for OpenGPU's SDL2.module by Dalsin Limited, 2026: the screen
++; Changed for OpenGPU's SDL2.module by the AmigaChrome Team, 2026: the screen
 +; offset and the pixel count come in d1 and d0 on each call, not from
 +; variables _init kept, so the code holds no data of its own and programs
 +; sharing the module's code (one copy for every program) can't upset each

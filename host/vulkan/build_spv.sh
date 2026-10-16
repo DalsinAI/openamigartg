@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # Compiles ogpu.comp into ogpu_vk_spv.h (SPIR-V as a C array), which is kept
 # in the repository so building the back end needs no shader compiler.

@@ -5,7 +5,7 @@
  #include "SDL_image.h"
  
 +#ifdef OGPU_IMAGE_LADDER
-+/* Altered for OpenGPU by Dalsin Limited, 2026: the decoding ladder
++/* Altered for OpenGPU by the AmigaChrome Team, 2026: the decoding ladder
 +   (ogpu_image.h). */
 +#include "ogpu_image.h"
 +#endif

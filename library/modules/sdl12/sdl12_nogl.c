@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  * No SDL_GL_ calls: the table for programs that don't ask for GL
  * (sdl12_amiga.c). Its own member of libSDL.a. */

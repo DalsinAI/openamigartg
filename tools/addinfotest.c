@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * AddInfoTest: how graphics' AddDisplayInfoData makes records for a new
  * ModeID (0x6F011000, a monitor no one owns). Not shipped. */
 #include <exec/types.h>

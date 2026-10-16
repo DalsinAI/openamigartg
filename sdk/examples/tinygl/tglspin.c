@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenGPU developer kit, MIT licence.
+/* Copyright (c) 2026 AmigaChrome Team. OpenGPU developer kit, MIT licence.
  * SPDX-License-Identifier: MIT
  *
  * TGLSpin: a TinyGL program, written as one is on other systems with

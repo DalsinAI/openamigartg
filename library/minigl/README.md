@@ -130,7 +130,7 @@ Correctness:
 
 ## Licence and sources
 
-The library, its headers, its tests and its tools are MIT, Copyright (c) 2026 Dalsin Limited. What the Team checked:
+The library, its headers, its tests and its tools are MIT, Copyright (c) 2026 AmigaChrome Team. What the Team checked:
 
 - **Hyperion's MiniGL 1.2.** It is under the Hyperion MiniGL Open Source License, which is limited to AmigaOS and asks for changes to be published. That does not fit an MIT repository, so it was a reference for behaviour only. No code was taken.
 - **The 2026 68k minigl.library** (29.1, its SDK and its source repository). The repository has no licence file, and the library is derived from MiniGL 1.2. It was a reference for the interface only.

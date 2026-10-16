@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # OpenGPU's Vulkan back end on this machine's GPU (a Pi 5's V3DV, daletop's
 # RADV): the golden scenes and 3000 random streams against the C core, first

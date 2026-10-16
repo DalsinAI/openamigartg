@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # OpenRTG's tools, with the os32 stove (bebbo's m68k-amigaos-gcc, NDK 3.2).
 #   tools/build.sh [OUT_DIR]     (default build/)
