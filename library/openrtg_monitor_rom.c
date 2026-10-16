@@ -49,8 +49,8 @@
 
 #define REG(r, decl) register decl __asm(#r)
 
-#define DALSIN          0xDA15                  /* openrtg_lib.c's ACRTG board: AmigaChrome Team, or 2011 before 1 October 2026 */
-#define DALSIN_OLD      2011
+#define AMIGACHROME_MFR          0xDA15                  /* openrtg_lib.c's ACRTG board: AmigaChrome Team, or 2011 before 1 October 2026 */
+#define AMIGACHROME_MFR_OLD      2011
 #define ACRTG_PRODUCT   9                       /* 16 MiB */
 #define ACRTG_PRODUCT_64 15                     /* 64 MiB */
 
@@ -107,8 +107,8 @@ static int acrtg_fitted(struct ExecBase *SysBase)
     struct Library *ExpansionBase = OpenLibrary((CONST_STRPTR)"expansion.library", 37);
     int yes;
     if (!ExpansionBase) return 0;
-    yes = FindConfigDev(NULL, DALSIN, ACRTG_PRODUCT) || FindConfigDev(NULL, DALSIN, ACRTG_PRODUCT_64) ||
-          FindConfigDev(NULL, DALSIN_OLD, ACRTG_PRODUCT) || FindConfigDev(NULL, DALSIN_OLD, ACRTG_PRODUCT_64);
+    yes = FindConfigDev(NULL, AMIGACHROME_MFR, ACRTG_PRODUCT) || FindConfigDev(NULL, AMIGACHROME_MFR, ACRTG_PRODUCT_64) ||
+          FindConfigDev(NULL, AMIGACHROME_MFR_OLD, ACRTG_PRODUCT) || FindConfigDev(NULL, AMIGACHROME_MFR_OLD, ACRTG_PRODUCT_64);
     CloseLibrary(ExpansionBase);
     return yes;
 }
