@@ -40,6 +40,7 @@ struct ortg_caps {
     uint8_t  formats;
     uint8_t  native;
     uint16_t native_w, native_h;
+    uint16_t display_w, display_h;   /* the board's display (ACRTG v6 on), 0 when not known */
 };
 
 struct ortg_mode {
@@ -57,6 +58,7 @@ struct ortg_mode_table {
     int all;                         /* 0: Standard (the default), 1: All */
     int native;                      /* 1: the board can be asked for a size (Native modes may come) */
     uint16_t max_width, max_height;  /* the board's largest picture, as caps had it */
+    uint16_t display_w, display_h;   /* the board's display, as caps had it (0: not known) */
     int count;                       /* modes offered, in list order */
     struct ortg_mode modes[ORTG_MAX_MODES];
     int full_count;                  /* every mode the board shows (All); the Native ones last */
@@ -81,6 +83,11 @@ const struct ortg_mode *ortg_find_mode(const struct ortg_mode_table *t, uint32_t
  * Never a Native mode: a program that asks for a size must never get a
  * screen whose size the host changes (0.17). 0 when the table is empty. */
 uint32_t ortg_best_mode(const struct ortg_mode_table *t, int width, int height, int depth);
+
+/* The monitor's preferred mode in a format (MonitorInfo's PreferredModeID):
+ * the mode at the board's display size, not a Native one, listed or not.
+ * 0 when the display is not known or no mode has its size in that format. */
+uint32_t ortg_preferred_mode(const struct ortg_mode_table *t, int format);
 
 /* The ModeID of the Native place in a format; and the slot a mode's display
  * database record has (0 to ORTG_MAX_MODES - 1): a mode's own place in the

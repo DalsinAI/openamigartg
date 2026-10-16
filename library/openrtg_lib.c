@@ -56,6 +56,9 @@
 #define R_WANT_GEN      0xE8
 #define R_LIMIT         0xEC
 #define R_ASK           0xF0
+/* acrtg-v6: the board's display, the size of the picture the host shows it on (width << 16 | height,
+ * 0 when not known). OpenRTG names the mode of that size as the monitor's preferred one. */
+#define R_DISPLAY       0xF4
 
 struct OpenRTGBase {
     struct Library lib;
@@ -132,8 +135,13 @@ static void board_caps(struct OpenRTGBase *base, ULONG n)
     c->max_width = ACRTG_MAX_W; c->max_height = ACRTG_MAX_H;
     c->formats = 7;
     c->native = 0; c->native_w = c->native_h = 0;
+    c->display_w = c->display_h = 0;
     if (board_reg(base, n, R_VERSION) < 5) return;
     c->native = 1;
+    if (board_reg(base, n, R_VERSION) >= 6) {
+        ULONG d = board_reg(base, n, R_DISPLAY);
+        c->display_w = (UWORD)(d >> 16); c->display_h = (UWORD)d;
+    }
     limit = board_reg(base, n, R_LIMIT);
     if ((limit >> 16) >= 320 && (limit & 0xFFFF) >= 200) { c->max_width = (UWORD)(limit >> 16); c->max_height = (UWORD)limit; }
     /* the size and its generation together: read again if the host changed it in between */
