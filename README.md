@@ -75,6 +75,9 @@ that it is based on OpenRTG by Dalsin Limited.
   - `OpenRTG LISTDB` lists every mode the display database has, as ScreenMode
     prefs sees them.
 - `library/build.sh`: builds both with the os32 stove.
+- `library/build.sh module [OUT_DIR]`: OpenRTG for a ROM, built for size
+  (`OPT=`, `-Os` by default), in `OUT_DIR/modules` (see "In a ROM" below).
+
 - `tools/probes/`: debugging probes used while bringing up screens (AlertSpy,
   IBaseScan, ICtrlTrace, Priv1Trace, PatchScan, OSTrace, MouseProbe). They
   print to the serial port, are built by hand and are not shipped.
@@ -92,6 +95,75 @@ that it is based on OpenRTG by Dalsin Limited.
   `tools/make_sdk.py --build build --gl build/gl OUT_DIR --archives`.
   `sdk/README` is the kit's readme and `sdk/AutoDocs-OpenGPU.md` its
   reference. The kit is build output and is not committed.
+
+## In a ROM (15 October 2026)
+
+`openrtg.library` 0.18 and `cybergraphics.library` 43.3 keep no data or BSS
+in their files, so the same files run from a ROM as from `LIBS:`. Every build
+checks that (`tools/hunk_rw_check.py` and `nm`).
+
+- **What they write is in memory they allocate.** openrtg.library's 0.17 had
+  28,912 bytes of BSS (measured on the lab's copy): the patches' old vectors,
+  the display database's records, the video RAM blocks, the pen tables and
+  the rest. 0.18 keeps all of it in one block `lib_init` allocates
+  (`library/ortg_state.h`). cybergraphics.library keeps its four bases in its
+  own base.
+- **A4 holds that block's address** in all their code: they are built
+  `-ffixed-a4`, with a global register variable. Exec calling their
+  functions, graphics calling a `SetFunction` patch and OpenGfx calling a
+  provider all come in with their own A4, so each of those goes through a
+  small stub in the block that loads A4 and puts the caller's back
+  (`library/ortg_stub.c`).
+- **`library/build.sh module`** builds three modules for an OpenKick ROM
+  (amigachrome-guest `tools/openkickrom/trial-1m`, `RTG=`):
+
+| Module | What | RomTag |
+| --- | --- | --- |
+| `openrtg.library.module` | openrtg.library | `RTF_AUTOINIT`, priority 0, no start class: made at its first `OpenLibrary`, as from `LIBS:` |
+| `cybergraphics.library.module` | cybergraphics.library | the same |
+| `openrtg.monitor.module` | the monitor driver's job (`library/openrtg_monitor_rom.c`) | `RTF_COLDSTART`, priority -38 |
+
+### openrtg.monitor: why COLDSTART at -38
+
+`DEVS:Monitors/OpenRTG` puts OpenRTG's modes in the display database,
+switches its screens on and opens cybergraphics.library. In a ROM,
+`openrtg.monitor` does it at cold start. exec's InitCode runs the COLDSTART
+modules by priority, highest first. In the 1M trial ROM's map:
+
+- **After** romboot (105), which configures the boards, so the ACRTG board
+  is in expansion's list; graphics (65); intuition (10); and syscheck (-35).
+- **Before** amigachrome-guest's openrtg.boot (-40), which loads its own copy
+  of openrtg.library into RAM unless one is in memory. With both in a ROM,
+  openrtg.boot finds this one's library and steps aside.
+- **Before** bootmenu (-50), the first module after it that may open a
+  screen (its Early Startup page); strap (-60); and dos (-120). dos's boot
+  opens the Workbench screen with the boot shell's first window, and IPrefs
+  opens it again on the ScreenMode prefs' mode, which by then is in the
+  display database.
+- Nothing else in the ROM is at -38.
+
+Its init steps aside, keeping nothing, when Picasso96's `rtg.library` is in
+memory or no ACRTG board is fitted. Otherwise it makes openrtg.library and
+cybergraphics.library from their RomTags (before dos, `OpenLibrary` finds
+only what is in memory) and does what the monitor driver does.
+
+### What the disk keeps doing
+
+- **The ROM's copy is found first.** Its library is in memory before DOS, so
+  `OpenLibrary("openrtg.library")` gets it, and `LIBS:OpenRTG/cybergraphics.library`
+  is found in memory by its file part (amigachrome-guest `common/openramlib`).
+- **`DEVS:Monitors/OpenRTG` 0.8 registers nothing a second time.** It asks
+  `ORTG_Screens(0)`, which from 0.18 answers 1 when the screens are on. Then
+  it calls `ORTG_Screens(1)` only, which registers nothing and opens
+  opengpu.library (below), and ends.
+- **opengpu.library** is on the disk, so a ROM switch-on before DOS draws with
+  the CPU. The first `ORTG_Screens(1)` from a process after that (the monitor
+  driver, `C:OpenRTG SCREENS`), or the first screen a process opens once
+  `LIBS:` is assigned (IPrefs' Workbench), opens it and hands the drawing to
+  OpenGfx (`late_opengpu` in `library/screens.c`).
+- **opengpu.library 0.16 looks for a driver in the ROM first**: a resident
+  named `ACRTG.gpu` (amigachrome-guest `libraries/acrtg.gpu`,
+  `build.sh module`) is opened by name, before `LIBS:OpenGPU/`.
 
 ## Contributors
 
