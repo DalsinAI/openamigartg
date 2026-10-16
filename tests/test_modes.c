@@ -20,6 +20,31 @@ static const struct ortg_mode *native_mode(const struct ortg_mode_table *t, int 
     return 0;
 }
 
+/* ACRTG v6: the board's display names each monitor's preferred mode. */
+static void preferred_checks(void) {
+    static struct ortg_mode_table t, all, none, odd, nat;
+    struct ortg_caps c = { .vram_bytes = 0x3FE0000u, .max_width = 1920, .max_height = 1200, .formats = 7, .native = 1,
+                           .display_w = 1920, .display_h = 1080 };
+    struct ortg_caps unknown = c, odd_c = c, nat_c = c;
+    const struct ortg_mode *m16, *m32, *m8;
+    unknown.display_w = unknown.display_h = 0;
+    odd_c.display_w = 1000; odd_c.display_h = 700;               /* no mode has that size */
+    nat_c.native_w = 1920; nat_c.native_h = 1080;                /* a Native size asked for too: never the preferred one */
+    ortg_build_modes(&t, 1, &c, 0);
+    ortg_build_modes(&all, 1, &c, 1);
+    ortg_build_modes(&none, 1, &unknown, 0);
+    ortg_build_modes(&odd, 1, &odd_c, 0);
+    ortg_build_modes(&nat, 1, &nat_c, 0);
+    m8 = by_size(&t, 1920, 1080, 8); m16 = by_size(&t, 1920, 1080, 16); m32 = by_size(&t, 1920, 1080, 32);
+    CHECK(m8 && m16 && m32);
+    CHECK(m16 && ortg_preferred_mode(&t, ORTG_RGB16) == m16->mode_id);
+    CHECK(m32 && ortg_preferred_mode(&t, ORTG_ARGB32) == m32->mode_id && m8 && ortg_preferred_mode(&t, ORTG_CLUT8) == m8->mode_id);
+    CHECK(m16 && ortg_preferred_mode(&all, ORTG_RGB16) == m16->mode_id);   /* the same ModeID under All */
+    CHECK(ortg_preferred_mode(&none, ORTG_RGB16) == 0 && ortg_preferred_mode(&odd, ORTG_RGB16) == 0);
+    CHECK(m16 && ortg_preferred_mode(&nat, ORTG_RGB16) == m16->mode_id && !ORTG_IS_NATIVE(ortg_preferred_mode(&nat, ORTG_RGB16)));
+    CHECK(t.display_w == 1920 && t.display_h == 1080 && none.display_w == 0);
+}
+
 /* 0.17, the native screen mode's step 3: the Native place. */
 static void native_checks(void) {
     static struct ortg_mode_table plain, plain_all, nat, nat_all, again, mon3, tiny_t, over;
@@ -154,6 +179,7 @@ int main(void) {
     CHECK(ortg_build_modes(&small, 5, &tiny, 0) == -1 && ortg_build_modes(&small, 0, &tiny, 0) == -1);
 
     native_checks();
+    preferred_checks();
 
     printf("%d/%d checks passed\n", checks - fails, checks);
     return fails != 0;

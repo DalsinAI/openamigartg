@@ -112,6 +112,7 @@ int ortg_build_modes(struct ortg_mode_table *t, int monitor, const struct ortg_c
     if (monitor < 1 || monitor > ORTG_MAX_MONITORS) return -1;
     t->monitor = monitor; t->all = all ? 1 : 0; t->native = caps->native ? 1 : 0; t->count = t->full_count = 0;
     t->max_width = caps->max_width; t->max_height = caps->max_height;
+    t->display_w = caps->display_w; t->display_h = caps->display_h;
     for (int s = 0; s < NSIZES; s++)
         for (int f = 0; f < ORTG_FORMATS; f++) {
             if (s == ORTG_NATIVE_PLACE) continue;
@@ -130,6 +131,15 @@ int ortg_build_modes(struct ortg_mode_table *t, int monitor, const struct ortg_c
     for (int i = 0; i < t->full_count; i++)
         if (t->all || t->full[i].standard) t->modes[t->count++] = t->full[i];
     return t->count;
+}
+
+uint32_t ortg_preferred_mode(const struct ortg_mode_table *t, int format) {
+    if (!t->display_w || !t->display_h) return 0;
+    for (int i = 0; i < t->full_count; i++) {
+        const struct ortg_mode *m = &t->full[i];
+        if (!m->native && m->format == format && m->width == t->display_w && m->height == t->display_h) return m->mode_id;
+    }
+    return 0;
 }
 
 uint32_t ortg_native_id(int monitor, int format) {

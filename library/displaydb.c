@@ -321,7 +321,13 @@ static ULONG fill(const struct ortg_mode *m, UBYTE *buf, ULONG size, ULONG tag)
                 pad[4 * k + 3] = (ULONG)m->height * ticks - 1;
             }
         }   /* as the resolution: intuition scales the mouse by them */
-        r.mi.PreferredModeID = m->mode_id;
+        /* the monitor's preferred mode: the one at the board's display size, in this mode's format
+         * (ACRTG v6's DISPLAY); before, or with no such mode, the mode itself, as OpenRTG always gave */
+        {
+            const struct ortg_mode_table *tb = (tables && n >= 1 && n <= ORTG_MAX_MONITORS) ? tables[n] : NULL;
+            ULONG pref = tb ? ortg_preferred_mode(tb, m->format) : 0;
+            r.mi.PreferredModeID = pref ? pref : m->mode_id;
+        }
         break;
     case DTAG_NAME:
         len = sizeof r.n;
