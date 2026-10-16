@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # OpenRTG's host tests, and a check that the library's C builds for the 68k.
 #   tests/run.sh      (STOVE or CC68K as in tools/build.sh; the 68k check is skipped without it)

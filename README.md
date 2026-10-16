@@ -24,12 +24,12 @@ OpenRTG is free software under the MIT licence (`LICENSE`): anyone may use
 it, change it, fork it and ship it, commercially too (Team, 4 October 2026:
 "I want anyone to be able to run with it, fork it etc").
 
-OpenRTG was created by Dalsin Limited, for AmigaChrome.
+OpenRTG was created by the AmigaChrome Team, for AmigaChrome.
 The licence's one condition carries that credit: the copyright notice
-("Copyright (c) 2026 Dalsin Limited") and the licence text must stay with
+("Copyright (c) 2026 AmigaChrome Team") and the licence text must stay with
 every copy and every fork. We also ask, as a courtesy rather than a
 condition, that a fork or a port say in its documentation or About window
-that it is based on OpenRTG by Dalsin Limited.
+that it is based on OpenRTG by the AmigaChrome Team.
 
 ## What is here
 
@@ -167,4 +167,4 @@ only what is in memory) and does what the monitor driver does.
 
 ## Contributors
 
-OpenRTG is created and maintained by [SacredTrees](https://github.com/SacredTrees) with the AmigaChrome agent team, copyright Dalsin Limited. Everyone whose work it includes is credited in [`CONTRIBUTORS.md`](CONTRIBUTORS.md).
+OpenRTG is created and maintained by [SacredTrees](https://github.com/SacredTrees) with the AmigaChrome agent team, copyright AmigaChrome Team. Everyone whose work it includes is credited in [`CONTRIBUTORS.md`](CONTRIBUTORS.md).

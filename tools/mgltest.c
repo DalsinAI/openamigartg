@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * MGLTest: the MiniGL test scene (mgltest_scene.c) through minigl.library,
@@ -38,7 +38,7 @@
 #define MGLTEST_NO_LIBM
 #include "mgltest_scene.c"
 
-static const char version[] __attribute__((used)) = "$VER: MGLTest 1.0 (8.10.2026) OpenRTG MiniGL, Dalsin Limited";
+static const char version[] __attribute__((used)) = "$VER: MGLTest 1.0 (8.10.2026) OpenRTG MiniGL, AmigaChrome Team";
 
 /* sin and cos without the maths library (whose 68040 code traps). */
 static float reduce(float x, int *k)

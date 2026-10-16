@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenGPU's SDL 2, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenGPU's SDL 2, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * See SDL_os3path.h. Its own file: dos.library's names (Lock, AddPart...)

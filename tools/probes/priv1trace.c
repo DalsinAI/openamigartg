@@ -1,6 +1,6 @@
 /* Priv1Trace: logs calls of intuition's private function at -576 (which
  * Picasso96 patches), with every register, to the serial port; the first
- * N calls, then every 50th. Not shipped. MIT, Dalsin Limited. */
+ * N calls, then every 50th. Not shipped. MIT, AmigaChrome Team. */
 #include <exec/types.h>
 #include <proto/exec.h>
 #include <proto/dos.h>

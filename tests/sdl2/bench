@@ -1,5 +1,5 @@
 ; SDL 2 on AmigaOS 3.2: the bench (an AmigaDOS script).
-; Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+; Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 ;
 ; Copy build/tests/sdl2/ to a directory with SDL's icon.bmp and sample.bmp
 ; (SDL2-2.32.10/test), SDL2.module to LIBS:OpenGPU/, then run

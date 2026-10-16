@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # OpenGfx's drawing core (DalsinAI/openamigagfx library/core) at a pinned
 # commit, checked by sha256, into OUT/ogfx-core: the one copy of the core

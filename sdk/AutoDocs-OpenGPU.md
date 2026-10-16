@@ -342,4 +342,4 @@ Set with `SetEnv` (or `SDL_SetHint` from the program):
 
 Programs built with this kit run on SDL2.module 2 as well, without OpenGL.
 
-Copyright (c) 2026 Dalsin Limited. MIT licence.
+Copyright (c) 2026 AmigaChrome Team. MIT licence.

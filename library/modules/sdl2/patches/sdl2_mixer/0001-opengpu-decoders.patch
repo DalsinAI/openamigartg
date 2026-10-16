@@ -5,7 +5,7 @@
  
  /* Interfaces for the various music interfaces, ordered by priority */
 +#ifdef OGPU_MIXER_SERVICE
-+/* Altered for OpenGPU by Dalsin Limited, 2026: Ogg Vorbis, MP3, FLAC and
++/* Altered for OpenGPU by the AmigaChrome Team, 2026: Ogg Vorbis, MP3, FLAC and
 +   tracker modules go to media.decode/1 on the x86 or ARM64 cores first
 +   (ogpu_mixer.c); SDL2_mixer's own decoders follow, for when no services
 +   card or Cradle offers it. */
@@ -51,7 +51,7 @@
      desired.channels = nchannels;
      desired.samples = chunksize;
 +#ifdef OGPU_SAT_MODULE
-+    /* Altered for OpenGPU by Dalsin Limited, 2026: in SDL2_mixer.module SDL
++    /* Altered for OpenGPU by the AmigaChrome Team, 2026: in SDL2_mixer.module SDL
 +       calls back through an entry that sets this module's A4 first
 +       (library/modules/sdl2/satellites/module/sat_rt.h). */
 +    desired.callback = (SDL_AudioCallback)ogpu_sat_callin3;

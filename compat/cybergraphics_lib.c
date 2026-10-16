@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * cybergraphics.library 43.1: the CyberGraphX API over openrtg.library
@@ -233,7 +233,7 @@ static void trace(const char *t, ULONG v)
 int start(void) { return -1; }
 
 static const char lib_name[] = "cybergraphics.library";
-static const char lib_id[] = "cybergraphics.library 43.3 (15.10.2026) OpenRTG's CyberGraphX API, Dalsin Limited\r\n";
+static const char lib_id[] = "cybergraphics.library 43.3 (15.10.2026) OpenRTG's CyberGraphX API, AmigaChrome Team\r\n";
 
 static struct Library *lib_init(REG(d0, struct CGXBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct CGXBase *base));

@@ -115,7 +115,7 @@ Correctness:
 
 ## Licence and sources
 
-The library, its headers and its tests are MIT, Copyright (c) 2026 Dalsin Limited. What the Team checked:
+The library, its headers and its tests are MIT, Copyright (c) 2026 AmigaChrome Team. What the Team checked:
 
 - **The Warp3D SDK.** Its headers and FD file say "All rights reserved; see the documentation for conditions". The developer package's terms let it be redistributed only whole, free of charge and with its notice. That does not fit an MIT repository, so none of it is here.
   - `include/Warp3D/Warp3D.h` is the Team's own, written from the published autodocs and programmer's guide.

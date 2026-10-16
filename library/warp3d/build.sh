@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # Warp3D.library (bare: no startup code or C library; the RomTag's stub comes
 # first), with the OpenGPU core and 3D core linked in for the W3D_CPU driver,
@@ -17,7 +17,7 @@ SFDC=${SFDC:-$STOVE/prefix/bin/sfdc}
 if [ "${1:-}" = headers ]; then
     for m in macros:inline/Warp3D.h proto:proto/Warp3D.h clib:clib/Warp3D_protos.h; do
         mode=${m%%:*}; out=$ROOT/include/${m#*:}
-        { echo "/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE)."
+        { echo "/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE)."
           echo " * SPDX-License-Identifier: MIT"
           echo " * Made by sfdc from library/warp3d/warp3d_lib.sfd (library/warp3d/build.sh headers). */"
           "$SFDC" --quiet --mode="$mode" --target=m68k-amigaos -o /dev/stdout "$HERE/warp3d_lib.sfd"; } > "$out"

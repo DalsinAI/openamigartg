@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * CGXTest: a window on Workbench drawn through cybergraphics.library
  * (WritePixelArray in RGB, WriteLUTPixelArray, FillPixelArray,
  * InvertPixelArray, ScalePixelArray), with what it reads back printed.

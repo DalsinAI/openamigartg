@@ -1,4 +1,4 @@
-<!-- OpenRTG's design, written in AmigaChrome's development tree on 4 October 2026. Where it mentions AmigaChrome's instances (Instance-23, the scratch copy), its capsule shelf or its runtime, those are the machines and records it was built and measured on. Copyright (c) 2026 Dalsin Limited, MIT licence (LICENSE). -->
+<!-- OpenRTG's design, written in AmigaChrome's development tree on 4 October 2026. Where it mentions AmigaChrome's instances (Instance-23, the scratch copy), its capsule shelf or its runtime, those are the machines and records it was built and measured on. Copyright (c) 2026 AmigaChrome Team, MIT licence (LICENSE). -->
 
 # OpenRTG
 
@@ -23,7 +23,7 @@ day:
   (Team, 4 October 2026). See "Real Amigas and PiStorm" in section 3.
 - **MIT licence, with the credit kept** (Team, 4 October 2026: "I want anyone
   to be able to run with it, fork it etc"; "credit to us though"). Copyright
-  Dalsin Limited; the notice travels with every copy and fork, and forks are
+  AmigaChrome Team; the notice travels with every copy and fork, and forks are
   asked to say they are based on OpenRTG.
 - Later the same day: "a patch or intuition library that gives the windows on
   Workbench etc more of an OS 4 feel", which "should become resident after it
@@ -59,7 +59,7 @@ stay where they are and are simply not used while OpenRTG is active.
 ## 2. Several monitors
 
 Each RTG monitor is its own ACRTG board, as each Picasso96 card is its own
-monitor on a real Amiga: manufacturer Dalsin $DA15, product 9, serial number
+monitor on a real Amiga: manufacturer AmigaChrome Team $DA15, product 9, serial number
 the monitor's number. Boards are independent (their own 16 MiB window, video
 RAM, mode, pointer); a bitmap belongs to one board.
 

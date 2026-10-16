@@ -1,6 +1,6 @@
 Short:        Open RTG system with OpenGPU and Warp3D
 Uploader:     (We fill this in at upload time)
-Author:       Dalsin Limited
+Author:       AmigaChrome Team
 Type:         driver/video
 Version:      0.1
 Architecture: m68k-amigaos >= 3.2.0
@@ -26,9 +26,9 @@ Status: this archive is the design and LibCount, the measuring tool of phase 0
 AmigaChrome (an Amiga on x86 and ARM64 cores) runs the first several-monitor
 setup today.
 
-Free software under the MIT licence, Copyright (c) 2026 Dalsin Limited. Use
+Free software under the MIT licence, Copyright (c) 2026 AmigaChrome Team. Use
 it, change it, fork it and ship it; keep the copyright notice and the licence
 with every copy. If you build on it, please say it is based on OpenRTG by
-Dalsin Limited.
+the AmigaChrome Team.
 
 Source: https://github.com/DalsinAI/openamigartg

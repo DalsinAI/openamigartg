@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * DEVS:Monitors/OpenRTG: OpenRTG's monitor driver. LoadMonDrvs runs it with
@@ -20,7 +20,7 @@
 #include <proto/exec.h>
 #include <proto/openrtg.h>
 
-static const char version[] __attribute__((used)) = "$VER: OpenRTG-Monitor 0.8 (15.10.2026) Dalsin Limited";
+static const char version[] __attribute__((used)) = "$VER: OpenRTG-Monitor 0.8 (15.10.2026) AmigaChrome Team";
 struct Library *OpenRTGBase;
 
 int main(void)

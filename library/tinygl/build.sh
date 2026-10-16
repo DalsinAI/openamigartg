@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # TinyGL on OpenGPU, with the os32 stove (bebbo's m68k-amigaos-gcc):
 #   tinygl.library  the stand-in programs open (bare: no startup code or C library)

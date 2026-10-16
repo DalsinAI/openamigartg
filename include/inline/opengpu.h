@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  * Inline calls for bebbo's m68k-amigaos-gcc, from library/opengpu/opengpu_lib.sfd. */
 #ifndef _INLINE_OPENGPU_H

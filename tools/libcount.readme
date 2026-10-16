@@ -1,6 +1,6 @@
 Short:        Counts the calls programs make to libs
 Uploader:     (We fill this in at upload time)
-Author:       Dalsin Limited
+Author:       AmigaChrome Team
 Type:         dev/debug
 Version:      1.0
 Architecture: m68k-amigaos >= 2.0.4
@@ -24,7 +24,7 @@ the NDK's FD files and sorts them into a table.
 It was written to find which graphics, intuition and layers calls Workbench
 and programs really make on an RTG screen, for OpenRTG.
 
-Free software under the MIT licence, Copyright (c) 2026 Dalsin Limited. Use
+Free software under the MIT licence, Copyright (c) 2026 AmigaChrome Team. Use
 it, change it, fork it and ship it; keep the copyright notice and the licence
 with every copy.
 

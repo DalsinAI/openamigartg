@@ -1,6 +1,6 @@
 /*
   SDL 2 audio for AmigaOS 3.x through AHI.
-  Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+  Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 */
 
 #ifndef SDL_os3audio_h_

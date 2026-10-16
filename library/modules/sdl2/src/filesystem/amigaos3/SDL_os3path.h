@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenGPU's SDL 2, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenGPU's SDL 2, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * File names that mean the same in every process (library/modules/common/

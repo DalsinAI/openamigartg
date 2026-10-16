@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * C:OpenRTG 0.2: what openrtg.library found, from a Shell.
@@ -23,7 +23,7 @@
 #include <graphics/modeid.h>
 #include <proto/openrtg.h>
 
-static const char version[] __attribute__((used)) = "$VER: OpenRTG 0.4 (12.10.2026) Dalsin Limited";
+static const char version[] __attribute__((used)) = "$VER: OpenRTG 0.4 (12.10.2026) AmigaChrome Team";
 struct Library *OpenRTGBase;
 
 int main(void)
