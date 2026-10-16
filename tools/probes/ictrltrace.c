@@ -1,7 +1,7 @@
 /* ICtrlTrace: logs every IntuitionControlA() call (object, tags, result) to
  * the serial port, to learn how an RTG system registers with OS 3.2's
  * intuition. Run it before LoadMonDrvs; it stays. Not shipped.
- * MIT, Copyright (c) 2026 Dalsin Limited. */
+ * MIT, Copyright (c) 2026 AmigaChrome Team. */
 #include <exec/types.h>
 #include <utility/tagitem.h>
 #include <proto/exec.h>

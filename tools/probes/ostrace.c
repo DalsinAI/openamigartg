@@ -1,6 +1,6 @@
 /* OSTrace: logs what reaches the ROM's OpenScreenTagList (installed before
  * Picasso96, so its patch calls through this), and the screen that comes
- * back. Not shipped. MIT, Dalsin Limited. */
+ * back. Not shipped. MIT, AmigaChrome Team. */
 #include <exec/types.h>
 #include <utility/tagitem.h>
 #include <intuition/screens.h>

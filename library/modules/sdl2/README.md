@@ -320,7 +320,7 @@ Nothing third-party is committed. `build.sh`:
 | FreeType 2.14.3 | FreeType Licence | for SDL2_ttf |
 | libxmp 4.7.3 | MIT | for SDL2_mixer's MOD, XM, S3M, IT, MED and the other tracker formats |
 
-The Team's files are MIT, Copyright (c) 2026 Dalsin Limited. Files that
+The Team's files are MIT, Copyright (c) 2026 AmigaChrome Team. Files that
 alter SDL's (the stub, the renderer patch) keep SDL's Zlib notice and say
 they are altered.
 

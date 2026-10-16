@@ -1,6 +1,6 @@
 /*
   SDL 2 audio for AmigaOS 3.x through AHI (ahi.device, unit AHI_DEFAULT_UNIT).
-  Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+  Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
   Replaces libSDL2-amigaos3's AHI driver; its Paula driver stays as the
   fallback when ahi.device can't be opened.
 

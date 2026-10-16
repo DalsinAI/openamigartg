@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenGPU's GL module, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenGPU's GL module, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  * The GLA core's virgl winsys (gla_virgl.c). */
 #ifndef GLA_VIRGL_H

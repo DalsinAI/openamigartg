@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # minigl.library's PC tests: its files built 32-bit (MGL_HOST) under
 # AddressSanitizer and UBSan with a drawing area in memory, the calls going

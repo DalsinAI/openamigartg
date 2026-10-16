@@ -1,6 +1,6 @@
 /*
   SDL 2 clipboard for AmigaOS 3.x.
-  Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+  Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 */
 #ifndef SDL_os3clipboard_h_
 #define SDL_os3clipboard_h_

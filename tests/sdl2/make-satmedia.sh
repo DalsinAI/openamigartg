@@ -1,7 +1,7 @@
 #!/bin/sh
 # Makes the pictures and sounds tests/sdl2/satladder.c reads, on the x86 or
 # ARM64 cores (Python's Pillow, avifenc and FFmpeg with libvorbis and
-# libmp3lame). Copyright (c) 2026 Dalsin Limited. MIT licence (LICENSE).
+# libmp3lame). Copyright (c) 2026 AmigaChrome Team. MIT licence (LICENSE).
 #
 # usage: tests/sdl2/make-satmedia.sh OUTDIR
 set -eu

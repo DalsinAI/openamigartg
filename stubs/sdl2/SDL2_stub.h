@@ -4,7 +4,7 @@
 
   Simple DirectMedia Layer
   Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
-  Altered for AmigaOS 3.x by Dalsin Limited, 2026: SDL's dynamic API
+  Altered for AmigaOS 3.x by the AmigaChrome Team, 2026: SDL's dynamic API
   (src/dynapi/SDL_dynapi.c) cut down to its caller's half. It is not the
   original software.
 

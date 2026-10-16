@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. Mesa for AmigaOS 3.2 (Open), MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. Mesa for AmigaOS 3.2 (Open), MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * The POSIX calls Mesa's util and c11 code uses that libnix and the stove's

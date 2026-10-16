@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  * sdl12-compat's link to SDL 2 on AmigaOS 3: the tables (sdl12_amiga.c). */
 #ifndef SDL12_AMIGA_H

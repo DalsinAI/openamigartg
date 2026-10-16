@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenGPU's GL module, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenGPU's GL module, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # GL.module and libGL.a for AmigaOS 3.2, on the Mesa build that mesa/build.sh
 # makes (run first, for the AmigaOS cross file), with the GCC 16 stove.

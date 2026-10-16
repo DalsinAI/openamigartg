@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 #
 # Makes minigl.library's interface files from library/minigl/minigl_api.txt
@@ -13,7 +13,7 @@ import os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
-HEAD = ('/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).\n'
+HEAD = ('/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).\n'
         ' * SPDX-License-Identifier: MIT\n'
         ' * Made by library/minigl/gen_api.py from library/minigl/minigl_api.txt. */\n')
 

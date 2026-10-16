@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * C:Warp3DPrefs: OpenRTG Warp3D's settings, the same ENV:Warp3D/ variables
@@ -21,7 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static const char version[] __attribute__((used)) = "$VER: Warp3DPrefs 1.0 (8.10.2026) OpenRTG Warp3D, Dalsin Limited";
+static const char version[] __attribute__((used)) = "$VER: Warp3DPrefs 1.0 (8.10.2026) OpenRTG Warp3D, AmigaChrome Team";
 
 static const char *names[] = { "Driver", "ZBuffer", "Fog", "Perspective", "Filtering", "Lighting" };
 static const char *dflt[] = { "Auto", "16", "1", "1", "1", "1" };

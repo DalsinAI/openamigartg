@@ -41,4 +41,4 @@ A program needs only this:
 ## Licences
 
 - **sdl12-compat:** Zlib, with dr_mp3 inside it (public domain or MIT-0). The kit's `Licences/sdl12-compat.txt` carries its notice.
-- **`sdl12_amiga.c`, `sdl12_amiga.h`, `sdl12_nogl.c` and `build.sh`:** MIT, Copyright (c) 2026 Dalsin Limited.
+- **`sdl12_amiga.c`, `sdl12_amiga.h`, `sdl12_nogl.c` and `build.sh`:** MIT, Copyright (c) 2026 AmigaChrome Team.

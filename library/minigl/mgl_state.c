@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * minigl.library: GL's state. Enables, the per-fragment functions, fog,
@@ -96,7 +96,7 @@ GLenum GLGetError(GLcontext c)
 const GLubyte *GLGetString(GLcontext c, GLenum name)
 {
     switch (name) {
-    case GL_VENDOR: return (const GLubyte *)"Dalsin Limited (OpenRTG)";
+    case GL_VENDOR: return (const GLubyte *)"AmigaChrome Team (OpenRTG)";
     case GL_RENDERER:
         return (const GLubyte *)(c && c->route == ROUTE_GPU ? "OpenRTG MiniGL on OpenGPU" : "OpenRTG MiniGL on the 68k");
     case GL_VERSION: return (const GLubyte *)"1.1 MiniGL 29.10";
