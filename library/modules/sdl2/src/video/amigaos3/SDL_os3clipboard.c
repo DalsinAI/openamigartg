@@ -1,6 +1,6 @@
 /*
   SDL 2 clipboard for AmigaOS 3.x: clipboard.device unit 0, IFF FTXT.
-  Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+  Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 
   SDL's clipboard text is UTF-8; the Amiga clipboard's FTXT CHRS chunks are
   ISO-8859-1 (the Amiga's own character set). Text is converted both ways;

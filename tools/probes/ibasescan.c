@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * IBaseScan: IntuitionBase's private part, in hex, with the words that look
  * like mouse limits marked, to compare Picasso96's screens with OpenRTG's.
  * Not shipped.   IBaseScan [WORDS w1 w2 ...] */

@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * Work for the x86 or ARM64 cores, from SDL's satellites: a named service

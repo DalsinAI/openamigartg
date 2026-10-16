@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * libGL.a: GL and GLES for programs on AmigaOS 3.2, from OpenGPU's

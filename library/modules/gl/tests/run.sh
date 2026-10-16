@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenGPU's GL module, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenGPU's GL module, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # Mesa and the GLA core on this machine: softpipe must draw the stored
 # pictures, and with ACVIRGL_LIB naming a libvirglrenderer.so.1 (virglrenderer

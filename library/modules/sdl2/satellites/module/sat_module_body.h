@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * A satellite module's first table and entry (stubs/sdl2/sat_module.h),

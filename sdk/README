@@ -149,5 +149,5 @@ Things to know
 - With GCC 16, run tools/fpcr_check.py (openamigartg) on what you build:
   GCC 16 at -m68040 can put a float-to-int store in the wrong place.
 
-Copyright (c) 2026 Dalsin Limited. The kit's own files are MIT; SDL and the
+Copyright (c) 2026 AmigaChrome Team. The kit's own files are MIT; SDL and the
 others keep their own licences (Licences/).

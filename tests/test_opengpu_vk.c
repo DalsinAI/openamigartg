@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * OpenGPU's Vulkan back end (G2) against the C core: the golden scene must

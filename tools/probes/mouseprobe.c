@@ -1,4 +1,4 @@
-/* MouseProbe: intuition's idea of the mouse and the front screen's view, once. Not shipped. MIT, Dalsin Limited. */
+/* MouseProbe: intuition's idea of the mouse and the front screen's view, once. Not shipped. MIT, AmigaChrome Team. */
 #include <exec/types.h>
 #include <intuition/intuitionbase.h>
 #include <graphics/gfxbase.h>

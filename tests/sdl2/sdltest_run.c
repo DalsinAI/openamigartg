@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  *
  * Runs one of SDL's own test programs, unchanged, for a set time and keeps
  * what it logs. The test is compiled with -Dmain=sdltest_main and linked

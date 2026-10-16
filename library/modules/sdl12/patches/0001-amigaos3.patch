@@ -5,7 +5,7 @@
          return SDL_FALSE; /* didn't find it anywhere reasonable. :( */
      }
 +#elif defined(__amigaos3__)
-+    /* AmigaOS 3 (Open), altered by Dalsin Limited, 2026: SDL 2 is OpenGPU's
++    /* AmigaOS 3 (Open), altered by the AmigaChrome Team, 2026: SDL 2 is OpenGPU's
 +       SDL2.module, reached through libSDL2.a's calls, which are linked into
 +       libSDL.a under the names SDL2X_ (sdl12_amiga.c). A symbol is looked up
 +       in their table; nothing is loaded here. */

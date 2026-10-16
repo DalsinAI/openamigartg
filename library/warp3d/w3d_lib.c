@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * Warp3D.library 5.0: the library itself, its 92-entry function table (the
@@ -38,8 +38,8 @@ struct W3DBase *W3DBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "Warp3D.library";
-static const char lib_id[] = "Warp3D.library 5.0 (8.10.2026) OpenRTG Warp3D, Dalsin Limited\r\n";
-static const char lib_ver[] __attribute__((used)) = "\0$VER: Warp3D.library 5.0 (8.10.2026) OpenRTG Warp3D, Dalsin Limited";
+static const char lib_id[] = "Warp3D.library 5.0 (8.10.2026) OpenRTG Warp3D, AmigaChrome Team\r\n";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: Warp3D.library 5.0 (8.10.2026) OpenRTG Warp3D, AmigaChrome Team";
 static char name_gpu[64] = "OpenGPU";
 static const char name_cpu[] = "CPU (OpenRTG's 3D core on this 68k)";
 

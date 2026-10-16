@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 #
 # SDL2.module and SDL 2's link libraries. build.sh prepares the SDL tree

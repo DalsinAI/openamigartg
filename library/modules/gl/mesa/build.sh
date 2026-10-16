@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenGPU's GL module, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenGPU's GL module, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # Build Mesa's softpipe, virgl and GL state tracker (the release UPSTREAM.json
 # pins, checked by its SHA-256) as static libraries, then the GLA core with its

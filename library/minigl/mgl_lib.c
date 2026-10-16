@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * minigl.library 29: the library itself. Its one function (at -30) answers
@@ -52,8 +52,8 @@ static struct MGLBase *MGLBase;
 int start(void) { return -1; }
 
 static const char lib_name[] = "minigl.library";
-static const char lib_id[] = "minigl.library 29.10 (8.10.2026) OpenRTG MiniGL, Dalsin Limited\r\n";
-static const char lib_ver[] __attribute__((used)) = "\0$VER: minigl.library 29.10 (8.10.2026) OpenRTG MiniGL, Dalsin Limited";
+static const char lib_id[] = "minigl.library 29.10 (8.10.2026) OpenRTG MiniGL, AmigaChrome Team\r\n";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: minigl.library 29.10 (8.10.2026) OpenRTG MiniGL, AmigaChrome Team";
 
 static struct Library *lib_init(REG(d0, struct MGLBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct MGLBase *base));

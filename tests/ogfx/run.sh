@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # OpenGfx's tests, brought from amigachrome-guest (tests/m68k) with OpenGfx:
 #  1. the leaves and the compositing reference on the host, 32-bit (addresses

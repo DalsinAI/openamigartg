@@ -18,7 +18,7 @@
 +#ifdef OGPU_MIXER_SERVICE
 +    char ogpu_path[512];
 +
-+    /* Altered for OpenGPU by Dalsin Limited, 2026: the file by its full path,
++    /* Altered for OpenGPU by the AmigaChrome Team, 2026: the file by its full path,
 +       made here in the caller's process. A decoder that reads a piece ahead
 +       in SDL's audio thread, the cores, a CreateFromFile that opens the name
 +       itself: none of them knows what PROGDIR: or a relative name means. */

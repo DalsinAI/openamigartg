@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 #
 # SDL2.module, libSDL2.a (the link stub), libSDL2_static.a, SDL's public

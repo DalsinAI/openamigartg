@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # SDL 1.2 on OpenGPU's SDL 2: sdl12-compat (Zlib) built for AmigaOS 3.2 as
 # libSDL.a, with the GCC 16 stove.

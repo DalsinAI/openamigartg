@@ -1,6 +1,6 @@
 /*
   SDL 2 on AmigaOS 3.x: SDL_GL_* on OpenGPU's GL module.
-  Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+  Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 
   GL is the program's own libGL.a (GL.module: Mesa on the PC's graphics
   chip through virgl, or softpipe on the 68k), handed to the module by

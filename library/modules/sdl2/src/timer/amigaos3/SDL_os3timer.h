@@ -1,6 +1,6 @@
 /*
   SDL2 timed waits -- AmigaOS 3.x (timer.device UNIT_MICROHZ)
-  Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+  Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 
   SDL_Delay and the timed waits of semaphores and condition variables
   use these. Each call opens its own timer request in the calling task,

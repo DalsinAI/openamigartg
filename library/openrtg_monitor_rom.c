@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * openrtg.monitor: the monitor driver's job (tools/openrtg_monitor.c,
@@ -49,7 +49,7 @@
 
 #define REG(r, decl) register decl __asm(#r)
 
-#define DALSIN          0xDA15                  /* openrtg_lib.c's ACRTG board: Dalsin, or 2011 before 1 October 2026 */
+#define DALSIN          0xDA15                  /* openrtg_lib.c's ACRTG board: AmigaChrome Team, or 2011 before 1 October 2026 */
 #define DALSIN_OLD      2011
 #define ACRTG_PRODUCT   9                       /* 16 MiB */
 #define ACRTG_PRODUCT_64 15                     /* 64 MiB */
@@ -61,7 +61,7 @@
 int start(void) { return -1; }
 
 static const char orm_name[] = "openrtg.monitor";
-static const char orm_id[] = "openrtg.monitor 0.18 (15.10.2026) OpenRTG, Dalsin Limited\r\n";
+static const char orm_id[] = "openrtg.monitor 0.18 (15.10.2026) OpenRTG, AmigaChrome Team\r\n";
 
 static APTR orm_init(REG(d0, ULONG zero), REG(a0, BPTR seglist), REG(a6, struct ExecBase *SysBase));
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 Dalsin Limited. OpenGPU's GL module, MIT licence (LICENSE).
+# Copyright (c) 2026 AmigaChrome Team. OpenGPU's GL module, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 """fpcr_fix.py BUILD_DIR OBJDUMP OUT_DIR LIB...: Mesa's objects without GCC 16's
 FPCR clash (tools/fpcr_check.py).

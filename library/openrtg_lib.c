@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * openrtg.library 0.1: phase 2's first part (DESIGN.md, sections 4 and 10).
@@ -32,7 +32,7 @@
 #define LIB_REVISION 18
 
 /* The ACRTG board (amigachrome's common/protocol/acrtg.h): Zorro III,
- * Dalsin (0xDA15; 2011 before 1 October 2026), product 9 (16 MiB) or product 15 (64 MiB, 0.14); the boot ROM page
+ * AmigaChrome Team (0xDA15; 2011 before 1 October 2026), product 9 (16 MiB) or product 15 (64 MiB, 0.14); the boot ROM page
  * at +0, video RAM from +0x10000, the register page in the last 64 KiB (0xFE0000 bytes of video RAM on the 16 MiB
  * board, 0x3FE0000 on the 64 MiB one); pictures up to 1920x1200 in 8, 16 and 32-bit. */
 #define DALSIN          0xDA15
@@ -79,7 +79,7 @@ struct OpenRTGBase {
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.18.0 (15.10.2026) OpenRTG, Dalsin Limited\r\n";
+static const char lib_id[] = "openrtg.library 0.18.0 (15.10.2026) OpenRTG, AmigaChrome Team\r\n";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));

@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenInput, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenInput, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
  * openinput.library: one way for Amiga programs to get game controllers

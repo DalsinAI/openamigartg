@@ -1,4 +1,4 @@
-/* Copyright (c) 2026 Dalsin Limited. OpenRTG, MIT licence (LICENSE).
+/* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  * DumpMode: the display database's records for the modes whose name has
  * NAME in it, in hex, to compare OpenRTG's with Picasso96's. Not shipped.
