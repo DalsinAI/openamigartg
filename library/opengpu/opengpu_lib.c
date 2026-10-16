@@ -54,7 +54,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 15
+#define LIB_REVISION 16
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -94,9 +94,9 @@ const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 int start(void) { return -1; }
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.15 (13.10.2026) OpenGPU, Dalsin Limited\r\n";
+static const char lib_id[] = "opengpu.library 0.16 (15.10.2026) OpenGPU, Dalsin Limited\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.15 (13.10.2026) OpenGPU, Dalsin Limited";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.16 (15.10.2026) OpenGPU, Dalsin Limited";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";
@@ -297,16 +297,19 @@ static int same_name(const char *a, const char *b)
     return *a == 0 && *b == 0;
 }
 
-/* Open LIBS:OpenGPU/name; 1 when it is the driver now in use. */
-static int driver_try(struct OpenGPUBase *base, const char *name)
+/* Open LIBS:OpenGPU/name, or with rom the name alone (a ROM's driver, below); 1 when it is the driver
+ * now in use. */
+static int driver_try(struct OpenGPUBase *base, const char *name, int rom)
 {
     EXEC(base);
     char path[64];
     int i = 0, j = 0;
     struct Library *lib;
     struct OGPUDriver *d;
-    while (drv_dir[j]) path[i++] = drv_dir[j++];
-    path[i++] = '/';
+    if (!rom) {
+        while (drv_dir[j]) path[i++] = drv_dir[j++];
+        path[i++] = '/';
+    }
     for (j = 0; name[j] && i < (int)sizeof path - 1; ) path[i++] = name[j++];
     path[i] = 0;
     if (!(lib = OpenLibrary((CONST_STRPTR)path, 0))) return 0;
@@ -350,6 +353,11 @@ static void drivers_load(struct OpenGPUBase *base)
     if (me->tc_Node.ln_Type != NT_PROCESS) return;
     ObtainSemaphore(&base->drv_lock);
     if (base->drv_tried) { ReleaseSemaphore(&base->drv_lock); return; }
+    /* 0.16: a known driver in the ROM first (a resident of its name, amigachrome-guest's
+     * ACRTG.gpu.module). OpenLibrary of the name alone finds it: in memory, or made by ramlib, which
+     * looks for a resident of the name before LIBS: (amigachrome-guest common/openramlib). */
+    for (k = 0; drv_first[k] && !base->drv; k++)
+        if (FindResident((CONST_STRPTR)drv_first[k])) driver_try(base, drv_first[k], 1);
     dos_open(base);
     DOS(base);
     if (DOSBase && (fib = AllocDosObject(DOS_FIB, NULL)) != NULL) {
@@ -374,11 +382,11 @@ static void drivers_load(struct OpenGPUBase *base)
             for (i = 0; i < n; i++)
                 if (names[i][0] && same_name(names[i], drv_first[k])) {
                     names[i][0] = 0;
-                    driver_try(base, drv_first[k]);
+                    driver_try(base, drv_first[k], 0);
                     break;
                 }
         for (i = 0; i < n && !base->drv; i++)
-            if (names[i][0]) driver_try(base, names[i]);
+            if (names[i][0]) driver_try(base, names[i], 0);
     }
     base->drv_tried = 1;
     ReleaseSemaphore(&base->drv_lock);

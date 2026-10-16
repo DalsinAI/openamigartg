@@ -7,8 +7,12 @@
  * database calls can be answered from it. It does not claim the boards yet:
  * Picasso96's acrtg.card still drives them until OpenRTG opens screens of
  * its own. Built bare by library/build.sh.
+ *
+ * 0.18: no data or BSS in the file (ortg_state.h), so the same file runs
+ * from a ROM; `library/build.sh module` builds it as openrtg.module.
  */
 #include <exec/types.h>
+#include "ortg_state.h"
 #include <exec/resident.h>
 #include <exec/libraries.h>
 #include <exec/execbase.h>
@@ -25,7 +29,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 17
+#define LIB_REVISION 18
 
 /* The ACRTG board (amigachrome's common/protocol/acrtg.h): Zorro III,
  * Dalsin (0xDA15; 2011 before 1 October 2026), product 9 (16 MiB) or product 15 (64 MiB, 0.14); the boot ROM page
@@ -64,16 +68,15 @@ struct OpenRTGBase {
     int patched;
     struct ortg_caps caps[ORTG_MAX_MONITORS + 1];       /* what each board shows (0.17: its own, kept for ORTG_SetModeList) */
     ULONG want_gen[ORTG_MAX_MONITORS + 1];              /* WANT_GEN when the Native modes were last made */
+    struct ortg_state *state;                           /* 0.18: everything else the library writes */
 };
-
-struct ExecBase *SysBase;
 
 /* Run as a program, the library does nothing. This must stay the first code
  * in the file: build.sh keeps source order (-fno-toplevel-reorder). */
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.17.0 (12.10.2026) OpenRTG, Dalsin Limited\r\n";
+static const char lib_id[] = "openrtg.library 0.18.0 (15.10.2026) OpenRTG, Dalsin Limited\r\n";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));
@@ -112,10 +115,6 @@ const struct Resident lib_romtag = {
     RTC_MATCHWORD, (struct Resident *)&lib_romtag, (APTR)(&lib_romtag + 1),
     RTF_AUTOINIT, LIB_VERSION, NT_LIBRARY, 0, (char *)lib_name, (char *)lib_id, (APTR)&lib_inittable,
 };
-
-/* The library's base, for the display database's patches and OpenRTG's screens, which ask for the
- * Native modes to be made again when the host has asked for a new size (ortg_native_check). */
-static struct OpenRTGBase *the_base;
 
 static ULONG board_reg(struct OpenRTGBase *base, ULONG n, ULONG off)
 {
@@ -195,7 +194,7 @@ static int native_refresh(struct OpenRTGBase *base, ULONG n)
 
 void ortg_native_check(int monitor)
 {
-    struct OpenRTGBase *base = the_base;
+    struct OpenRTGBase *base = ortg_S->base;
     if (!base) return;
     if (monitor) { native_refresh(base, (ULONG)monitor); return; }
     for (ULONG n = 1; n <= ORTG_MAX_MONITORS; n++) native_refresh(base, n);
@@ -208,14 +207,47 @@ static void free_tables(struct OpenRTGBase *base) {
 
 /* ---- the library ---------------------------------------------------------------- */
 
+/* Room for entry stubs: the 17 library calls, the display database's 5 patches and the screens' 36
+ * (OpenGfx absent) take 58 register stubs; OpenGfx 1.4's 19 provider calls take 19 C stubs at each
+ * hand-over (screens.c tries it at switch-on and once more from late_opengpu). */
+#define STUBS_REG 80
+#define STUBS_C2 48
+
+/* The state block (ortg_state.h): the library's own fields, each file's part, then the stubs. A4 is the
+ * caller's on the way in and is put back on the way out; on the way it is the new block. */
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys))
 {
-    SysBase = sys;
+    struct ortg_state *caller = ortg_S, boot;
+    ULONG db = (ortg_displaydb_size() + 3) & ~3UL, scr = (ortg_screens_size() + 3) & ~3UL;
+    ULONG pix = (ortg_pixels_size() + 3) & ~3UL;
+    ULONG size = sizeof(struct ortg_state) + db + scr + pix + STUBS_REG * ORTG_STUB_REG_BYTES + STUBS_C2 * ORTG_STUB_C2_BYTES;
+    struct ortg_state *s;
+    UBYTE *at;
+    boot.sys = sys;
+    ortg_S = &boot;                                     /* for AllocVec and FreeMem */
+    if (!(s = AllocVec(size, MEMF_PUBLIC | MEMF_CLEAR))) {
+        FreeMem((UBYTE *)base - base->lib.lib_NegSize, base->lib.lib_NegSize + base->lib.lib_PosSize);
+        ortg_S = caller;
+        return NULL;
+    }
+    at = (UBYTE *)(s + 1);
+    s->sys = sys;
+    s->base = base;
+    s->db = at; at += db;
+    s->scr = at; at += scr;
+    s->pix = at; at += pix;
+    s->stubs.next = at;
+    s->stubs.end = (UBYTE *)s + size;
+    ortg_S = s;
+    base->state = s;
     base->seglist = seglist;
     base->lib.lib_Revision = LIB_REVISION;
+    /* exec calls the library's own calls with its A4: each goes through a stub from now on */
+    ortg_stub_vectors(&s->stubs, s, &base->lib, 5);
+    CacheClearU();
     find_boards(base);
-    the_base = base;
     base->gfx = OpenLibrary("graphics.library", 39);
+    ortg_S = caller;
     return &base->lib;
 }
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base))
@@ -231,14 +263,19 @@ static BPTR lib_close(REG(a6, struct OpenRTGBase *base))
         return lib_expunge(base);
     return 0;
 }
+/* Called by exec, or from lib_close, with the caller's A4: the block's is set here and the caller's put back. */
 static BPTR lib_expunge(REG(a6, struct OpenRTGBase *base))
 {
+    struct ortg_state *caller = ortg_S;
     if (base->lib.lib_OpenCnt || base->patched) { base->lib.lib_Flags |= LIBF_DELEXP; return 0; }   /* patched: stays */
     BPTR seglist = base->seglist;
+    ortg_S = base->state;
     Remove(&base->lib.lib_Node);
-    the_base = NULL;
     free_tables(base);
+    if (base->gfx) CloseLibrary(base->gfx);
     FreeMem((UBYTE *)base - base->lib.lib_NegSize, base->lib.lib_NegSize + base->lib.lib_PosSize);
+    FreeVec(ortg_S);
+    ortg_S = caller;
     return seglist;
 }
 static ULONG lib_null(void) { return 0; }
@@ -251,6 +288,7 @@ static struct ortg_mode_table *table_of(struct OpenRTGBase *base, ULONG monitor)
 
 static ULONG ORTG_MonitorCount(REG(a6, struct OpenRTGBase *base))
 {
+    ortg_late_opengpu();                                /* 0.18: switched on from a ROM, opengpu.library when it can */
     return base->monitors;
 }
 
@@ -259,7 +297,7 @@ static ULONG ORTG_NextMode(REG(d0, ULONG monitor), REG(d1, ULONG previous), REG(
 {
     struct ortg_mode_table *t = table_of(base, monitor);
     if (!t) return 0;
-    if (!previous) native_refresh(base, monitor);       /* a new walk: the Native modes at the size asked for now */
+    if (!previous) { native_refresh(base, monitor); ortg_late_opengpu(); }   /* a new walk: the Native modes at the size asked for now */
     if (!t->count) return 0;
     if (!previous) return t->modes[0].mode_id;
     for (int i = 0; i + 1 < t->count; i++)
@@ -321,11 +359,14 @@ static LONG ORTG_DisplayDatabase(REG(d0, ULONG on), REG(a6, struct OpenRTGBase *
 
 /* OpenRTG's own screens (screens.c): a screen on an OpenRTG ModeID gets a
  * chunky bitmap in its board's video RAM and the board shows it, with no
- * Picasso96. The display database must be on. Once on, it stays. */
+ * Picasso96. The display database must be on. Once on, it stays. A second
+ * ORTG_Screens(1) only looks for opengpu.library again, when it wasn't there
+ * at the first (screens.c, late_opengpu). ORTG_Screens(0) switches nothing
+ * off: from 0.18 it answers 1 when the screens are on, 0 when not. */
 static LONG ORTG_Screens(REG(d0, ULONG on), REG(a6, struct OpenRTGBase *base))
 {
     APTR boards[ORTG_MAX_MONITORS + 1];
-    if (!on) return 0;
+    if (!on) return ortg_screens_are_on();             /* 0.18: 0 asks whether they are on */
     if (!base->gfx || !base->monitors) return 0;
     for (int n = 0; n <= ORTG_MAX_MONITORS; n++) boards[n] = base->board[n] ? base->board[n]->cd_BoardAddr : NULL;
     base->patched = 1;
@@ -388,6 +429,7 @@ static BOOL ORTG_NativeSize(REG(d0, ULONG monitor), REG(a0, struct OpenRTGNative
         out->width = out->height = 0; out->gen = out->ask = 0;
         out->limit_width = out->limit_height = 0; out->mode_id = 0;
     }
+    ortg_late_opengpu();
     if (!t || !base->board[monitor] || !base->caps[monitor].native) return FALSE;
     native_refresh(base, monitor);
     if (!out) return TRUE;
