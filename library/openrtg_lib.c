@@ -35,8 +35,8 @@
  * AmigaChrome Team (0xDA15; 2011 before 1 October 2026), product 9 (16 MiB) or product 15 (64 MiB, 0.14); the boot ROM page
  * at +0, video RAM from +0x10000, the register page in the last 64 KiB (0xFE0000 bytes of video RAM on the 16 MiB
  * board, 0x3FE0000 on the 64 MiB one); pictures up to 1920x1200 in 8, 16 and 32-bit. */
-#define DALSIN          0xDA15
-#define DALSIN_OLD      2011
+#define AMIGACHROME_MFR          0xDA15
+#define AMIGACHROME_MFR_OLD      2011
 #define ACRTG_PRODUCT   9
 #define ACRTG_PRODUCT_64 15
 #define ACRTG_BOARD     0x01000000UL                    /* the 16 MiB board's window */
@@ -147,7 +147,7 @@ static void board_caps(struct OpenRTGBase *base, ULONG n)
 
 static void find_boards(struct OpenRTGBase *base) {
     struct Library *ExpansionBase = OpenLibrary("expansion.library", 37);
-    static const ULONG makers[2] = { DALSIN, DALSIN_OLD };
+    static const ULONG makers[2] = { AMIGACHROME_MFR, AMIGACHROME_MFR_OLD };
     if (!ExpansionBase) return;
     for (int k = 0; k < 2; k++)
         for (int p = 0; p < 2; p++) {
