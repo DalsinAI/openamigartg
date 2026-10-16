@@ -124,7 +124,7 @@ int main(int argc, char *argv[])
     /* Paths */
     {
         char *base = SDL_GetBasePath();
-        char *pref = SDL_GetPrefPath("Dalsin", "sdlcheck");
+        char *pref = SDL_GetPrefPath("AmigaChrome", "sdlcheck");
         SDL_snprintf(line, sizeof(line), "base %s, prefs %s", base ? base : "(none)", pref ? pref : "(none)");
         report("paths", base != NULL, line);
         SDL_free(base);
