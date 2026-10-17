@@ -103,6 +103,8 @@ struct ogpu_vk_stats {
     unsigned long tri_gpu, tri_cpu, tri_declined;
     unsigned long tex_uploads, tex_checks, tex_hits;
     double core_px_ns, gpu_px_ns, round_trip_us;
+    double record_ms;       /* the CPU's time on TRIANGLES the GPU drew */
+    double wait_ms;         /* time spent waiting for the GPU (every submit) */
 };
 void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s);
 

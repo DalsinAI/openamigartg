@@ -14,6 +14,9 @@
  *   INOUT              GLSL's inout (empty in C, where arrays are pointers)
  *   VRAM(i), STAGE(i), TEXB(i), DATA(i)        the buffers' words
  *   XOR_VRAM(i, v), XOR_STAGE(i, v)            an atomic exclusive or
+ *   SH(i), SH0(i), XOR_SH(i, v)                the workgroup's shared words
+ *                                              (O3X_SHARED of them), as read,
+ *                                              and an atomic exclusive or
  *   PC(n)              push constant n (ogpu3d_layout.h's P3_)
  *   uint, bool, true, false, and struct o3x_level as a type name (C)
  * Integer arithmetic wraps modulo 2^32 (C builds with -fwrapv), shifts of
@@ -54,37 +57,96 @@ uint o3x_get(uint b, uint a, uint n) {
     return v;
 }
 
-/* The target, Z and stencil buffers are in video RAM or staging. A pixel's
- * bytes belong to this invocation alone, but a word may hold other pixels:
- * those words change by an atomic exclusive or of this pixel's bytes only. */
+/* ---- the tile's rows in shared memory --------------------------------------------------
+ * The target, Z and stencil buffers are in video RAM or staging. A tile's
+ * rows of each are read into shared memory before its triangles and
+ * written back after them: a row is up to 9 words (8 pixels of 4 bytes, not
+ * word aligned). Shared positions are bytes: word p >> 2, byte p & 3. A
+ * pixel's bytes belong to its invocation alone, but a word may hold other
+ * pixels: those words change by an atomic exclusive or of its bytes only. */
+#define O3X_ROW         9u
+#define O3X_SH_T        0u              /* the target's rows, 9 words each */
+#define O3X_SH_Z        72u             /* the Z buffer's */
+#define O3X_SH_S        144u            /* the stencil buffer's, 3 words each */
+#define O3X_SHARED      168
+
+uint o3x_sh_ld8(uint p) { return (SH(p >> 2u) >> ((p & 3u) << 3u)) & 255u; }
+
+uint o3x_sh_get(uint p, uint n) {
+    uint v = 0u, k;
+    if (n == 4u && (p & 3u) == 0u) return o3x_bswap(SH(p >> 2u));
+    for (k = 0u; k < n; k++) v = (v << 8u) | o3x_sh_ld8(p + k);
+    return v;
+}
+
+void o3x_sh_put(uint p, uint n, uint v) {
+    uint k;
+    if (n == 4u && (p & 3u) == 0u) { SH(p >> 2u) = o3x_bswap(v); return; }
+    for (k = 0u; k < n; k++) {
+        uint pk = p + k, sh = (pk & 3u) << 3u;
+        uint d = ((SH(pk >> 2u) >> sh) ^ (v >> ((n - 1u - k) << 3u))) & 255u;
+        if (d != 0u) XOR_SH(pk >> 2u, d << sh);
+    }
+}
+
 void o3x_xorw(uint b, uint w, uint v) {
     if (b == B3_VRAM) XOR_VRAM(w, v);
     else XOR_STAGE(w, v);
 }
 
-void o3x_put(uint b, uint a, uint n, uint v) {
-    uint wi, old, delta, k;
-    if (n == 4u && (a & 3u) == 0u) {
-        if (b == B3_VRAM) VRAM(a >> 2u) = o3x_bswap(v);
-        else STAGE(a >> 2u) = o3x_bswap(v);
-        return;
-    }
-    wi = a >> 2u;
-    old = o3x_ldw(b, wi);
-    delta = 0u;
-    for (k = 0u; k < n; k++) {
-        uint ak = a + k, sh, byte;
-        if ((ak >> 2u) != wi) {
-            if (delta != 0u) o3x_xorw(b, wi, delta);
-            wi = ak >> 2u;
-            old = o3x_ldw(b, wi);
-            delta = 0u;
+/* A tile row's bytes of one buffer: [a, e), pixels x0t .. x0t + 7 that are
+ * inside it; e <= a when there are none. */
+uint o3x_row_a(uint off, uint bpr, int y, int x0t, uint bpp) { return off + bpr * TOU(y) + TOU(x0t) * bpp; }
+uint o3x_row_e(uint off, uint bpr, int y, int x0t, uint bpp, int w) {
+    int x1 = x0t + OGPU3D_TILE < w ? x0t + OGPU3D_TILE : w;
+    return x1 <= x0t ? 0u : off + bpr * TOU(y) + TOU(x1) * bpp;
+}
+
+/* Load (store 0) or write back (store 1) one buffer's row: this invocation
+ * takes words lx and lx + 8 of it. */
+void o3x_row(uint b, uint off, uint bpr, uint bpp, int w, int h, int y, int x0t, uint base, uint lx, bool store) {
+    uint a, e, w0, n, k, i;
+    if (y >= h || x0t >= w) return;
+    a = o3x_row_a(off, bpr, y, x0t, bpp);
+    e = o3x_row_e(off, bpr, y, x0t, bpp, w);
+    w0 = a >> 2u;
+    n = ((e + 3u) >> 2u) - w0;
+    for (i = 0u; i < 2u; i++) {
+        k = lx + i * 8u;
+        if (k >= n) continue;
+        if (!store) {
+            uint v = o3x_ldw(b, w0 + k);
+            SH(base + k) = v;
+            SH0(base + k) = v;
+        } else {
+            uint v = SH(base + k), d = v ^ SH0(base + k);
+            if (d != 0u) {
+                /* the bytes of this word inside [a, e) */
+                uint lo = (w0 + k) << 2u, m = 0u, j;
+                for (j = 0u; j < 4u; j++) if (lo + j >= a && lo + j < e) m |= 255u << (j << 3u);
+                if (m == 0xFFFFFFFFu) {
+                    if (b == B3_VRAM) VRAM(w0 + k) = v;
+                    else STAGE(w0 + k) = v;
+                } else if ((d & m) != 0u) o3x_xorw(b, w0 + k, d & m);
+            }
         }
-        sh = (ak & 3u) << 3u;
-        byte = (v >> ((n - 1u - k) << 3u)) & 255u;
-        delta |= (((old >> sh) & 255u) ^ byte) << sh;
     }
-    if (delta != 0u) o3x_xorw(b, wi, delta);
+}
+
+void o3x_rows(uint wgx, uint wgy, uint lx, uint ly, bool store) {
+    int y = TOI(PC(P3_GY0)) + TOI(wgy) * OGPU3D_TILE + TOI(ly), x0t = TOI(PC(P3_GX0)) + TOI(wgx) * OGPU3D_TILE;
+    uint tf = PC(P3_TFMT), tb = tf == 3u ? 4u : tf == 2u ? 2u : 1u;
+    o3x_row(PC(P3_TBUF), PC(P3_TOFF), PC(P3_TBPR), tb, TOI(PC(P3_TW)), TOI(PC(P3_TH)), y, x0t, O3X_SH_T + ly * O3X_ROW, lx, store);
+    if (PC(P3_ZFMT) != 0u)
+        o3x_row(PC(P3_ZBUF), PC(P3_ZOFF), PC(P3_ZBPR), PC(P3_ZFMT) == 17u ? 4u : 2u, TOI(PC(P3_ZW)), TOI(PC(P3_ZH)), y, x0t,
+                O3X_SH_Z + ly * O3X_ROW, lx, store);
+    if (PC(P3_SON) != 0u)
+        o3x_row(PC(P3_SBUF), PC(P3_SOFF), PC(P3_SBPR), 1u, TOI(PC(P3_SW)), TOI(PC(P3_SH)), y, x0t, O3X_SH_S + ly * 3u, lx, store);
+}
+
+/* Where pixel (x, y) of a buffer is in shared memory, as a byte position. */
+uint o3x_pos(uint base, uint off, uint bpr, int y, int x, int lx, uint bpp) {
+    return (base << 2u) + ((off + bpr * TOU(y) + TOU(x - lx) * bpp) & 3u) + TOU(lx) * bpp;
 }
 
 /* ---- small helpers (ogpu_3d.c's o3_) ------------------------------------------------- */
@@ -307,11 +369,11 @@ uint o3x_logic(uint op, uint s, uint d) {
 
 /* ---- the target ----------------------------------------------------------------------- */
 
-void o3x_read_dst(uint S, uint b, uint a, uint fmt, INOUT int c[4]) {
+void o3x_read_dst(uint S, uint a, uint fmt, INOUT int c[4]) {
     uint pal, p0;
-    if (fmt == K3_ARGB32) { o3x_unpack(o3x_get(b, a, 4u), c); return; }
-    if (fmt == K3_RGB565) { o3x_from565(o3x_ld8(b, a), o3x_ld8(b, a + 1u), c); return; }
-    p0 = o3x_ld8(b, a);
+    if (fmt == K3_ARGB32) { o3x_unpack(o3x_sh_get(a, 4u), c); return; }
+    if (fmt == K3_RGB565) { o3x_from565(o3x_sh_ld8(a), o3x_sh_ld8(a + 1u), c); return; }
+    p0 = o3x_sh_ld8(a);
     pal = DATA(S + ST_PAL);
     if (pal != OGPU3D_NONE) o3x_unpack(o3x_get(B3_DATA, pal + p0 * 4u, 4u), c);
     else { c[0] = TOI(p0); c[1] = TOI(p0); c[2] = TOI(p0); c[3] = 255; }
@@ -330,25 +392,25 @@ uint o3x_to_raw(uint S, uint fmt, INOUT int c[4]) {
 
 uint o3x_bytes(uint fmt) { return fmt == K3_ARGB32 ? 4u : fmt == K3_RGB565 ? 2u : 1u; }
 
-uint o3x_raw_dst(uint b, uint a, uint fmt) { return o3x_get(b, a, o3x_bytes(fmt)); }
+uint o3x_raw_dst(uint a, uint fmt) { return o3x_sh_get(a, o3x_bytes(fmt)); }
 
-void o3x_write_raw(uint b, uint a, uint fmt, uint v) {
+void o3x_write_raw(uint a, uint fmt, uint v) {
     uint n = o3x_bytes(fmt);
-    o3x_put(b, a, n, n == 4u ? v : n == 2u ? v & 0xFFFFu : v & 255u);
+    o3x_sh_put(a, n, n == 4u ? v : n == 2u ? v & 0xFFFFu : v & 255u);
 }
 
-void o3x_write_px(uint S, uint b, uint a, uint fmt, INOUT int c[4]) {
+void o3x_write_px(uint S, uint a, uint fmt, INOUT int c[4]) {
     if (fmt == K3_ARGB32) {
-        o3x_put(b, a, 4u, ((TOU(c[3]) & 255u) << 24u) | ((TOU(c[0]) & 255u) << 16u) | ((TOU(c[1]) & 255u) << 8u)
+        o3x_sh_put(a, 4u, ((TOU(c[3]) & 255u) << 24u) | ((TOU(c[0]) & 255u) << 16u) | ((TOU(c[1]) & 255u) << 8u)
                           | (TOU(c[2]) & 255u));
         return;
     }
     if (fmt == K3_RGB565) {
         uint p0 = TOU((c[0] & 0xF8) | (c[1] >> 5)) & 255u, p1 = TOU(((c[1] & 0x1C) << 3) | (c[2] >> 3)) & 255u;
-        o3x_put(b, a, 2u, (p0 << 8u) | p1);
+        o3x_sh_put(a, 2u, (p0 << 8u) | p1);
         return;
     }
-    o3x_put(b, a, 1u, o3x_to_raw(S, fmt, c) & 255u);
+    o3x_sh_put(a, 1u, o3x_to_raw(S, fmt, c) & 255u);
 }
 
 /* ---- one pixel of one triangle: o3_span's loop body ------------------------------------- */
@@ -359,11 +421,11 @@ uint o3x_val(uint T, uint k, int dy, int dx) {
     return DATA(T + TR_ROW + k) + DATA(T + TR_GY + k) * TOU(dy) + DATA(T + TR_GX + k) * TOU(dx);
 }
 
-void o3x_pixel(uint T, int x, int y) {
+void o3x_pixel(uint T, int x, int y, int lx, uint ly) {
     int ys = TOI(DATA(T + TR_YS)), x0, x1, dy, dx, rx, f[4], Uc, Vc;
-    uint spw, S, mode, fl, fmt, tb, ta;
+    uint spw, S, mode, fl, fmt, ta;
     int sv;
-    uint sb, sa;
+    uint sa;
     if (y < ys || y >= TOI(DATA(T + TR_YE))) return;
     spw = DATA(DATA(T + TR_SPANS) + TOU(y - ys));
     x0 = TOI(spw & 0xFFFFu); x1 = TOI(spw >> 16u);
@@ -446,46 +508,46 @@ void o3x_pixel(uint T, int x, int y) {
         }
     }
     if ((mode & M_ATEST) != 0u && !o3x_cmp(DATA(S + ST_AFUNC), TOU(f[3]), DATA(S + ST_AREF))) return;
-    sv = 0; sb = PC(P3_SBUF); sa = 0u;
+    sv = 0; sa = 0u;
     if ((mode & M_STENCIL) != 0u) {
-        sa = PC(P3_SOFF) + PC(P3_SBPR) * TOU(y) + TOU(x);
-        sv = TOI(o3x_ld8(sb, sa));
-        if (!o3x_stencil_test(S, sv)) { o3x_put(sb, sa, 1u, TOU(o3x_stencil_op(S, DATA(S + ST_SFAIL), sv))); return; }
+        sa = o3x_pos(O3X_SH_S + ly * 3u, PC(P3_SOFF), PC(P3_SBPR), y, x, lx, 1u);
+        sv = TOI(o3x_sh_ld8(sa));
+        if (!o3x_stencil_test(S, sv)) { o3x_sh_put(sa, 1u, TOU(o3x_stencil_op(S, DATA(S + ST_SFAIL), sv))); return; }
     }
     if ((mode & M_ZTEST) != 0u) {
         int z = TOI(o3x_val(T, AT3_Z, dy, dx));
-        uint zu = z < 0 ? 0u : z > 0x3FFFFFFF ? 0x3FFFFFFFu : TOU(z), zb = PC(P3_ZBUF), za, zval;
+        uint zu = z < 0 ? 0u : z > 0x3FFFFFFF ? 0x3FFFFFFFu : TOU(z), za, zval;
         bool pass;
         zu <<= 2u;
         if (PC(P3_ZFMT) == K3_Z32) {
-            za = PC(P3_ZOFF) + PC(P3_ZBPR) * TOU(y) + TOU(x) * 4u;
+            za = o3x_pos(O3X_SH_Z + ly * O3X_ROW, PC(P3_ZOFF), PC(P3_ZBPR), y, x, lx, 4u);
             zval = zu;
-            pass = o3x_cmp(DATA(S + ST_ZFUNC), zval, o3x_get(zb, za, 4u));
-            if (pass && (mode & M_ZWRITE) != 0u) o3x_put(zb, za, 4u, zval);
+            pass = o3x_cmp(DATA(S + ST_ZFUNC), zval, o3x_sh_get(za, 4u));
+            if (pass && (mode & M_ZWRITE) != 0u) o3x_sh_put(za, 4u, zval);
         } else {
-            za = PC(P3_ZOFF) + PC(P3_ZBPR) * TOU(y) + TOU(x) * 2u;
+            za = o3x_pos(O3X_SH_Z + ly * O3X_ROW, PC(P3_ZOFF), PC(P3_ZBPR), y, x, lx, 2u);
             zval = zu >> 16u;
-            pass = o3x_cmp(DATA(S + ST_ZFUNC), zval, o3x_get(zb, za, 2u));
-            if (pass && (mode & M_ZWRITE) != 0u) o3x_put(zb, za, 2u, zval);
+            pass = o3x_cmp(DATA(S + ST_ZFUNC), zval, o3x_sh_get(za, 2u));
+            if (pass && (mode & M_ZWRITE) != 0u) o3x_sh_put(za, 2u, zval);
         }
-        if ((mode & M_STENCIL) != 0u) o3x_put(sb, sa, 1u, TOU(o3x_stencil_op(S, pass ? DATA(S + ST_SZPASS) : DATA(S + ST_SZFAIL), sv)));
+        if ((mode & M_STENCIL) != 0u) o3x_sh_put(sa, 1u, TOU(o3x_stencil_op(S, pass ? DATA(S + ST_SZPASS) : DATA(S + ST_SZFAIL), sv)));
         if (!pass) return;
     } else if ((mode & M_STENCIL) != 0u) {
-        o3x_put(sb, sa, 1u, TOU(o3x_stencil_op(S, DATA(S + ST_SZPASS), sv)));
+        o3x_sh_put(sa, 1u, TOU(o3x_stencil_op(S, DATA(S + ST_SZPASS), sv)));
     }
     /* blend or logic op, then the colour mask */
-    fmt = PC(P3_TFMT); tb = PC(P3_TBUF);
-    ta = PC(P3_TOFF) + PC(P3_TBPR) * TOU(y) + TOU(x) * o3x_bytes(fmt);
+    fmt = PC(P3_TFMT);
+    ta = o3x_pos(O3X_SH_T + ly * O3X_ROW, PC(P3_TOFF), PC(P3_TBPR), y, x, lx, o3x_bytes(fmt));
     if ((mode & M_LOGIC) != 0u) {
-        uint old = o3x_raw_dst(tb, ta, fmt), wm = DATA(S + ST_WMASK);
+        uint old = o3x_raw_dst(ta, fmt), wm = DATA(S + ST_WMASK);
         uint res = o3x_logic(DATA(S + ST_LOGICOP), o3x_to_raw(S, fmt, f), old);
-        o3x_write_raw(tb, ta, fmt, (res & wm) | (old & ~wm));
+        o3x_write_raw(ta, fmt, (res & wm) | (old & ~wm));
         return;
     }
     if ((mode & M_BLEND) != 0u) {
         int dc[4], j;
         uint bk = DATA(S + ST_BLEND);
-        o3x_read_dst(S, tb, ta, fmt, dc);
+        o3x_read_dst(S, ta, fmt, dc);
         if (fmt != K3_ARGB32) dc[3] = 255;
         if (bk == 1u) {
             int sa8 = f[3], da8 = 255 - f[3];
@@ -500,18 +562,21 @@ void o3x_pixel(uint T, int x, int y) {
             for (j = 0; j < 4; j++) f[j] = o3x_clamp255(o3x_m255(f[j], fs[j]) + o3x_m255(dc[j], fd[j]));
         }
     }
-    if ((mode & M_MASKALL) != 0u) o3x_write_px(S, tb, ta, fmt, f);
+    if ((mode & M_MASKALL) != 0u) o3x_write_px(S, ta, fmt, f);
     else {
-        uint old = o3x_raw_dst(tb, ta, fmt), wm = DATA(S + ST_WMASK);
-        o3x_write_raw(tb, ta, fmt, (o3x_to_raw(S, fmt, f) & wm) | (old & ~wm));
+        uint old = o3x_raw_dst(ta, fmt), wm = DATA(S + ST_WMASK);
+        o3x_write_raw(ta, fmt, (o3x_to_raw(S, fmt, f) & wm) | (old & ~wm));
     }
 }
 
-/* ---- one invocation: one pixel of a tile, every triangle on the tile's list ------------ */
+/* ---- one invocation: one pixel of a tile ------------------------------------------------
+ * In three steps with a barrier between them: the tile's rows into shared
+ * memory (o3x_rows, load), every triangle on the tile's list for this pixel
+ * (o3x_tile), the rows back (o3x_rows, store). */
 
 void o3x_tile(uint wgx, uint wgy, uint lx, uint ly) {
     int x = TOI(PC(P3_GX0)) + TOI(wgx) * OGPU3D_TILE + TOI(lx);
     int y = TOI(PC(P3_GY0)) + TOI(wgy) * OGPU3D_TILE + TOI(ly);
     uint b = PC(P3_BINS) + (wgy * PC(P3_GTW) + wgx) * 2u, first = DATA(b), n = DATA(b + 1u), i;
-    for (i = 0u; i < n; i++) o3x_pixel(DATA(first + i), x, y);
+    for (i = 0u; i < n; i++) o3x_pixel(DATA(first + i), x, y, TOI(lx), ly);
 }

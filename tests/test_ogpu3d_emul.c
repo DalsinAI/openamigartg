@@ -26,7 +26,7 @@
 typedef unsigned int uint;
 typedef struct o3x_level o3x_level;
 static uint *g_vram, *g_stage, *g_tex, *g_data;
-static uint g_pc[16];
+static uint g_pc[24], g_sh[168], g_sh0[168];
 #define TOU(x) ((uint)(x))
 #define TOI(x) ((int)(x))
 #define INOUT
@@ -37,6 +37,9 @@ static uint g_pc[16];
 #define XOR_VRAM(i, v) (g_vram[i] ^= (v))
 #define XOR_STAGE(i, v) (g_stage[i] ^= (v))
 #define PC(n) g_pc[n]
+#define SH(i) g_sh[i]
+#define SH0(i) g_sh0[i]
+#define XOR_SH(i, v) (g_sh[i] ^= (v))
 #include "../host/vulkan/ogpu3d_px.h"
 
 /* ---- memory ------------------------------------------------------------------------------- */
@@ -69,10 +72,14 @@ static void emu_dispatch(void *user, const unsigned int *pc, unsigned gx, unsign
     unsigned x, y, lx, ly;
     (void)user;
     memcpy(g_pc, pc, sizeof g_pc);
+    /* a workgroup's three steps, each for all its invocations: the barriers */
     for (y = 0; y < gy; y++)
-        for (x = 0; x < gx; x++)
-            for (ly = 0; ly < 8; ly++)
-                for (lx = 0; lx < 8; lx++) o3x_tile(x, y, lx, ly);
+        for (x = 0; x < gx; x++) {
+            memset(g_sh, 0xA5, sizeof g_sh);
+            for (ly = 0; ly < 8; ly++) for (lx = 0; lx < 8; lx++) o3x_rows(x, y, lx, ly, false);
+            for (ly = 0; ly < 8; ly++) for (lx = 0; lx < 8; lx++) o3x_tile(x, y, lx, ly);
+            for (ly = 0; ly < 8; ly++) for (lx = 0; lx < 8; lx++) o3x_rows(x, y, lx, ly, true);
+        }
     recorded++;
     dispatches++;
 }

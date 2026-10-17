@@ -94,6 +94,7 @@ struct ogpu3d_rec_stats {
     unsigned long tex_uploads, tex_checks, tex_hits;
     unsigned long staged_rows;
     unsigned long lost;         /* commands missing triangles: host memory ran out */
+    double record_ns;           /* time the CPU spent on TRIANGLES for the GPU (setup, spans, writing them out) */
     double core_px_ns, gpu_px_ns, round_trip_ns;   /* the costs it routes by */
 };
 void ogpu3d_rec_stats(const struct ogpu3d_rec *r, struct ogpu3d_rec_stats *s);

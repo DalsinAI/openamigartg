@@ -76,6 +76,7 @@ struct ogpu_vk {
     double round_trip_ns;
 #endif
     int bound;                  /* the pipeline cmd has bound: 1 the 2D one, 2 the 3D one */
+    double wait_ns;             /* time in submits' waits, all told */
     int recording;              /* cmd is open */
     long dispatches;            /* recorded since it opened */
     ogpu_u32 arena_used;
@@ -333,11 +334,10 @@ static void flush(struct ogpu_vk *vk) {
     vk->bound = 0;
     vk->arena_used = 0;
     vk->stats.submits++;
+    vk->wait_ns += now_ns() - t0;
 #ifdef OGPU_WITH_3D
     /* staged rows back to memory, now the GPU has drawn them */
     if (vk->rec) ogpu3d_rec_done(vk->rec, now_ns() - t0);
-#else
-    (void)t0;
 #endif
 }
 
@@ -825,9 +825,11 @@ void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s) {
         s->tri_gpu = r.gpu; s->tri_cpu = r.cpu; s->tri_declined = r.declined;
         s->tex_uploads = r.tex_uploads; s->tex_checks = r.tex_checks; s->tex_hits = r.tex_hits;
         s->core_px_ns = r.core_px_ns; s->gpu_px_ns = r.gpu_px_ns;
+        s->record_ms = r.record_ns / 1e6;
     }
     s->round_trip_us = vk->round_trip_ns / 1000.0;
 #endif
+    s->wait_ms = vk->wait_ns / 1e6;
 }
 
 /* ---- setting up ------------------------------------------------------------------- */
@@ -1146,6 +1148,7 @@ static int setup_3d(struct ogpu_vk *vk) {
         if (dt < vk->round_trip_ns) vk->round_trip_ns = dt;
     }
     vk->stats.submits = 0;
+    vk->wait_ns = 0;
     if (vk->failed) return 0;
     memset(&rc, 0, sizeof rc);
     rc.vram = vk->vram; rc.vram_size = vk->cfg.vram_size;
