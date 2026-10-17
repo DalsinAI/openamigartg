@@ -634,11 +634,13 @@ uses the host's driver through Vulkan:
   Mesa's lavapipe, with no GPU.
 - **Drawing in the board's own memory:** the runtime's 68k reaches video RAM
   directly, so the back end can take the runtime's memory (`host_vram`)
-  instead of its own. It imports it where the driver can
-  (`VK_EXT_external_memory_host`: RADV, lavapipe), or exports its own memory
-  and maps it over the runtime's (`VK_KHR_external_memory_fd`, dma-buf: V3DV
-  on the Pi 5), keeping what was there. `tools/gpu_check.sh` runs the golden
-  scenes each way on a machine's own GPU and installs nothing.
+  instead of its own. It exports its own memory and maps it over the
+  runtime's where the driver can (`VK_KHR_external_memory_fd`, dma-buf: RADV,
+  V3DV on the Pi 5), keeping what was there, or else imports the runtime's
+  (`VK_EXT_external_memory_host`: RADV, lavapipe). Mapping comes first since
+  17 October 2026: on daletop's RX 460 a GPU round trip takes about 90 µs
+  mapped against 340 µs imported (amigachrome #548). `tools/gpu_check.sh`
+  runs the golden scenes each way on a machine's own GPU and installs nothing.
 - **3D on the back end's core, for now** (17 October 2026): the compute
   shader draws the 2D commands. Stream v1.2's 3D range (TRIANGLES,
   RENDER3D, TEXENV, TEXTURE, DEPTH, CLEAR3D) runs on the C core inside the
