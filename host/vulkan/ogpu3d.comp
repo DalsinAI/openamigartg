@@ -1,0 +1,55 @@
+// Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
+// SPDX-License-Identifier: MIT
+//
+// OpenGPU's 3D range on the host's GPU: a compute rasteriser that colours
+// the pixels of the triangles ogpu_3d.c has set up, exactly as ogpu_3d.c
+// colours them (ogpu3d_px.h, shared with the host test that runs it on the
+// CPU). The layout of what it reads is in ogpu3d_layout.h; ogpu3d_rec.c
+// writes it. One workgroup is an 8x8 tile, one invocation a pixel.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) buffer Vram { uint vram[]; };
+layout(std430, set = 0, binding = 1) buffer Stage { uint stage[]; };
+layout(std430, set = 0, binding = 2) readonly buffer Tex { uint tex[]; };
+layout(std430, set = 0, binding = 3) readonly buffer Data { uint data[]; };
+
+layout(push_constant) uniform P { uint p[24]; } pc;
+
+shared uint tile_rows[168];      // O3X_SHARED: the tile's rows
+shared uint tile_rows0[168];     // as they were read
+
+#define TOU(x) uint(x)
+#define TOI(x) int(x)
+#define INOUT inout
+#define VRAM(i) vram[i]
+#define STAGE(i) stage[i]
+#define TEXB(i) tex[i]
+#define DATA(i) data[i]
+#define XOR_VRAM(i, v) atomicXor(vram[i], v)
+#define XOR_STAGE(i, v) atomicXor(stage[i], v)
+#define PC(n) pc.p[n]
+#define SH(i) tile_rows[i]
+#define SH0(i) tile_rows0[i]
+#define XOR_SH(i, v) atomicXor(tile_rows[i], v)
+#define LD_SH(i) atomicOr(tile_rows[i], 0u)
+#define LD_VRAM(i) atomicOr(vram[i], 0u)
+#define LD_STAGE(i) atomicOr(stage[i], 0u)
+#define TOF(x) float(x)
+#define FLOORF(x) floor(x)
+#define UMUL_EXT(x, y, hi, lo) umulExtended(x, y, hi, lo)
+
+#include "ogpu3d_px.h"
+
+void main() {
+    uint wx = gl_WorkGroupID.x, wy = gl_WorkGroupID.y, lx = gl_LocalInvocationID.x, ly = gl_LocalInvocationID.y;
+    o3x_rows(wx, wy, lx, ly, false);
+    memoryBarrierShared();
+    barrier();
+    o3x_tile(wx, wy, lx, ly);
+    memoryBarrierShared();
+    barrier();
+    o3x_rows(wx, wy, lx, ly, true);
+}
