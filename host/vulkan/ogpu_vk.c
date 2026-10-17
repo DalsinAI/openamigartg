@@ -14,11 +14,21 @@
  * (TRIANGLES, RENDER3D, TEXENV, TEXTURE, DEPTH, CLEAR3D) runs on it as on
  * the CPU path: the state lasts from run to run, and a reset starts it
  * afresh. Built without it, those opcodes are OGPU_ERR_BADOP, and
- * ogpu_vk_supports says so. */
+ * ogpu_vk_supports says so.
+ *
+ * Stream v1.2's FILL_BLEND, COMPOSITE's blend modes (OGPU_COMP_BLENDMODE),
+ * COMPOSITE_AFFINE and YUV are on the GPU path too; LINES_BLEND and
+ * POINTS_BLEND stay on the core (one GPU thread walking them waits on every
+ * pixel, as LINE does).
+ *
+ * Routing (docs/design/Design-OpenGPU-2D-On-The-GPU.md 5.2, in amigachrome):
+ * a command the GPU path takes is drawn there only where that is faster,
+ * its wait included (config's route, route_gpu below). */
 #define _DEFAULT_SOURCE  /* mmap's MAP_ANONYMOUS under -std=c99 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <vulkan/vulkan.h>
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/mman.h>
@@ -61,6 +71,8 @@ struct ogpu_vk {
     long dispatches;            /* recorded since it opened */
     ogpu_u32 arena_used;
     int failed;                 /* a submit failed: the GPU path is off */
+    int route;                  /* OGPU_VK_ROUTE_ in force */
+    double trip;                /* microseconds a submit and its wait take here (route_gpu) */
     int lost_now;               /* ... during this run, so its result is OGPU_ERR_DEVICE */
     int last_error;
     long error_word;
@@ -121,9 +133,12 @@ static int args_for(int op) {
     case OGPU_OP_PIXELS: return 6;
     case OGPU_OP_MASK: return 5;
     case OGPU_OP_COMPOSITE: return 7;
+    case OGPU_OP_FILL_BLEND: return 4;
+    case OGPU_OP_COMPOSITE_AFFINE: return 11;
+    case OGPU_OP_YUV: return 9;
     case OGPU_OP_FENCE: return 1;
     }
-    return -1;
+    return -1;     /* LINES_BLEND, POINTS_BLEND and the rest: the core's, length and all */
 }
 
 static int clip_rect(const struct ogpu_core *c, int *x, int *y, int *w, int *h, int *ox, int *oy) {
@@ -519,7 +534,10 @@ static int gpu_composite(struct ogpu_vk *vk, const ogpu_u8 *a) {
     if (t->format == OGPU_FMT_CLUT8 || s->format == OGPU_FMT_CLUT8) return 0;
     if (!bytes_per_pixel(s->format)) return 0;      /* a format the shader doesn't read: the core's */
     if ((flags & OGPU_COMP_ADD) && (flags & OGPU_COMP_IN)) return 0;
-    if (flags & ~(ogpu_u32)(OGPU_COMP_SRCALPHA | OGPU_COMP_BILINEAR | OGPU_COMP_MASK | OGPU_COMP_ADD | OGPU_COMP_IN))
+    /* v1.2's blend modes (SDL's copies), as the core's blend12 */
+    if ((flags & OGPU_COMP_BLENDMODE) && OGPU_COMP_MODE_OF(flags) > OGPU_BLEND_MUL) return 0;
+    if (flags & ~(ogpu_u32)(OGPU_COMP_SRCALPHA | OGPU_COMP_BILINEAR | OGPU_COMP_MASK | OGPU_COMP_ADD | OGPU_COMP_IN
+                            | (flags & OGPU_COMP_BLENDMODE ? OGPU_COMP_BLENDMODE | OGPU_COMP_MODE(7) : 0)))
         return 0;
     if (flags & OGPU_COMP_MASK) {
         ogpu_u32 mslot = rd32(a + 28), mxy = rd32(a + 32);
@@ -614,6 +632,321 @@ static int gpu_mask(struct ogpu_vk *vk, const ogpu_u8 *a) {
     return 1;
 }
 
+/* ---- v1.2 on the GPU --------------------------------------------------------------- */
+
+/* Formats v1.2's blends draw into on the GPU: the core's colour formats
+ * that the shader reads and writes. */
+static int blend_format(int format) { return format == OGPU_FMT_RGB565 || format == OGPU_FMT_ARGB32; }
+
+/* FILL_BLEND: an ARGB32 colour over a rectangle by a blend mode. */
+static int gpu_fill_blend(struct ogpu_vk *vk, const ogpu_u8 *a) {
+    ogpu_u32 xy = rd32(a), wh = rd32(a + 4), dst, args[A_COUNT];
+    int x = hi_s(xy), y = lo_s(xy), w = hi_u(wh), h = lo_u(wh), ox, oy, mode = (int)(rd32(a + 12) & OGPU_BLEND_MASK);
+    const struct ogpu_surface *t = gpu_target(vk, &dst);
+    if (!t || !blend_format(t->format) || mode > OGPU_BLEND_MUL) return 0;
+    if (!clip_rect(&vk->core, &x, &y, &w, &h, &ox, &oy)) return 1;
+    base_args(args, OGPU_OP_FILL_BLEND, dst, t);
+    set_rect(args, x, y, w, h, ox, oy);
+    args[A_FG] = rd32(a + 8);
+    args[A_MODE] = (ogpu_u32)mode;
+    dispatch_rect(vk, args, w, h, bytes_per_pixel(t->format));
+    return 1;
+}
+
+/* The drawable rectangle: the target, less the clip (as the core's bounds). */
+static void vk_bounds(const struct ogpu_core *c, int *x0, int *y0, int *x1, int *y1) {
+    const struct ogpu_surface *t = &c->slot[c->target];
+    *x0 = 0; *y0 = 0; *x1 = t->w; *y1 = t->h;
+    if (c->cx1 > c->cx0) {
+        if (c->cx0 > *x0) *x0 = c->cx0;
+        if (c->cy0 > *y0) *y0 = c->cy0;
+        if (c->cx1 < *x1) *x1 = c->cx1;
+        if (c->cy1 < *y1) *y1 = c->cy1;
+    }
+}
+
+typedef long long vk_s64;
+static long word_s32(ogpu_u32 v) { return v > 0x7FFFFFFFUL ? (long)((vk_s64)v - 0x100000000LL) : (long)v; }
+static int fits32(vk_s64 v) { return v > -0x7FFFFFFFLL && v < 0x7FFFFFFFLL; }
+
+/* COMPOSITE_AFFINE: the core's inverse matrix, bounds and each row's first
+ * source position, worked out here in 64 bits exactly as the core does; the
+ * rows' starts go to the arena, and the shader steps along each row. Left
+ * to the core whenever a step could leave 32 bits, the source shares bytes
+ * with what is drawn, or anything would be an error. */
+static int gpu_affine(struct ogpu_vk *vk, const ogpu_u8 *a) {
+    ogpu_u32 slot = rd32(a), sxy = rd32(a + 4), swh = rd32(a + 8), colour = rd32(a + 36), flags = rd32(a + 40), dst, args[A_COUNT];
+    long m00 = word_s32(rd32(a + 12)), m01 = word_s32(rd32(a + 16)), m02 = word_s32(rd32(a + 20));
+    long m10 = word_s32(rd32(a + 24)), m11 = word_s32(rd32(a + 28)), m12 = word_s32(rd32(a + 32));
+    const struct ogpu_surface *t = gpu_target(vk, &dst), *s;
+    int sx = hi_s(sxy), sy = lo_s(sxy), sw = hi_u(swh), sh = lo_u(swh), mode = (int)(flags & OGPU_BLEND_MASK);
+    int bx0, by0, bx1, by1, y, k, sbpp, dbpp, rows, cols;
+    vk_s64 det, i00, i01, i10, i11;
+    long minx = 0x7FFFFFFFL, miny = 0x7FFFFFFFL, maxx = -0x7FFFFFFFL, maxy = -0x7FFFFFFFL, so;
+    unsigned long need;
+    ogpu_u32 table, src, in_arena = 0;
+    if (!t || slot >= OGPU_MAX_SLOTS || !vk->core.slot[slot].pixels) return 0;
+    s = &vk->core.slot[slot];
+    if (!blend_format(t->format) || !blend_format(s->format) || mode > OGPU_BLEND_MUL) return 0;
+    if (!sw || !sh) return 1;
+    if (sx < 0 || sy < 0 || sx + sw > s->w || sy + sh > s->h) return 0;
+    if (sw >= 0x8000 || sh >= 0x8000) return 0;                      /* the shader's 16.16 sizes are 32-bit */
+    if (m00 >= 0x800000L || m00 <= -0x800000L || m01 >= 0x800000L || m01 <= -0x800000L
+        || m10 >= 0x800000L || m10 <= -0x800000L || m11 >= 0x800000L || m11 <= -0x800000L) return 0;
+    det = (vk_s64)m00 * m11 - (vk_s64)m01 * m10;
+    if (det == 0) return 1;
+    i00 = (vk_s64)m11 * 4294967296LL / det; i01 = -((vk_s64)m01 * 4294967296LL) / det;
+    i10 = -((vk_s64)m10 * 4294967296LL) / det; i11 = (vk_s64)m00 * 4294967296LL / det;
+    if (i00 >= 0x40000000LL || i00 <= -0x40000000LL || i01 >= 0x40000000LL || i01 <= -0x40000000LL
+        || i10 >= 0x40000000LL || i10 <= -0x40000000LL || i11 >= 0x40000000LL || i11 <= -0x40000000LL) return 0;
+    for (k = 0; k < 4; k++) {
+        long u = k & 1 ? (long)sw << 16 : 0, v = k & 2 ? (long)sh << 16 : 0;
+        long tx = (long)(((vk_s64)m00 * u + (vk_s64)m01 * v) / 65536) + m02;
+        long ty = (long)(((vk_s64)m10 * u + (vk_s64)m11 * v) / 65536) + m12;
+        if (tx < minx) minx = tx;
+        if (tx > maxx) maxx = tx;
+        if (ty < miny) miny = ty;
+        if (ty > maxy) maxy = ty;
+    }
+    vk_bounds(&vk->core, &bx0, &by0, &bx1, &by1);
+    if ((minx >> 16) > bx0) bx0 = (int)(minx >> 16);
+    if ((miny >> 16) > by0) by0 = (int)(miny >> 16);
+    if ((maxx >> 16) + 1 < bx1) bx1 = (int)(maxx >> 16) + 1;
+    if ((maxy >> 16) + 1 < by1) by1 = (int)(maxy >> 16) + 1;
+    if (bx1 <= bx0 || by1 <= by0) return 1;
+    rows = by1 - by0; cols = bx1 - bx0;
+    /* every step of every row in 32 bits: the ends of each row, and the steps */
+    if (!fits32(i00 * (cols - 1)) || !fits32(i10 * (cols - 1))) return 0;
+    sbpp = bytes_per_pixel(s->format); dbpp = bytes_per_pixel(t->format);
+    so = vram_off(vk, s->pixels, (unsigned long)(s->bpr * (s->h - 1) + (long)s->w * sbpp));
+    if (so >= 0) {
+        unsigned long s0 = (unsigned long)so + (unsigned long)(sy * s->bpr + (long)sx * sbpp);
+        unsigned long s1 = (unsigned long)so + (unsigned long)((sy + sh - 1) * s->bpr + (long)(sx + sw) * sbpp);
+        unsigned long d0 = dst + (unsigned long)(by0 * t->bpr + (long)bx0 * dbpp);
+        unsigned long d1 = dst + (unsigned long)((by1 - 1) * t->bpr + (long)bx1 * dbpp);
+        if (overlap(s0, s1, d0, d1)) return 0;      /* the core reads it as it draws */
+    }
+    need = (unsigned long)rows * 8 + (so >= 0 ? 0 : (unsigned long)sw * sbpp * (unsigned long)sh);
+    if (!arena_room(vk, need)) return 0;
+    /* two words a row, u and v, in the host's order (the GPU's: both little-endian) */
+    table = arena_take(vk, (unsigned long)rows * 8);
+    for (y = by0; y < by1; y++) {
+        vk_s64 dx = ((vk_s64)bx0 << 16) + 0x8000 - m02, dy = ((vk_s64)y << 16) + 0x8000 - m12;
+        vk_s64 u = (i00 * dx + i01 * dy) >> 16, v = (i10 * dx + i11 * dy) >> 16;
+        ogpu_u8 *e = vk->arena + table + (unsigned long)(y - by0) * 8;
+        if (!fits32(u) || !fits32(v) || !fits32(u + i00 * (cols - 1)) || !fits32(v + i10 * (cols - 1))) {
+            vk->arena_used = table;                 /* give the table back: the core draws it */
+            return 0;
+        }
+        memcpy(e, &(ogpu_u32){ (ogpu_u32)(long)u }, 4);
+        memcpy(e + 4, &(ogpu_u32){ (ogpu_u32)(long)v }, 4);
+    }
+    if (so >= 0) {
+        src = (ogpu_u32)so;
+    } else {
+        unsigned long rowb = (unsigned long)sw * sbpp;
+        int r;
+        src = arena_take(vk, rowb * (unsigned long)sh);
+        for (r = 0; r < sh; r++)
+            memcpy(vk->arena + src + (unsigned long)r * rowb, s->pixels + (long)(sy + r) * s->bpr + (long)sx * sbpp, rowb);
+        in_arena = 1;
+    }
+    base_args(args, OGPU_OP_COMPOSITE_AFFINE, dst, t);
+    set_rect(args, bx0, by0, cols, rows, 0, 0);
+    args[A_SRC] = src; args[A_SBUF] = in_arena ? SBUF_SRC_ARENA : 0; args[A_SFMT] = (ogpu_u32)s->format;
+    args[A_SBPR] = in_arena ? (ogpu_u32)((long)sw * sbpp) : (ogpu_u32)s->bpr;
+    args[A_SX] = in_arena ? 0 : (ogpu_u32)sx; args[A_SY] = in_arena ? 0 : (ogpu_u32)sy;
+    args[A_SW] = (ogpu_u32)sw; args[A_SH] = (ogpu_u32)sh;
+    args[A_STEPX] = (ogpu_u32)(long)i00; args[A_STEPY] = (ogpu_u32)(long)i10;
+    args[A_FIRST] = table; args[A_FG] = colour; args[A_MODE] = (ogpu_u32)mode;
+    args[A_FLAGS] = flags & (OGPU_AFF_SRCALPHA | OGPU_AFF_BILINEAR);
+    dispatch_rect(vk, args, cols, rows, dbpp);
+    return 1;
+}
+
+/* The bytes h rows of `last` bytes take at bpr apart, or 0 past 32 bits (as the core's span_len). */
+static int vk_span(ogpu_u32 bpr, int h, ogpu_u32 last, unsigned long *len) {
+    ogpu_u32 rows = (ogpu_u32)(h - 1);
+    if (rows && bpr > (0xFFFFFFFFUL - last) / rows) return 0;
+    *len = (unsigned long)bpr * rows + last;
+    return 1;
+}
+
+/* YUV: the core's checks, in its order; the planes read in place in video
+ * RAM or copied into the arena; the conversion per pixel on the GPU. */
+static int gpu_yuv(struct ogpu_vk *vk, const ogpu_u8 *a) {
+    ogpu_u32 ya = rd32(a), ybpr = rd32(a + 4), ua = rd32(a + 8), ubpr = rd32(a + 12), va = rd32(a + 16), vbpr = rd32(a + 20);
+    ogpu_u32 wh = rd32(a + 24), xy = rd32(a + 28), fmt = rd32(a + 32), dst, args[A_COUNT];
+    ogpu_u32 yo = 0, uo = 0, vo = 0, yin = 0, uin = 0, vin = 0;
+    const struct ogpu_surface *t = gpu_target(vk, &dst);
+    int layout = (int)(fmt & 255), space = (int)((fmt >> 8) & 255);
+    int w = hi_u(wh), h = lo_u(wh), x = hi_s(xy), y = lo_s(xy), ox, oy;
+    int packed = layout >= OGPU_YUV_YUY2 && layout <= OGPU_YUV_YVYU, semi = layout == OGPU_YUV_NV12 || layout == OGPU_YUV_NV21;
+    unsigned long ylen = 0, ulen = 0, vlen = 0;
+    if (!t || !blend_format(t->format) || layout < OGPU_YUV_I420 || layout > OGPU_YUV_YVYU || space > OGPU_YUV_JPEG) return 0;
+    if (!w || !h) return 1;
+    if ((w | h) & 1) return 0;
+    if (packed) {
+        if (ybpr < (ogpu_u32)w * 2 || ybpr > 0x01000000UL || !vk_span(ybpr, h, (ogpu_u32)w * 2, &ylen)) return 0;
+    } else {
+        if (ybpr < (ogpu_u32)w || ybpr > 0x01000000UL || !vk_span(ybpr, h, (ogpu_u32)w, &ylen)) return 0;
+        if (semi) {
+            if (ubpr < (ogpu_u32)w || ubpr > 0x01000000UL || !vk_span(ubpr, h / 2, (ogpu_u32)w, &ulen)) return 0;
+        } else {
+            if (ubpr < (ogpu_u32)w / 2 || ubpr > 0x01000000UL || !vk_span(ubpr, h / 2, (ogpu_u32)w / 2, &ulen)) return 0;
+            if (vbpr < (ogpu_u32)w / 2 || vbpr > 0x01000000UL || !vk_span(vbpr, h / 2, (ogpu_u32)w / 2, &vlen)) return 0;
+        }
+    }
+    if (!core_map(vk, ya, (ogpu_u32)ylen) || (ulen && !core_map(vk, ua, (ogpu_u32)ulen)) || (vlen && !core_map(vk, va, (ogpu_u32)vlen)))
+        return 0;
+    if (!arena_room(vk, upload_size(vk, ya, ylen) + (ulen ? upload_size(vk, ua, ulen) : 0) + (vlen ? upload_size(vk, va, vlen) : 0)))
+        return 0;
+    if (!clip_rect(&vk->core, &x, &y, &w, &h, &ox, &oy)) return 1;
+    if (reads_what_it_draws(vk, ya, ylen, dst, t, x, y, w, h) || (ulen && reads_what_it_draws(vk, ua, ulen, dst, t, x, y, w, h))
+        || (vlen && reads_what_it_draws(vk, va, vlen, dst, t, x, y, w, h))) return 0;
+    map_place(vk, ya, ylen, &yo, &yin);
+    if (ulen) map_place(vk, ua, ulen, &uo, &uin);
+    if (vlen) map_place(vk, va, vlen, &vo, &vin);
+    base_args(args, OGPU_OP_YUV, dst, t);
+    set_rect(args, x, y, w, h, ox, oy);
+    args[A_SRC] = yo; args[A_SBPR] = ybpr;
+    args[A_TABLE] = uo; args[A_BG] = ubpr;
+    args[A_PAD19] = vo; args[A_X0] = vbpr;           /* the shader's A_VSRC and A_VBPR */
+    args[A_SBUF] = (yin ? SBUF_SRC_ARENA : 0) | (uin ? SBUF_TABLE_ARENA : 0) | (vin ? SBUF_MASK_ARENA : 0);
+    args[A_MODE] = (ogpu_u32)layout | (ogpu_u32)space << 8;
+    dispatch_rect(vk, args, w, h, bytes_per_pixel(t->format));
+    return 1;
+}
+
+/* ---- routing ---------------------------------------------------------------------- */
+
+/* What a command costs, by kind: nanoseconds a pixel (a byte for FILL and
+ * COPY, which are bound by memory) on the core and on the GPU, and the
+ * microseconds a dispatch adds once others are recorded in the same
+ * command buffer. Measured on daletop's AMD RX 460 (RADV, video RAM mapped)
+ * and its host by amigachrome's tests/gpu/test_opengpu_2d_bench.sh, 17
+ * October 2026; a Pi 5 (V3DV) gets its own figures with GPU-5. */
+enum { K_FILL, K_COPY, K_BITS, K_PIXELS, K_COMP, K_BLEND, K_BILINEAR, K_YUV, K_LINE, K_COUNT };
+static const struct { double core, gpu, chain; } k_cost[K_COUNT] = {
+    { 0.13, 0.19, 5 },      /* FILL, INVERT: a byte (SetRast 1920x1080 32-bit: 1.0 ms core, 1.5 ms GPU) */
+    { 0.5, 0.35, 5 },       /* COPY: a byte (a 640x480 32-bit window back on screen: 0.6 ms core, 0.43 ms GPU) */
+    { 3, 0.5, 5 },          /* TEMPLATE, PATTERN: a pixel */
+    { 3.5, 0.6, 5 },        /* PIXELS: a pixel (with its upload) */
+    { 6, 0.5, 40 },         /* COMPOSITE, nearest, MASK: a pixel; chained dispatches cost about 40 us */
+    { 9, 0.6, 40 },         /* FILL_BLEND, COMPOSITE's blend modes, COMPOSITE_AFFINE nearest */
+    { 17.5, 0.9, 40 },      /* bilinear COMPOSITE and COMPOSITE_AFFINE (a 640x480 stretch: 5.4 ms core, 0.27 ms GPU) */
+    { 8, 0.6, 5 },          /* YUV */
+    { 7, 1400, 5 },         /* LINE, a pixel of its length: one GPU thread walks it, 140 us a line of 100 */
+};
+
+static double now_us(void) {
+#if defined(__unix__) || defined(__APPLE__)
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec * 1e6 + (double)t.tv_nsec / 1e3;
+#else
+    return (double)clock() * 1e6 / CLOCKS_PER_SEC;
+#endif
+}
+
+/* The pixels of a rectangle once clipped. */
+static double area(const struct ogpu_vk *vk, int x, int y, int w, int h) {
+    int ox, oy;
+    return clip_rect(&vk->core, &x, &y, &w, &h, &ox, &oy) ? (double)w * h : 0;
+}
+
+/* How much work a drawing command is (pixels, or bytes for FILL and COPY),
+ * and its kind. */
+static double work(const struct ogpu_vk *vk, int op, const ogpu_u8 *a, int *kind) {
+    const struct ogpu_surface *t = &vk->core.slot[vk->core.target];
+    double bpp = bytes_per_pixel(t->format) ? bytes_per_pixel(t->format) : 4;
+    ogpu_u32 f;
+    switch (op) {
+    case OGPU_OP_FILL: case OGPU_OP_INVERT:
+        *kind = K_FILL; return area(vk, hi_s(rd32(a)), lo_s(rd32(a)), hi_u(rd32(a + 4)), lo_u(rd32(a + 4))) * bpp;
+    case OGPU_OP_COPY:
+        *kind = K_COPY; return area(vk, hi_s(rd32(a + 8)), lo_s(rd32(a + 8)), hi_u(rd32(a + 12)), lo_u(rd32(a + 12))) * bpp;
+    case OGPU_OP_TEMPLATE:
+        *kind = K_BITS; return area(vk, hi_s(rd32(a + 12)), lo_s(rd32(a + 12)), hi_u(rd32(a + 16)), lo_u(rd32(a + 16)));
+    case OGPU_OP_PATTERN:
+        *kind = K_BITS; return area(vk, hi_s(rd32(a + 8)), lo_s(rd32(a + 8)), hi_u(rd32(a + 12)), lo_u(rd32(a + 12)));
+    case OGPU_OP_MASK:
+        *kind = K_COMP; return area(vk, hi_s(rd32(a + 8)), lo_s(rd32(a + 8)), hi_u(rd32(a + 12)), lo_u(rd32(a + 12)));
+    case OGPU_OP_PIXELS:
+        *kind = K_PIXELS; return area(vk, hi_s(rd32(a + 16)), lo_s(rd32(a + 16)), hi_u(rd32(a + 20)), lo_u(rd32(a + 20)));
+    case OGPU_OP_LINE: {
+        int dx = hi_s(rd32(a + 4)) - hi_s(rd32(a)), dy = lo_s(rd32(a + 4)) - lo_s(rd32(a));
+        *kind = K_LINE;
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        return (double)(dx > dy ? dx : dy) + 1;
+    }
+    case OGPU_OP_COMPOSITE:
+        f = rd32(a + 24);
+        *kind = f & OGPU_COMP_BILINEAR ? K_BILINEAR : f & OGPU_COMP_BLENDMODE ? K_BLEND : K_COMP;
+        return area(vk, hi_s(rd32(a + 12)), lo_s(rd32(a + 12)), hi_u(rd32(a + 16)), lo_u(rd32(a + 16)));
+    case OGPU_OP_FILL_BLEND:
+        *kind = K_BLEND; return area(vk, hi_s(rd32(a)), lo_s(rd32(a)), hi_u(rd32(a + 4)), lo_u(rd32(a + 4)));
+    case OGPU_OP_COMPOSITE_AFFINE: {
+        /* the transformed source's bounding box, at most the target */
+        double sw = hi_u(rd32(a + 8)), sh = lo_u(rd32(a + 8)), w, h;
+        double m00 = (double)word_s32(rd32(a + 12)), m01 = (double)word_s32(rd32(a + 16));
+        double m10 = (double)word_s32(rd32(a + 24)), m11 = (double)word_s32(rd32(a + 28));
+        w = ((m00 < 0 ? -m00 : m00) * sw + (m01 < 0 ? -m01 : m01) * sh) / 65536;
+        h = ((m10 < 0 ? -m10 : m10) * sw + (m11 < 0 ? -m11 : m11) * sh) / 65536;
+        if (w > t->w) w = t->w;
+        if (h > t->h) h = t->h;
+        *kind = rd32(a + 40) & OGPU_AFF_BILINEAR ? K_BILINEAR : K_BLEND;
+        return w * h;
+    }
+    case OGPU_OP_YUV:
+        *kind = K_YUV; return area(vk, hi_s(rd32(a + 28)), lo_s(rd32(a + 28)), hi_u(rd32(a + 24)), lo_u(rd32(a + 24)));
+    }
+    *kind = K_FILL;
+    return 0;
+}
+
+/* 1 when the command, which the GPU path may take, is to go there: always
+ * with OGPU_VK_ROUTE_GPU, never with OGPU_VK_ROUTE_CORE, and by cost
+ * otherwise. With nothing recorded, the GPU costs a round trip and the core
+ * no wait; with something recorded, the GPU only its dispatch, and the core
+ * a wait for what is recorded first. */
+static int route_gpu(struct ogpu_vk *vk, int op, const ogpu_u8 *a) {
+    double n, core, gpu;
+    int kind;
+    if (vk->route == OGPU_VK_ROUTE_GPU) return 1;
+    if (vk->route == OGPU_VK_ROUTE_CORE) return 0;
+    n = work(vk, op, a, &kind);
+    core = n * k_cost[kind].core / 1000;
+    gpu = n * k_cost[kind].gpu / 1000;
+    if (vk->recording) { gpu += k_cost[kind].chain; core += vk->trip; }
+    else gpu += vk->trip;
+    return gpu < core;
+}
+
+/* This device's round trip: a 1-pixel fill in the arena, submitted and
+ * waited for; the median of five, after one to warm up. */
+static void measure_trip(struct ogpu_vk *vk) {
+    ogpu_u32 args[A_COUNT];
+    double t[5], x;
+    int i, j;
+    struct ogpu_vk_stats keep = vk->stats;
+    memset(args, 0, sizeof args);
+    args[A_OP] = OGPU_OP_FILL; args[A_DST] = 0; args[A_DBPR] = 4; args[A_DFMT] = OGPU_FMT_ARGB32;
+    args[A_W] = 1; args[A_H] = 1; args[A_SBUF] = SBUF_DST_ARENA; args[A_TABLE] = 0xFFFFFFFFUL;
+    for (i = -1; i < 5; i++) {
+        double t0 = now_us();
+        dispatch(vk, args, 1, 1);
+        flush(vk);
+        if (i >= 0) t[i] = now_us() - t0;
+    }
+    for (i = 1; i < 5; i++)
+        for (j = i; j > 0 && t[j - 1] > t[j]; j--) { x = t[j]; t[j] = t[j - 1]; t[j - 1] = x; }
+    vk->trip = t[2];
+    vk->stats = keep;
+    vk->stats.trip_us = (unsigned long)(vk->trip + 0.5);
+}
+
 static int gpu_draw(struct ogpu_vk *vk, int op, const ogpu_u8 *a) {
     switch (op) {
     case OGPU_OP_FILL: return gpu_fill(vk, a, 0);
@@ -625,6 +958,9 @@ static int gpu_draw(struct ogpu_vk *vk, int op, const ogpu_u8 *a) {
     case OGPU_OP_PIXELS: return gpu_pixels(vk, a);
     case OGPU_OP_MASK: return gpu_mask(vk, a);
     case OGPU_OP_COMPOSITE: return gpu_composite(vk, a);
+    case OGPU_OP_FILL_BLEND: return gpu_fill_blend(vk, a);
+    case OGPU_OP_COMPOSITE_AFFINE: return gpu_affine(vk, a);
+    case OGPU_OP_YUV: return gpu_yuv(vk, a);
     }
     return 0;
 }
@@ -645,9 +981,14 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
             if (vk->last_error == OGPU_OK) { vk->last_error = OGPU_ERR_BADLEN; vk->error_word = at; }
             break;
         }
-        if (!vk->failed && need >= 0 && op >= OGPU_OP_FILL && op < OGPU_OP_FENCE
-            && vk->core.target >= 0 && vk->core.slot[vk->core.target].pixels
-            && gpu_draw(vk, op, stream + at * 4 + 4)) {
+        int drawable = !vk->failed && need >= 0 && op >= OGPU_OP_FILL && op < OGPU_OP_FENCE
+                       && vk->core.target >= 0 && vk->core.slot[vk->core.target].pixels;
+        ogpu_u32 dst;
+        if (drawable && gpu_target(vk, &dst) && !route_gpu(vk, op, stream + at * 4 + 4)) {
+            drawable = 0;           /* cheaper on the core */
+            vk->stats.routed++;
+        }
+        if (drawable && gpu_draw(vk, op, stream + at * 4 + 4)) {
             done++;
         } else {
             /* State commands change no pixels; anything else waits for the GPU. */
@@ -699,7 +1040,7 @@ int ogpu_vk_lost(const struct ogpu_vk *vk) { return vk->failed; }
 ogpu_u8 *ogpu_vk_vram(struct ogpu_vk *vk) { return vk->vram; }
 const char *ogpu_vk_vram_mode(struct ogpu_vk *vk) { return vk->vram_mode; }
 const char *ogpu_vk_device(struct ogpu_vk *vk) { return vk->name; }
-void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s) { *s = vk->stats; }
+void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s) { *s = vk->stats; s->route = vk->route; }
 
 /* ---- setting up ------------------------------------------------------------------- */
 
@@ -1075,6 +1416,12 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
     if ((r = vkAllocateCommandBuffers(vk->dev, &cbi, &vk->cmd)) != VK_SUCCESS) { fail(err, errlen, "vkAllocateCommandBuffers", r); goto bad; }
     if ((r = vkCreateFence(vk->dev, &fi, 0, &vk->done)) != VK_SUCCESS) { fail(err, errlen, "vkCreateFence", r); goto bad; }
 
+    vk->route = vk->cfg.route;
+    if (vk->route == OGPU_VK_ROUTE_COST && getenv("OGPU_VK_ROUTE")) {
+        const char *r = getenv("OGPU_VK_ROUTE");
+        vk->route = !strcmp(r, "gpu") ? OGPU_VK_ROUTE_GPU : !strcmp(r, "core") ? OGPU_VK_ROUTE_CORE : OGPU_VK_ROUTE_COST;
+    }
+    if (vk->route == OGPU_VK_ROUTE_COST) measure_trip(vk);
     core_afresh(vk);
     vk->core.map = core_map;
     vk->core.fence = core_fence;

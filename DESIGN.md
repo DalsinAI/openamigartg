@@ -652,6 +652,26 @@ uses the host's driver through Vulkan:
   for the GPU APIs' range (OGPU_OP_VIRGL) it is FULL when the caller gave
   the back end an `ext`, which the run hands those commands to.
   Before this, they were OGPU_ERR_BADOP under Vulkan.
+- **Each command where it is faster** (17 October 2026; amigachrome's
+  `docs/design/Design-OpenGPU-2D-On-The-GPU.md` 5.2, the user's decision 6).
+  On a card in a PCIe slot, plain 2D is faster on the host's CPU than on a
+  GPU drawing into host memory, and a GPU round trip costs 100 µs or more,
+  so the back end routes by cost (`route` in its config, or
+  `OGPU_VK_ROUTE=cost|gpu|core`): a command the GPU path takes goes there
+  only when that is faster, its wait included. The round trip is measured
+  on the device when the back end starts; the costs a pixel are those
+  measured on daletop's RX 460 and its host. With nothing recorded the GPU
+  costs a round trip; with GPU work recorded, a command for the core costs
+  a wait. `ogpu_vk_stats` counts what went where (`routed`: what the cost
+  sent to the core). Results are the same whichever way, and `OGPU_Query`
+  still answers FULL for "done exactly". A Pi 5's figures come with GPU-5.
+- **Stream v1.2 on the GPU path** (17 October 2026): FILL_BLEND,
+  COMPOSITE's blend modes (`OGPU_COMP_BLENDMODE`, SDL's copies),
+  COMPOSITE_AFFINE (the host works out the inverse and each row's first
+  source position in 64 bits as the core does; the shader steps along the
+  row in 32, and the host leaves anything that could overflow to the core)
+  and YUV, each as `ogpu_core.c` does it. LINES_BLEND and POINTS_BLEND stay
+  on the core.
 
 ### Compute for TLS: AmiSSL's maths through OpenGPU
 
