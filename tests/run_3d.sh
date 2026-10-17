@@ -13,7 +13,7 @@ OUT=${OUT:-$HERE/../build/tests}
 OGPU="$HERE/../library/opengpu"
 mkdir -p "$OUT"
 cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined \
-    -o "$OUT/test_3d" "$HERE/test_3d.c" "$OGPU/ogpu_3d.c" "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c" "$OGPU/ogpu_build3d.c" -lm
+    -o "$OUT/test_3d" "$HERE/test_3d.c" "$HERE/golden_scene_3d.c" "$OGPU/ogpu_3d.c" "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c" "$OGPU/ogpu_build3d.c" -lm
 "$OUT/test_3d" "$HERE/golden/opengpu-3d.txt"
 STOVE=${STOVE:-$HOME/AmigaChrome/stoves/os32}
 CC68K=${CC68K:-$STOVE/prefix/bin/m68k-amigaos-gcc}

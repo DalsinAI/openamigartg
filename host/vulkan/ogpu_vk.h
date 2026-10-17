@@ -12,7 +12,12 @@
  * A command the GPU path doesn't take (a target outside video RAM or not
  * aligned to its pixels, a composite that reads what it writes, anything
  * that would be an error) runs on the C core after the GPU has finished, so
- * results and errors are always the core's. */
+ * results and errors are always the core's.
+ *
+ * Stream v1.2's 3D range (0x0030-0x003F) runs on that core too, with 3D
+ * state of its own, when ogpu_vk.c is built with OGPU_WITH_3D, as
+ * ogpu_core.c is for it, and ogpu_3d.c is linked. Without it, those
+ * opcodes are OGPU_ERR_BADOP and ogpu_vk_supports answers OGPU_NONE. */
 #ifndef OGPU_VK_H
 #define OGPU_VK_H
 
@@ -34,9 +39,11 @@ struct ogpu_vk_config {
     const char *device;
     /* Video RAM the caller already has (the runtime's board memory, which
      * its 68k reaches directly), or 0 for the back end's own. The GPU then
-     * draws in place: the memory is imported (VK_EXT_external_memory_host,
-     * RADV and lavapipe), or the GPU's memory is exported and mapped over it
-     * (VK_KHR_external_memory_fd, V3DV on the Pi 5), keeping what was there.
+     * draws in place: the GPU's memory is exported and mapped over it
+     * (VK_KHR_external_memory_fd: RADV, V3DV on the Pi 5), keeping what was
+     * there, or else the memory is imported (VK_EXT_external_memory_host:
+     * RADV, lavapipe). Mapped first: on daletop's RX 460 a GPU round trip
+     * takes about 90 us mapped against 340 us imported.
      * It must be page aligned and vram_size a multiple of the page size.
      * OGPU_VK_HOSTMEM=import or map tries only that way. */
     ogpu_u8 *host_vram;
@@ -66,11 +73,21 @@ const char *ogpu_vk_vram_mode(struct ogpu_vk *vk);
  * commands done; the GPU's work is finished when it returns. Slots, the
  * target and the clip carry over from run to run, as the core's do. */
 long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words);
-/* Forget the slots, the target and the clip, as a board reset does (the
- * GPU's work is finished first; video RAM is left as it is). */
+/* Forget the slots, the target, the clip and the 3D state, as a board
+ * reset does (the GPU's work is finished first; video RAM is left as it is). */
 void ogpu_vk_reset(struct ogpu_vk *vk);
+/* OGPU_FULL, OGPU_PARTIAL or OGPU_NONE for an opcode into a format: what a
+ * run carries out, on the GPU or on the core here. As ogpu_core_supports,
+ * but OGPU_NONE for the 3D range when built without OGPU_WITH_3D, and for
+ * OGPU_OP_EXT_FIRST..LAST (OGPU_OP_VIRGL) OGPU_FULL when the config has an
+ * ext, which carries them out (whether it has the API behind one, such as
+ * virglrenderer, is the caller's to say), else OGPU_NONE. */
+int ogpu_vk_supports(const struct ogpu_vk *vk, int op, int format);
 int ogpu_vk_last_error(const struct ogpu_vk *vk);      /* OGPU_OK, or the first error */
 long ogpu_vk_error_word(const struct ogpu_vk *vk);
+/* 1 once a submit has failed (the device lost; that run's error is
+ * OGPU_ERR_DEVICE): from then on the core here draws everything. */
+int ogpu_vk_lost(const struct ogpu_vk *vk);
 
 struct ogpu_vk_stats {
     unsigned long gpu;      /* drawing commands the GPU did */
