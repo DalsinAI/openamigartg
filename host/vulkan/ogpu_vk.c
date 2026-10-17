@@ -1003,13 +1003,14 @@ static int gpu_yuv(struct ogpu_vk *vk, const ogpu_u8 *a) {
  * command buffer. Measured on daletop's AMD RX 460 (RADV, video RAM mapped)
  * and its host by amigachrome's tests/gpu/test_opengpu_2d_bench.sh, 17
  * October 2026; a Pi 5 (V3DV) gets its own figures with GPU-5. */
-enum { K_FILL, K_COPY, K_BITS, K_PIXELS, K_COMP, K_BLEND, K_BILINEAR, K_YUV, K_LINE, K_COUNT };
+enum { K_FILL, K_COPY, K_BITS, K_PIXELS, K_COMP, K_COMPV, K_BLEND, K_BILINEAR, K_YUV, K_LINE, K_COUNT };
 static const struct { double core, gpu, chain; } k_cost[K_COUNT] = {
     { 0.13, 0.19, 5 },      /* FILL, INVERT: a byte (SetRast 1920x1080 32-bit: 1.0 ms core, 1.5 ms GPU) */
     { 0.5, 0.42, 5 },       /* COPY: a byte (a 640x480 32-bit window back on screen: 0.52 ms core, 0.5 ms GPU) */
     { 2, 0.5, 5 },          /* TEMPLATE, PATTERN: a pixel (a 300x200 area pattern: 0.11 ms core) */
     { 3, 1.8, 5 },          /* PIXELS: a pixel, with its upload */
     { 6, 2, 40 },           /* COMPOSITE nearest, MASK, with the source's upload; chained dispatches cost about 40 us */
+    { 6, 0.6, 40 },         /* COMPOSITE nearest from video RAM (no upload; 100 32x32 sprites in one list: 0.27 ms) */
     { 9, 0.6, 40 },         /* FILL_BLEND, COMPOSITE's blend modes, COMPOSITE_AFFINE nearest (300x200 FILL_BLEND: 0.54 ms core) */
     { 17.5, 1.1, 40 },      /* bilinear COMPOSITE and COMPOSITE_AFFINE (a 640x480 stretch: 5.4 ms core, 0.34 ms GPU) */
     { 6, 1, 5 },            /* YUV (a 640x480 I420 frame: 1.9 ms core, 0.3 ms GPU) */
@@ -1058,9 +1059,13 @@ static double work(const struct ogpu_vk *vk, int op, const ogpu_u8 *a, int *kind
         if (dy < 0) dy = -dy;
         return (double)(dx > dy ? dx : dy) + 1;
     }
-    case OGPU_OP_COMPOSITE:
+    case OGPU_OP_COMPOSITE: {
+        ogpu_u32 slot = rd32(a);
+        const struct ogpu_surface *s = slot < OGPU_MAX_SLOTS && vk->core.slot[slot].pixels ? &vk->core.slot[slot] : 0;
         f = rd32(a + 24);
-        *kind = f & OGPU_COMP_BILINEAR ? K_BILINEAR : f & OGPU_COMP_BLENDMODE ? K_BLEND : K_COMP;
+        *kind = f & OGPU_COMP_BILINEAR ? K_BILINEAR : f & OGPU_COMP_BLENDMODE ? K_BLEND
+              : s && vram_off(vk, s->pixels, 1) >= 0 ? K_COMPV : K_COMP;
+    }
         return area(vk, hi_s(rd32(a + 12)), lo_s(rd32(a + 12)), hi_u(rd32(a + 16)), lo_u(rd32(a + 16)));
     case OGPU_OP_FILL_BLEND:
         *kind = K_BLEND; return area(vk, hi_s(rd32(a)), lo_s(rd32(a)), hi_u(rd32(a + 4)), lo_u(rd32(a + 4)));
@@ -1113,8 +1118,12 @@ static void run_ahead(const struct ogpu_vk *vk, const ogpu_u8 *stream, long at, 
  * with OGPU_VK_ROUTE_GPU, never with OGPU_VK_ROUTE_CORE, and by cost
  * otherwise. With nothing recorded, the GPU costs a round trip and the core
  * no wait (for a command a composite list takes, the whole run of them a
- * list would take is weighed); with something recorded, the GPU only its
- * dispatch, and the core a wait for what is recorded first. */
+ * list would take is weighed), and the GPU has to be clearly faster (by
+ * ROUTE_MARGIN: the estimates are within about 15% of the bench's figures,
+ * and the GPU should never lose by more than the noise); with something
+ * recorded, the GPU only its dispatch, and the core a wait for what is
+ * recorded first. */
+#define ROUTE_MARGIN 1.2
 static int route_gpu(struct ogpu_vk *vk, int op, const ogpu_u8 *a, const ogpu_u8 *stream, long at, long words) {
     double n, core, gpu;
     int kind;
@@ -1122,7 +1131,7 @@ static int route_gpu(struct ogpu_vk *vk, int op, const ogpu_u8 *a, const ogpu_u8
     if (vk->route == OGPU_VK_ROUTE_CORE) return 0;
     if (!vk->recording && !vk->list_n && vk->list && listable((ogpu_u32)op)) {
         run_ahead(vk, stream, at, words, &core, &gpu);
-        return gpu + vk->trip < core;
+        return (gpu + vk->trip) * ROUTE_MARGIN < core;
     }
     n = work(vk, op, a, &kind);
     core = n * k_cost[kind].core / 1000;
@@ -1132,8 +1141,9 @@ static int route_gpu(struct ogpu_vk *vk, int op, const ogpu_u8 *a, const ogpu_u8
         gpu += vk->list_n && (op == OGPU_OP_FILL || op == OGPU_OP_INVERT || op == OGPU_OP_COMPOSITE || op == OGPU_OP_COMPOSITE_AFFINE
                               || op == OGPU_OP_FILL_BLEND) ? 2 : k_cost[kind].chain;
         core += vk->trip;
-    } else gpu += vk->trip;
-    return gpu < core;
+        return gpu < core;
+    }
+    return (gpu + vk->trip) * ROUTE_MARGIN < core;
 }
 
 /* This device's round trip: a 1-pixel fill in the arena, submitted and
