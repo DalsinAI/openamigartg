@@ -583,6 +583,48 @@ static void test_3d(const char *golden) {
 }
 #endif
 
+/* ---- the composite list ------------------------------------------------------------- */
+
+/* SDL-shaped frames: a clear and sprites in one list; a composite that reads
+ * what the list wrote (a second surface over the same bytes) and a blend
+ * that writes what that composite read, each of which must end the list;
+ * and more sprites than one list holds. All against the core. */
+static void test_list(void) {
+    const unsigned long win = VBASE + 0x10000, tex = VBASE + 0x40000;
+    struct ogpu_vk_stats s0, s1;
+    int i, round;
+    noise_both(1, 0, (long)VSIZE);
+    for (i = 0; i < 16 * 16; i++) {      /* the texture's alpha: clear, solid and between */
+        vram_ref[0x40000 + i * 4] = vram_vk[0x40000 + i * 4] = (ogpu_u8)(i % 3 == 0 ? 0 : i % 3 == 1 ? 255 : i);
+    }
+    for (round = 0; round < 3; round++) {
+        int sprites = round == 2 ? 300 : 40;
+        ogpu_vk_stats(V, &s0);
+        begin();
+        ogpu_surface(&B, 0, win, 160 * 4, 160, 100, OGPU_FMT_ARGB32);
+        ogpu_surface(&B, 1, tex, 16 * 4, 16, 16, OGPU_FMT_ARGB32);
+        ogpu_surface(&B, 2, win, 160 * 4, 160, 100, OGPU_FMT_ARGB32);      /* the window again, as a source */
+        ogpu_target(&B, 0);
+        ogpu_fill(&B, 0, 0, 160, 100, 0xFF203040UL);
+        for (i = 0; i < sprites; i++)
+            ogpu_composite(&B, 1, 0, 0, 16, 16, (int)(rnd() % 150), (int)(rnd() % 90), 16, 16, 255,
+                           round == 1 ? OGPU_COMP_SRCALPHA | OGPU_COMP_BLENDMODE | OGPU_COMP_MODE(rnd() % 5) : OGPU_COMP_SRCALPHA);
+        ogpu_composite(&B, 2, 0, 0, 40, 30, 100, 60, 40, 30, 255, 0);       /* reads what the list wrote */
+        ogpu_fill_blend(&B, 0, 0, 40, 30, 0x80FF0000UL, OGPU_BLEND_BLEND);  /* writes what that read */
+        for (i = 0; i < 10; i++)
+            ogpu_composite(&B, 1, 0, 0, 16, 16, (int)(rnd() % 150), (int)(rnd() % 90), 32, 24, 200, OGPU_COMP_SRCALPHA | OGPU_COMP_BILINEAR);
+        ogpu_fence(&B, 7);
+        CHECK(run_both(round == 2 ? "a list of 300 sprites" : round ? "a list of sprites in blend modes" : "a list of sprites"),
+              "composite list, round %d", round);
+        ogpu_vk_stats(V, &s1);
+        /* the clear and the sprites; the read ends that list, and the
+         * write after the read ends the read's own (one command: sent
+         * alone); the blend and the stretches; 300 sprites need two lists */
+        CHECK(s1.lists - s0.lists >= (round == 2 ? 3UL : 2UL), "round %d: %lu lists", round, s1.lists - s0.lists);
+        CHECK(s1.listed - s0.listed >= (unsigned long)sprites, "round %d: %lu commands in lists", round, s1.listed - s0.listed);
+    }
+}
+
 /* ---- routing by cost ---------------------------------------------------------------- */
 
 /* A back end routing by cost (OGPU_VK_ROUTE_COST, the runtime's default)
@@ -720,6 +762,7 @@ int main(int argc, char **argv) {
     C.map = map_ref; C.fence = fence_ref; C.user = 0;
     test_xrgb32();
     test_random(rounds);
+    test_list();
     test_supports();
 #ifdef OGPU_WITH_3D
     test_3d(argc > 4 ? argv[4] : 0);
@@ -730,8 +773,8 @@ int main(int argc, char **argv) {
     if (getenv("OGPU_VK_ROUTE")) printf("opengpu vulkan: OGPU_VK_ROUTE is set: routing by cost not tested\n");
     else test_route(rounds / 4 > 50 ? rounds / 4 : 50);
     ogpu_vk_stats(V, &st);
-    printf("opengpu vulkan: golden scene %08lx and %08lx; %lu commands on the GPU, %lu on the core, %lu submits; %s\n",
-           golden_v, golden_r, st.gpu, st.cpu, st.submits, failures ? "FAILED" : "all tests passed");
+    printf("opengpu vulkan: golden scene %08lx and %08lx; %lu commands on the GPU (%lu of them in %lu composite lists), %lu on the core, %lu submits; %s\n",
+           golden_v, golden_r, st.gpu, st.listed, st.lists, st.cpu, st.submits, failures ? "FAILED" : "all tests passed");
     ogpu_vk_destroy(V);
     return failures != 0;
 }

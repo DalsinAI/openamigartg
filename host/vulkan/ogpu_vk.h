@@ -107,6 +107,8 @@ struct ogpu_vk_stats {
     unsigned long routed;   /* of cpu: commands the GPU path could take that cost the core drew */
     unsigned long trip_us;  /* a submit and its wait on this device, measured at the start (0: not measured) */
     int route;              /* OGPU_VK_ROUTE_ in force */
+    unsigned long lists;    /* composite lists sent (each one dispatch) */
+    unsigned long listed;   /* of gpu: commands drawn in those lists */
 };
 void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s);
 
