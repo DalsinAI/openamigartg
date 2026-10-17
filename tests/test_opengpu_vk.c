@@ -9,7 +9,10 @@
  * picks a device by name. Built with OGPU_WITH_3D (and ogpu_3d.c,
  * ogpu_build3d.c and golden_scene_3d.c), the 3D golden scene too: stream
  * v1.2's 3D range runs on the back end's core, with its state lasting from
- * run to run and a reset clearing it.
+ * run to run and a reset clearing it; TRIANGLES drawn by the 3D shader
+ * (OGPU_VK_3D=gpu unless the environment says otherwise): the golden scene's
+ * checksum, and random 3D scenes (tests/scenes3d.c: every mode, buffers in
+ * video RAM and in Fast RAM) leaving memory byte for byte as the core does.
  *
  * The back end under test draws everything its GPU path takes on the GPU
  * (OGPU_VK_ROUTE_GPU), stream v1.2's FILL_BLEND, blend modes,
@@ -472,6 +475,7 @@ static void test_supports(void) {
 
 #ifdef OGPU_WITH_3D
 #include "golden_scenes.h"
+#include "scenes3d.h"
 static struct ogpu3d T_ref;     /* the reference core's 3D state */
 
 /* The reference core as new, with its hooks and a new 3D state: as the
@@ -580,6 +584,41 @@ static void test_3d(const char *golden) {
         B.words += n;
     }
     CHECK(run_both("3D triangles after a reset"), "after a reset, the 3D state is new");
+}
+
+/* Random 3D scenes, each from a new 3D state: the GPU's memory is the core's. */
+static void test_3d_random(int rounds) {
+    struct ogpu_scene3d_env er, ev;
+    struct ogpu_vk_stats st0, st;
+    int n, bad = 0;
+    long words;
+    const unsigned char *s;
+    /* region 0 in video RAM, region 1 in Fast RAM (not at address 0, which means "none") */
+    er.mem[0] = vram_ref; er.addr[0] = VBASE; er.mem[1] = ram_ref + 0x10; er.addr[1] = 0x10;
+    ev.mem[0] = vram_vk; ev.addr[0] = VBASE; ev.mem[1] = ram_vk + 0x10; ev.addr[1] = 0x10;
+    ogpu_vk_stats(V, &st0);
+    for (n = 0; n < rounds && bad < 5; n++) {
+        char what[64];
+        ogpu_scene3d_random(&er, (unsigned long)n, &words);
+        s = ogpu_scene3d_random(&ev, (unsigned long)n, &words);
+        memcpy(sbuf, s, (size_t)words * 4);
+        B.words = words;
+        ogpu_vk_reset(V);
+        ref_afresh();
+        snprintf(what, sizeof what, "random 3D scene %d", n);
+        if (!run_both(what)) {
+            bad++;
+            memcpy(vram_ref, vram_vk, VSIZE);           /* the next scene starts from the same memory */
+            memcpy(ram_ref, ram_vk, RAM);
+        }
+    }
+    ogpu_vk_stats(V, &st);
+    printf("opengpu vulkan: %d random 3D scenes: %lu TRIANGLES on the GPU, %lu on the core as quicker, %lu declined; "
+           "textures %lu up, %lu checked, %lu hits\n", n, st.tri_gpu - st0.tri_gpu, st.tri_cpu - st0.tri_cpu,
+           st.tri_declined - st0.tri_declined, st.tex_uploads - st0.tex_uploads, st.tex_checks - st0.tex_checks, st.tex_hits - st0.tex_hits);
+    if (getenv("OGPU_VK_3D") && !strcmp(getenv("OGPU_VK_3D"), "gpu"))
+        CHECK(st.shader3d && st.tri_gpu - st0.tri_gpu > (unsigned long)rounds, "the 3D shader drew the scenes (set up %d, %lu commands)",
+              st.shader3d, st.tri_gpu - st0.tri_gpu);
 }
 #endif
 
@@ -694,6 +733,9 @@ int main(int argc, char **argv) {
     unsigned long golden_v, golden_r, want = 0;
     int rounds = argc > 2 ? atoi(argv[2]) : 3000;
 
+#ifdef OGPU_WITH_3D
+    if (!getenv("OGPU_VK_3D")) setenv("OGPU_VK_3D", "gpu", 1);     /* every TRIANGLES the shader can draw */
+#endif
     memset(&cfg, 0, sizeof cfg);
     cfg.vram_base = VBASE;
     cfg.vram_size = VSIZE;
@@ -766,7 +808,10 @@ int main(int argc, char **argv) {
     test_supports();
 #ifdef OGPU_WITH_3D
     test_3d(argc > 4 ? argv[4] : 0);
-    printf("opengpu vulkan: the 3D range on the back end's core, as on the CPU path\n");
+    test_3d_random(rounds);
+    ogpu_vk_stats(V, &st);
+    printf("opengpu vulkan: the 3D range as on the CPU path; round trip %.0f us, core %.1f ns a pixel, GPU %.2f\n",
+           st.round_trip_us, st.core_px_ns, st.gpu_px_ns);
 #else
     printf("opengpu vulkan: built without OGPU_WITH_3D: no 3D range\n");
 #endif

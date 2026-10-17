@@ -18,9 +18,9 @@ INC=${VULKAN_INCLUDE:-/usr/include}
 # The loader: libvulkan.so.1 by its path, so the dev symlink isn't needed.
 LIB=$(ldconfig -p 2>/dev/null | awk '/libvulkan\.so\.1 /{print $NF; exit}')
 [ -n "$LIB" ] || { echo "missing: the Vulkan loader (libvulkan1)"; exit 1; }
-# With the 3D range (OGPU_WITH_3D), as the runtime builds it: the 3D scene runs on the back end's core.
+# With the 3D range (OGPU_WITH_3D), as the runtime builds it: TRIANGLES on the 3D shader.
 cc -std=c99 -O2 -Wall -Wextra -I"$INC" -DOGPU_WITH_3D -o "$OUT/test_opengpu_vk" "$HERE/tests/test_opengpu_vk.c" \
-    "$HERE/tests/golden_scene_3d.c" "$HERE/host/vulkan/ogpu_vk.c" "$HERE/library/opengpu/ogpu_core.c" \
+    "$HERE/tests/golden_scene_3d.c" "$HERE/tests/scenes3d.c" "$HERE/host/vulkan/ogpu_vk.c" "$HERE/library/opengpu/ogpu_core.c" \
     "$HERE/library/opengpu/ogpu_3d.c" "$HERE/library/opengpu/ogpu_build.c" "$HERE/library/opengpu/ogpu_build3d.c" "$LIB" -lm || exit 1
 rc=0
 for mode in own auto import map; do
