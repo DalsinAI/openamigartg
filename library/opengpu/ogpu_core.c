@@ -5,7 +5,7 @@
  * The 68k runs it as the CPU back end, the Cradle's runtime runs it behind
  * ACRTG.gpu, and a PiStorm's spare ARM core runs it behind PiStorm.gpu;
  * tests/test_opengpu.c checks it against simple per-pixel references and
- * keeps golden checksums every build must match. Stream v1.2: the 2D
+ * keeps golden checksums every build must match. Stream v1.4: the 2D
  * commands here; the 3D range (0x0030-0x003F) goes to ogpu_3d.c when the
  * build links it (OGPU_WITH_3D).
  *
@@ -1002,6 +1002,127 @@ OP_FN op_yuv(struct ogpu_core *c, const ogpu_u8 *a) {
     return OGPU_OK;
 }
 
+/* ---- COMPOSITE_PD (v1.4) ------------------------------------------------------------ */
+
+/* Porter-Duff on premultiplied channels, as stream.h says: each product
+ * rounded (mul255), the sum saturating. pixman's own arithmetic, so its
+ * results come out the same. */
+PX_FN unsigned sat8(unsigned v) { return v > 255 ? 255 : v; }
+PX_FN unsigned pd2(unsigned x, unsigned fa, unsigned y, unsigned fb) {
+    return sat8(mul255(x, fa) + mul255(y, fb));
+}
+PX_FN void pd_apply(struct ch *d, const struct ch *s, int op) {
+    unsigned as = s->a, ad = d->a, fa, fb;
+    switch (op) {
+    case OGPU_PD_CLEAR: d->a = d->r = d->g = d->b = 0; return;
+    case OGPU_PD_SRC: *d = *s; return;
+    case OGPU_PD_DST: return;
+    case OGPU_PD_ADD:
+        d->a = sat8(s->a + d->a); d->r = sat8(s->r + d->r); d->g = sat8(s->g + d->g); d->b = sat8(s->b + d->b);
+        return;
+    case OGPU_PD_OVER: fa = 255; fb = 255 - as; break;
+    case OGPU_PD_OVER_REVERSE: fa = 255 - ad; fb = 255; break;
+    case OGPU_PD_IN: fa = ad; fb = 0; break;
+    case OGPU_PD_IN_REVERSE: fa = 0; fb = as; break;
+    case OGPU_PD_OUT: fa = 255 - ad; fb = 0; break;
+    case OGPU_PD_OUT_REVERSE: fa = 0; fb = 255 - as; break;
+    case OGPU_PD_ATOP: fa = ad; fb = 255 - as; break;
+    case OGPU_PD_ATOP_REVERSE: fa = 255 - ad; fb = as; break;
+    default: fa = 255 - ad; fb = 255 - as; break;       /* OGPU_PD_XOR */
+    }
+    d->a = pd2(s->a, fa, d->a, fb);
+    d->r = pd2(s->r, fa, d->r, fb);
+    d->g = pd2(s->g, fa, d->g, fb);
+    d->b = pd2(s->b, fa, d->b, fb);
+}
+
+/* v mod n, for n > 0, never negative. */
+static int wrap(int v, int n) {
+    v %= n;
+    return v < 0 ? v + n : v;
+}
+
+OP_FN op_composite_pd(struct ogpu_core *c, const ogpu_u8 *a) {
+    ogpu_u32 of = rd32(a), src = rd32(a + 4), sxy = rd32(a + 8), mask = rd32(a + 12), mxy = rd32(a + 16);
+    ogpu_u32 dxy = rd32(a + 20), dwh = rd32(a + 24);
+    const struct ogpu_surface *t = &c->slot[c->target], *s = 0, *m = 0;
+    int op = (int)(of & 255), x = hi_s(dxy), y = lo_s(dxy), w = hi_u(dwh), h = lo_u(dwh), ox, oy, i, j;
+    int sx = hi_s(sxy), sy = lo_s(sxy), mx = hi_s(mxy), my = lo_s(mxy), dbpp, sbpp = 0, mbpp = 0;
+    int srep = (of & OGPU_PD_SRC_REPEAT) != 0, mrep = (of & OGPU_PD_MASK_REPEAT) != 0;
+    unsigned malpha = 255;
+    struct ch solid = { 0, 0, 0, 0 };
+    ogpu_u8 *drow;
+    if (op >= OGPU_PD_OPS) return OGPU_ERR_UNSUPPORTED;
+    if (!is_colour(t->format) && t->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
+    if ((of & OGPU_PD_MASK) && (of & OGPU_PD_MASK_SOLID)) return OGPU_ERR_UNSUPPORTED;
+    if (of & OGPU_PD_SOLID) ch_of(src, &solid);
+    else {
+        if (src >= OGPU_MAX_SLOTS || !c->slot[src].pixels) return OGPU_ERR_NOSURFACE;
+        s = &c->slot[src];
+        if (!is_colour(s->format) && s->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
+        sbpp = bytes_per_pixel(s->format);
+    }
+    if (of & OGPU_PD_MASK) {
+        if (mask >= OGPU_MAX_SLOTS || !c->slot[mask].pixels) return OGPU_ERR_NOSURFACE;
+        m = &c->slot[mask];
+        if (!is_colour(m->format) && m->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
+        mbpp = bytes_per_pixel(m->format);
+    } else if (of & OGPU_PD_MASK_SOLID) malpha = (unsigned)(mask & 255);
+    if (!w || !h) return OGPU_OK;
+    if (!clip_rect(c, &x, &y, &w, &h, &ox, &oy)) return OGPU_OK;
+    if (op == OGPU_PD_DST) return OGPU_OK;
+    dbpp = bytes_per_pixel(t->format);
+    drow = px_at(t, x, y);
+    for (j = 0; j < h; j++, drow += t->bpr) {
+        ogpu_u8 *dp = drow;
+        const ogpu_u8 *srow = 0, *mrow = 0;
+        int scol = 0, mcol = 0, sok = 1, mok = 1;
+        if (s) {
+            int ry = sy + oy + j;
+            if (srep) ry = wrap(ry, s->h);
+            if (ry >= 0 && ry < s->h) srow = row_at(s, ry); else sok = 0;
+            scol = sx + ox;
+            if (srep) scol = wrap(scol, s->w);
+        }
+        if (m) {
+            int ry = my + oy + j;
+            if (mrep) ry = wrap(ry, m->h);
+            if (ry >= 0 && ry < m->h) mrow = row_at(m, ry); else mok = 0;
+            mcol = mx + ox;
+            if (mrep) mcol = wrap(mcol, m->w);
+        }
+        for (i = 0; i < w; i++, dp += dbpp) {
+            struct ch sp, d;
+            unsigned ma = malpha;
+            if (s) {
+                if (sok && scol >= 0 && scol < s->w) ld(srow + xoff(scol, sbpp), s->format, &sp);
+                else sp.a = sp.r = sp.g = sp.b = 0;
+                if (++scol == s->w && srep) scol = 0;
+            } else sp = solid;
+            if (m) {
+                if (mok && mcol >= 0 && mcol < m->w) {
+                    struct ch mp;
+                    ld(mrow + xoff(mcol, mbpp), m->format, &mp);
+                    ma = mp.a;
+                } else ma = 0;
+                if (++mcol == m->w && mrep) mcol = 0;
+            }
+            if (ma != 255) {
+                sp.a = mul255(sp.a, ma); sp.r = mul255(sp.r, ma); sp.g = mul255(sp.g, ma); sp.b = mul255(sp.b, ma);
+            }
+            if (op == OGPU_PD_OVER && sp.a == 255) {          /* covers: as SRC */
+                st(dp, t->format, 255, sp.r, sp.g, sp.b);
+                continue;
+            }
+            if (op == OGPU_PD_OVER && !(sp.a | sp.r | sp.g | sp.b)) continue;
+            ld(dp, t->format, &d);
+            pd_apply(&d, &sp, op);
+            st(dp, t->format, d.a, d.r, d.g, d.b);
+        }
+    }
+    return OGPU_OK;
+}
+
 /* ---- the run ---------------------------------------------------------------------- */
 
 void ogpu_core_init(struct ogpu_core *c) {
@@ -1033,6 +1154,7 @@ static int args_for(int op) {
     case OGPU_OP_COMPOSITE: return 7;       /* 9 with OGPU_COMP_MASK, checked in the run */
     case OGPU_OP_COMPOSITE_AFFINE: return 11;
     case OGPU_OP_YUV: return 9;
+    case OGPU_OP_COMPOSITE_PD: return 7;
     case OGPU_OP_FENCE: return 1;
     }
 #ifdef OGPU_WITH_3D
@@ -1097,6 +1219,7 @@ long ogpu_core_run(struct ogpu_core *c, const ogpu_u8 *stream, long words) {
         case OGPU_OP_COMPOSITE: r = op_composite(c, a); break;
         case OGPU_OP_COMPOSITE_AFFINE: r = op_composite_affine(c, a); break;
         case OGPU_OP_YUV: r = op_yuv(c, a); break;
+        case OGPU_OP_COMPOSITE_PD: r = op_composite_pd(c, a); break;
         case OGPU_OP_FENCE: if (c->fence) c->fence(c->user, rd32(a)); break;
         }
         if (r != OGPU_OK && c->last_error == OGPU_OK) { c->last_error = r; c->error_word = at; }
@@ -1119,7 +1242,7 @@ int ogpu_core_supports(int op, int format) {
         return OGPU_FULL;
     case OGPU_OP_PIXELS:    /* pens only on CLUT8, coverage only on A8 */
         return format == OGPU_FMT_CLUT8 || format == OGPU_FMT_A8 ? OGPU_PARTIAL : OGPU_FULL;
-    case OGPU_OP_COMPOSITE: case OGPU_OP_MASK:
+    case OGPU_OP_COMPOSITE: case OGPU_OP_MASK: case OGPU_OP_COMPOSITE_PD:
         return format == OGPU_FMT_CLUT8 ? OGPU_NONE : OGPU_FULL;
     case OGPU_OP_FILL_BLEND: case OGPU_OP_LINES_BLEND: case OGPU_OP_POINTS_BLEND:
     case OGPU_OP_COMPOSITE_AFFINE: case OGPU_OP_YUV:
