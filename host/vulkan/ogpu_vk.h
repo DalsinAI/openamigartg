@@ -14,10 +14,14 @@
  * that would be an error) runs on the C core after the GPU has finished, so
  * results and errors are always the core's.
  *
- * Stream v1.2's 3D range (0x0030-0x003F) runs on that core too, with 3D
- * state of its own, when ogpu_vk.c is built with OGPU_WITH_3D, as
- * ogpu_core.c is for it, and ogpu_3d.c is linked. Without it, those
- * opcodes are OGPU_ERR_BADOP and ogpu_vk_supports answers OGPU_NONE. */
+ * Stream v1.2's 3D range (0x0030-0x003F) is carried out with 3D state of
+ * the back end's own when ogpu_vk.c is built with OGPU_WITH_3D, as
+ * ogpu_core.c is for it, and ogpu_3d.c is linked: TRIANGLES on the GPU
+ * (ogpu3d.comp, ogpu3d_rec.h) where that is quicker and the shader draws it
+ * exactly as the core does, and on the core otherwise; the rest of the range
+ * on the core. OGPU_VK_3D=gpu sends every TRIANGLES the shader can draw to
+ * the GPU, =core none. Without OGPU_WITH_3D, those opcodes are
+ * OGPU_ERR_BADOP and ogpu_vk_supports answers OGPU_NONE. */
 #ifndef OGPU_VK_H
 #define OGPU_VK_H
 
@@ -90,9 +94,15 @@ long ogpu_vk_error_word(const struct ogpu_vk *vk);
 int ogpu_vk_lost(const struct ogpu_vk *vk);
 
 struct ogpu_vk_stats {
-    unsigned long gpu;      /* drawing commands the GPU did */
+    unsigned long gpu;      /* drawing commands the GPU did (2D) */
     unsigned long cpu;      /* commands the C core did */
     unsigned long submits;  /* command buffers sent */
+    /* The 3D range (OGPU_WITH_3D): TRIANGLES commands drawn on the GPU, on
+     * the core as quicker there, on the core as the GPU can't draw them
+     * exactly; the texture cache; and the costs TRIANGLES is routed by. */
+    unsigned long tri_gpu, tri_cpu, tri_declined;
+    unsigned long tex_uploads, tex_checks, tex_hits;
+    double core_px_ns, gpu_px_ns, round_trip_us;
 };
 void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s);
 

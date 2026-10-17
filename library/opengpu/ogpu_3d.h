@@ -41,6 +41,71 @@ struct ogpu3d_buf {
     int w, h, format;
 };
 
+/* ---- what TRIANGLES works out before it draws -------------------------------------
+ * A back end that draws elsewhere (host/vulkan, on the host's GPU) takes
+ * these through a sink (below): the settings of each TRIANGLES command and
+ * each triangle exactly as this file would draw them, so it only has to
+ * colour the pixels. */
+
+/* The values a triangle carries, in this order (gx, gy and row's indices). */
+enum { OGPU3D_R, OGPU3D_G, OGPU3D_B, OGPU3D_A, OGPU3D_SR, OGPU3D_SG, OGPU3D_SB, OGPU3D_F, OGPU3D_Z, OGPU3D_FI,
+       OGPU3D_U, OGPU3D_V, OGPU3D_Q, OGPU3D_VALUES };
+
+/* One mip level as a triangle samples it. */
+struct o3_level {
+    const ogpu_u8 *base;
+    unsigned int bpr;
+    int w, h, wmask, hmask;             /* masks for power-of-two sizes, else 0 */
+    int bpp, format, wrap_s, wrap_t;
+    const ogpu_u8 *table;
+    int border[4];
+};
+
+/* What one TRIANGLES command draws with: RENDER3D's state for the 3D form,
+ * SDL's flags turned into the same terms for the 9-word form. */
+struct o3_pipe {
+    const struct ogpu_surface *dst;     /* the target */
+    unsigned int en;                    /* OGPU_R3D_ */
+    const struct ogpu3d_tex *tx;        /* 0 = untextured */
+    int env, base;
+    int envc[4];
+    int bsrc, bdst;
+    int fmt;                            /* the target's */
+    int has_z, has_w, has_spec;
+    int cur[4], fog[4], kc[4];          /* current, fog and blend colours as channels */
+    int mask_all;                       /* the colour mask lets everything through */
+    unsigned int wmask;                 /* else: the raw bits it lets through */
+};
+
+/* One triangle's values: each a plane, exact modulo 2^32. A value k the
+ * triangle carries (act) is row[k] + gy[k] * (y - ystart) + gx[k] * (x - rx)
+ * at pixel (x, y); the others are 0. Texture coordinates are in texels of
+ * level `level`, 24.8; under perspective (persp) U, V and Q are divided
+ * every 8 pixels from the start of each span. */
+struct o3_tri {
+    int gx[OGPU3D_VALUES], gy[OGPU3D_VALUES], row[OGPU3D_VALUES];  /* steps across and down; value at column rx of the current row */
+    int rx;
+    int nact, act[OGPU3D_VALUES];       /* the values this triangle carries */
+    int persp, bilinear, lfrac;         /* lfrac: blend with the next level, 0..255 */
+    int level;                          /* L0's level of the texture (L1 is the next) */
+    struct o3_level L0, L1;
+};
+
+/* TRIANGLES hands its work to a sink instead of drawing (struct ogpu3d's
+ * sink, 0: it draws). Spans come for each row from ystart to yend - 1, top
+ * to bottom, x0 <= x < x1 (x0 >= x1: nothing on that row), already inside
+ * the target, the clip and the depth and stencil buffers. */
+struct ogpu3d_sink {
+    /* A TRIANGLES command's settings, before its first triangle, and the
+     * drawing area (x0 <= x < x1, y0 <= y < y1). Nonzero leaves the command
+     * to this file: TRIANGLES then returns OGPU3D_DECLINED having drawn
+     * nothing, and the caller runs it again without the sink. */
+    int (*begin)(void *user, const struct ogpu3d *t, const struct o3_pipe *pp, int x0, int y0, int x1, int y1);
+    void (*tri)(void *user, const struct o3_tri *tr, int ystart, int yend);
+    void (*span)(void *user, int y, int x0, int x1);
+};
+#define OGPU3D_DECLINED (-100)          /* never an OGPU_ERR_ code */
+
 struct ogpu3d {
     struct ogpu_core *core;
     struct ogpu3d_tex tex[OGPU_TEX_UNITS];
@@ -57,6 +122,8 @@ struct ogpu3d {
     unsigned int fogkey[4];             /* what the table was built for */
     long triangles, pixels;             /* counters, for the caller's statistics */
     int slow;                           /* 1: never the fast spans (tests compare the two) */
+    const struct ogpu3d_sink *sink;     /* 0: TRIANGLES draws here (ogpu3d_init sets 0) */
+    void *sink_user;
 };
 
 void ogpu3d_init(struct ogpu3d *t, struct ogpu_core *c);

@@ -248,15 +248,7 @@ PIXEL void o3_from565(const ogpu_u8 *p, int *c) {
 
 /* ---- textures ---------------------------------------------------------------------- */
 
-/* One mip level as a triangle samples it. */
-struct o3_level {
-    const ogpu_u8 *base;
-    o3_u32 bpr;
-    int w, h, wmask, hmask;             /* masks for power-of-two sizes, else 0 */
-    int bpp, format, wrap_s, wrap_t;
-    const ogpu_u8 *table;
-    int border[4];
-};
+/* One mip level as a triangle samples it: struct o3_level (ogpu_3d.h). */
 
 static void o3_level_of(const struct ogpu3d_tex *tx, int lv, struct o3_level *L) {
     int w = (int)o3_shr_u((o3_u32)tx->w, lv), h = (int)o3_shr_u((o3_u32)tx->h, lv);
@@ -525,21 +517,7 @@ static int o3_op_clear3d(struct ogpu3d *t, const ogpu_u8 *a) {
 
 /* ---- per-draw settings ---------------------------------------------------------------- */
 
-/* What one TRIANGLES command draws with: RENDER3D's state for the 3D form,
- * SDL's flags turned into the same terms for the 9-word form. */
-struct o3_pipe {
-    const struct ogpu_surface *dst;     /* the target */
-    o3_u32 en;                             /* OGPU_R3D_ */
-    const struct ogpu3d_tex *tx;        /* 0 = untextured */
-    int env, base;
-    int envc[4];
-    int bsrc, bdst;
-    int fmt;                            /* the target's */
-    int has_z, has_w, has_spec;
-    int cur[4], fog[4], kc[4];          /* current, fog and blend colours as channels */
-    int mask_all;                       /* the colour mask lets everything through */
-    o3_u32 wmask;                          /* else: the raw bits it lets through */
-};
+/* What one TRIANGLES command draws with: struct o3_pipe (ogpu_3d.h). */
 
 /* ---- the fragment pipeline --------------------------------------------------------------- */
 
@@ -744,8 +722,10 @@ PIXEL void o3_environment(int mode, int base, int *T, const int *cc, int *f) {
 
 /* ---- triangle setup ------------------------------------------------------------------- */
 
-/* Values interpolated across a triangle. */
-enum { AT_R, AT_G, AT_B, AT_A, AT_SR, AT_SG, AT_SB, AT_F, AT_Z, AT_FI, AT_U, AT_V, AT_Q, AT_N };
+/* Values interpolated across a triangle (ogpu_3d.h's order). */
+enum { AT_R = OGPU3D_R, AT_G = OGPU3D_G, AT_B = OGPU3D_B, AT_A = OGPU3D_A, AT_SR = OGPU3D_SR, AT_SG = OGPU3D_SG,
+       AT_SB = OGPU3D_SB, AT_F = OGPU3D_F, AT_Z = OGPU3D_Z, AT_FI = OGPU3D_FI, AT_U = OGPU3D_U, AT_V = OGPU3D_V,
+       AT_Q = OGPU3D_Q, AT_N = OGPU3D_VALUES };
 
 /* All values stay within +-2^30, so a difference of two fits 32 bits. */
 struct o3_vtx {
@@ -795,13 +775,7 @@ static void o3_edge_step(struct o3_edge *e) {
     if (e->r >= e->dy) { e->r -= e->dy; e->x++; }
 }
 
-struct o3_tri {
-    o3_s32 gx[AT_N], gy[AT_N], row[AT_N];  /* steps across and down; value at column rx of the current row */
-    int rx;
-    int nact, act[AT_N];                /* the values this triangle carries */
-    int persp, bilinear, lfrac;         /* lfrac: blend with the next level, 0..255 */
-    struct o3_level L0, L1;
-};
+/* struct o3_tri: one triangle's planes and texture levels (ogpu_3d.h). */
 
 /* ---- spans ------------------------------------------------------------------------------- */
 
@@ -1181,7 +1155,7 @@ static void o3_draw_triangle(struct ogpu3d *t, const struct o3_pipe *pp, const s
     if ((pp->en & OGPU_R3D_FOG) && t->fogmode == OGPU_FOG_VERTEX && pp->has_spec) active |= 1u << AT_F;
     if ((pp->en & OGPU_R3D_FOG) && t->fogmode && t->fogmode != OGPU_FOG_VERTEX && pp->has_w) active |= 1u << AT_FI;
     if ((pp->en & OGPU_R3D_ZTEST) && t->depth.mem && pp->has_z) active |= 1u << AT_Z;
-    tr.persp = 0; tr.bilinear = 0; tr.lfrac = 0;
+    tr.persp = 0; tr.bilinear = 0; tr.lfrac = 0; tr.level = 0;
 
     if (pp->tx) {
         const struct ogpu3d_tex *tx = pp->tx;
@@ -1220,6 +1194,7 @@ static void o3_draw_triangle(struct ogpu3d *t, const struct o3_pipe *pp, const s
             tr.lfrac = fr;
         }
         o3_level_of(tx, lv, &tr.L0);
+        tr.level = lv;
         if (tr.lfrac) o3_level_of(tx, lv + 1, &tr.L1);
         /* coordinates at the level drawn from, moved near 0 by whole textures when
          * they repeat, so their products with the perspective divisor fit */
@@ -1300,6 +1275,7 @@ static void o3_draw_triangle(struct ogpu3d *t, const struct o3_pipe *pp, const s
     }
 
     fast = !t->slow && o3_fast_ok(t, pp, &tr);
+    if (t->sink) t->sink->tri(t->sink_user, &tr, ystart, yend);
 
     /* edges: the long one v0-v2 and the short ones v0-v1, v1-v2 */
     elong = area > 0 ? &el : &er;
@@ -1313,7 +1289,8 @@ static void o3_draw_triangle(struct ogpu3d *t, const struct o3_pipe *pp, const s
         xl = o3_edge_px(&el); xr = o3_edge_px(&er);
         if (xl < ax0) xl = ax0;
         if (xr > ax1) xr = ax1;
-        if (xl < xr) {
+        if (t->sink) t->sink->span(t->sink_user, py, xl, xr);
+        else if (xl < xr) {
             if (fast) o3_span_fast(t, pp, &tr, py, xl, xr);
             else o3_span(t, pp, &tr, py, xl, xr);
         }
@@ -1446,6 +1423,7 @@ static int o3_op_triangles(struct ogpu3d *t, const ogpu_u8 *a, long args) {
     pp.wmask = three_d ? o3_write_mask(t, pp.fmt) : 0xFFFFFFFFu;
     pp.mask_all = !three_d || pp.wmask == (pp.fmt == OGPU_FMT_ARGB32 ? 0xFFFFFFFFu : pp.fmt == OGPU_FMT_RGB565 ? 0xFFFFu : 0xFFu);
     if (!o3_draw_area(t, three_d, &ax0, &ay0, &ax1, &ay1)) return OGPU_OK;
+    if (t->sink && t->sink->begin(t->sink_user, t, &pp, ax0, ay0, ax1, ay1)) return OGPU3D_DECLINED;
 
     /* the primitives */
     n = idx ? icount : vcount;
@@ -1499,6 +1477,7 @@ void ogpu3d_init(struct ogpu3d *t, struct ogpu_core *c) {
     t->chroma_lo = t->chroma_hi = 0; t->current = 0xFFFFFFFFu;
     t->pen_table = 0; t->stipple = 0; t->palette = 0;
     t->triangles = 0; t->pixels = 0; t->slow = 0;
+    t->sink = 0; t->sink_user = 0;
     t->fogkey[0] = 0; t->fogkey[1] = t->fogkey[2] = t->fogkey[3] = 0;
     for (i = 0; i < OGPU3D_FOGTAB; i++) t->fogtab[i] = 255;
 }

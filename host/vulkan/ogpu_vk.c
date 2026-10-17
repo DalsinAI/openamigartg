@@ -11,14 +11,18 @@
  *
  * Built with OGPU_WITH_3D (as ogpu_core.c, with ogpu_3d.c linked), the core
  * here has its own 3D state (struct ogpu3d), so stream v1.2's 3D range
- * (TRIANGLES, RENDER3D, TEXENV, TEXTURE, DEPTH, CLEAR3D) runs on it as on
- * the CPU path: the state lasts from run to run, and a reset starts it
- * afresh. Built without it, those opcodes are OGPU_ERR_BADOP, and
- * ogpu_vk_supports says so. */
+ * (TRIANGLES, RENDER3D, TEXENV, TEXTURE, DEPTH, CLEAR3D) is carried out as
+ * on the CPU path: the state lasts from run to run, and a reset starts it
+ * afresh. TRIANGLES is drawn on the GPU by a second compute shader
+ * (ogpu3d.comp) where that is quicker and exact, through ogpu3d_rec.c (see
+ * ogpu3d_rec.h); the state commands change no pixels and never wait; the
+ * rest of the range runs on the core. Built without OGPU_WITH_3D, those
+ * opcodes are OGPU_ERR_BADOP, and ogpu_vk_supports says so. */
 #define _DEFAULT_SOURCE  /* mmap's MAP_ANONYMOUS under -std=c99 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <vulkan/vulkan.h>
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/mman.h>
@@ -28,6 +32,8 @@
 #include "ogpu_vk.h"
 #ifdef OGPU_WITH_3D
 #include "../../library/opengpu/ogpu_3d.h"
+#include "ogpu3d_rec.c"     /* one unit: the runtime builds the back end from this file */
+#include "ogpu3d_spv.h"     /* ogpu3d_comp_spv[]: ogpu3d.comp compiled (build_spv.sh) */
 #endif
 #include "ogpu_vk_spv.h"    /* ogpu_comp_spv[]: ogpu.comp compiled (host/vulkan/build_spv.sh) */
 
@@ -55,8 +61,21 @@ struct ogpu_vk {
 
     struct ogpu_core core;      /* the state, and the CPU path */
 #ifdef OGPU_WITH_3D
-    struct ogpu3d d3;           /* the core's 3D state: the 3D range runs on the core */
+    struct ogpu3d d3;           /* the core's 3D state */
+    /* TRIANGLES on the GPU (ogpu3d_rec.c, ogpu3d.comp): 0 when it couldn't be set up */
+    struct ogpu3d_rec *rec;
+    VkBuffer stage_buf, tex_buf, data_buf;
+    VkDeviceMemory stage_mem, tex_mem, data_mem;
+    ogpu_u8 *stage, *texc, *data3;
+    VkDescriptorSetLayout dsl3;
+    VkPipelineLayout layout3;
+    VkShaderModule shader3;
+    VkPipeline pipe3;
+    VkDescriptorPool dpool3;
+    VkDescriptorSet dset3;
+    double round_trip_ns;
 #endif
+    int bound;                  /* the pipeline cmd has bound: 1 the 2D one, 2 the 3D one */
     int recording;              /* cmd is open */
     long dispatches;            /* recorded since it opened */
     ogpu_u32 arena_used;
@@ -200,20 +219,66 @@ static void begin(struct ogpu_vk *vk) {
     vkBeginCommandBuffer(vk->cmd, &bi);
     vkCmdBindPipeline(vk->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vk->pipe);
     vkCmdBindDescriptorSets(vk->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vk->layout, 0, 1, &vk->dset, 0, 0);
+    vk->bound = 1;
     vk->recording = 1;
     vk->dispatches = 0;
 }
 
+static void barrier(struct ogpu_vk *vk) {
+    VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(vk->cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 1, &mb, 0, 0, 0, 0);
+}
+
+#ifdef OGPU_WITH_3D
+/* What a 2D dispatch writes (video RAM only: the arena is the back end's),
+ * so the 3D path draws pending work first before it reads those bytes. */
+static void note_2d_write(struct ogpu_vk *vk, const ogpu_u32 *args) {
+    long bpp = args[A_DFMT] == OGPU_FMT_ARGB32 ? 4 : args[A_DFMT] == OGPU_FMT_RGB565 ? 2 : 1, x, y, w, h, bpr = (long)args[A_DBPR];
+    unsigned long lo, hi;
+    if (!vk->rec || (args[A_SBUF] & SBUF_DST_ARENA)) return;
+    x = (long)(int)args[A_X]; y = (long)(int)args[A_Y]; w = (long)(int)args[A_W]; h = (long)(int)args[A_H];
+    if (args[A_OP] == OGPU_OP_LINE) { w -= x; h -= y; }     /* LINE: the clip's corners */
+    if (w <= 0 || h <= 0) return;
+    lo = args[A_DST] + (unsigned long)(y * bpr + x * bpp);
+    hi = args[A_DST] + (unsigned long)((y + h - 1) * bpr + (x + w) * bpp);
+    if (hi > vk->cfg.vram_size) hi = vk->cfg.vram_size;
+    if (lo < hi) ogpu3d_rec_wrote(vk->rec, vk->vram + lo, hi - lo);
+}
+
+/* ogpu3d_rec's hooks */
+static void dispatch3d(void *user, const unsigned int *pc, unsigned gx, unsigned gy) {
+    struct ogpu_vk *vk = user;
+    if (!vk->recording) begin(vk);
+    if (vk->dispatches) barrier(vk);
+    if (vk->bound != 2) {
+        vkCmdBindPipeline(vk->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vk->pipe3);
+        vkCmdBindDescriptorSets(vk->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vk->layout3, 0, 1, &vk->dset3, 0, 0);
+        vk->bound = 2;
+    }
+    vkCmdPushConstants(vk->cmd, vk->layout3, VK_SHADER_STAGE_COMPUTE_BIT, 0, P3_COUNT * 4, pc);
+    vkCmdDispatch(vk->cmd, gx ? gx : 1, gy ? gy : 1, 1);
+    vk->dispatches++;
+}
+static void flush3d(void *user) { flush((struct ogpu_vk *)user); }
+static int pending3d(void *user) { return ((struct ogpu_vk *)user)->recording; }
+#endif
+
 static void dispatch(struct ogpu_vk *vk, const ogpu_u32 *args, unsigned gx, unsigned gy) {
     uint32_t pc[A_COUNT];
     int i;
+#ifdef OGPU_WITH_3D
+    /* the 3D work before it goes first, and the 3D path learns what this writes */
+    if (vk->rec) { ogpu3d_rec_close(vk->rec); note_2d_write(vk, args); }
+#endif
     if (!vk->recording) begin(vk);
-    if (vk->dispatches) {
-        VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER };
-        mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        vkCmdPipelineBarrier(vk->cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             0, 1, &mb, 0, 0, 0, 0);
+    if (vk->dispatches) barrier(vk);
+    if (vk->bound != 1) {
+        vkCmdBindPipeline(vk->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vk->pipe);
+        vkCmdBindDescriptorSets(vk->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, vk->layout, 0, 1, &vk->dset, 0, 0);
+        vk->bound = 1;
     }
     for (i = 0; i < A_COUNT; i++) pc[i] = (uint32_t)args[i];
     vkCmdPushConstants(vk->cmd, vk->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
@@ -228,10 +293,27 @@ static void dispatch_rect(struct ogpu_vk *vk, const ogpu_u32 *args, int w, int h
     vk->stats.gpu++;
 }
 
+static double now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1e9 + (double)ts.tv_nsec;
+}
+
 static void flush(struct ogpu_vk *vk) {
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
     VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER };
-    if (!vk->recording) { vk->arena_used = 0; return; }
+    double t0;
+#ifdef OGPU_WITH_3D
+    if (vk->rec) ogpu3d_rec_close(vk->rec);         /* the open group's dispatch */
+#endif
+    if (!vk->recording) {
+        vk->arena_used = 0;
+#ifdef OGPU_WITH_3D
+        if (vk->rec) ogpu3d_rec_done(vk->rec, 0);
+#endif
+        return;
+    }
+    t0 = now_ns();
     mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT;
     vkCmdPipelineBarrier(vk->cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, 0, 0, 0);
@@ -248,8 +330,15 @@ static void flush(struct ogpu_vk *vk) {
     vkResetFences(vk->dev, 1, &vk->done);
     vkResetCommandPool(vk->dev, vk->cpool, 0);
     vk->recording = 0;
+    vk->bound = 0;
     vk->arena_used = 0;
     vk->stats.submits++;
+#ifdef OGPU_WITH_3D
+    /* staged rows back to memory, now the GPU has drawn them */
+    if (vk->rec) ogpu3d_rec_done(vk->rec, now_ns() - t0);
+#else
+    (void)t0;
+#endif
 }
 
 /* ---- the drawing commands on the GPU ------------------------------------------------ */
@@ -636,6 +725,9 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
     vk->last_error = OGPU_OK;
     vk->error_word = 0;
     vk->lost_now = 0;
+#ifdef OGPU_WITH_3D
+    ogpu3d_rec_cpu_wrote(vk->rec);      /* the 68k ran since the last run */
+#endif
     while (at < words) {
         ogpu_u32 hdr = rd32(stream + at * 4);
         int op = (int)OGPU_HDR_OP(hdr), len = (int)OGPU_HDR_WORDS(hdr), need = args_for(op);
@@ -645,6 +737,28 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
             if (vk->last_error == OGPU_OK) { vk->last_error = OGPU_ERR_BADLEN; vk->error_word = at; }
             break;
         }
+#ifdef OGPU_WITH_3D
+        if (op >= OGPU_OP_3D_FIRST && op <= OGPU_OP_3D_LAST) {
+            /* TRIANGLES on the GPU when it is quicker and exact; the state
+             * commands, and a CLEAR3D that only asks for a readback (memory is
+             * right when a run returns), change no pixels: neither waits */
+            int r3 = OGPU_OK, handled = 0;
+            if (op == OGPU_OP_TRIANGLES) {
+                if (!vk->failed && vk->rec) handled = ogpu3d_rec_triangles(vk->rec, &vk->d3, stream + at * 4, len, &r3);
+            } else if (op != OGPU_OP_CLEAR3D || (len >= 2 && (rd32(stream + at * 4 + 4) & OGPU_KIND_READBACK))) {
+                r3 = ogpu3d_op(&vk->d3, op, stream + at * 4, len);
+                handled = 1;
+            }
+            if (handled) {
+                if (r3 != OGPU_OK && vk->last_error == OGPU_OK) { vk->last_error = r3; vk->error_word = at; }
+                done++;
+                at += len;
+                continue;
+            }
+        }
+        /* a drawing command after 3D work in staged memory, which it might read: that first */
+        if (op >= OGPU_OP_FILL && vk->rec && ogpu3d_rec_staged(vk->rec)) flush(vk);
+#endif
         if (!vk->failed && need >= 0 && op >= OGPU_OP_FILL && op < OGPU_OP_FENCE
             && vk->core.target >= 0 && vk->core.slot[vk->core.target].pixels
             && gpu_draw(vk, op, stream + at * 4 + 4)) {
@@ -655,6 +769,9 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
                 flush(vk);
             done += ogpu_core_run(&vk->core, stream + at * 4, len);
             if (op >= OGPU_OP_FILL && op < OGPU_OP_FENCE) vk->stats.cpu++;
+#ifdef OGPU_WITH_3D
+            if (op >= OGPU_OP_FILL && op != OGPU_OP_FENCE) ogpu3d_rec_cpu_wrote(vk->rec);   /* the core drew */
+#endif
             if (vk->core.last_error != OGPU_OK && vk->last_error == OGPU_OK) {
                 vk->last_error = vk->core.last_error;
                 vk->error_word = at;
@@ -699,7 +816,19 @@ int ogpu_vk_lost(const struct ogpu_vk *vk) { return vk->failed; }
 ogpu_u8 *ogpu_vk_vram(struct ogpu_vk *vk) { return vk->vram; }
 const char *ogpu_vk_vram_mode(struct ogpu_vk *vk) { return vk->vram_mode; }
 const char *ogpu_vk_device(struct ogpu_vk *vk) { return vk->name; }
-void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s) { *s = vk->stats; }
+void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s) {
+    *s = vk->stats;
+#ifdef OGPU_WITH_3D
+    if (vk->rec) {
+        struct ogpu3d_rec_stats r;
+        ogpu3d_rec_stats(vk->rec, &r);
+        s->tri_gpu = r.gpu; s->tri_cpu = r.cpu; s->tri_declined = r.declined;
+        s->tex_uploads = r.tex_uploads; s->tex_checks = r.tex_checks; s->tex_hits = r.tex_hits;
+        s->core_px_ns = r.core_px_ns; s->gpu_px_ns = r.gpu_px_ns;
+    }
+    s->round_trip_us = vk->round_trip_ns / 1000.0;
+#endif
+}
 
 /* ---- setting up ------------------------------------------------------------------- */
 
@@ -921,6 +1050,115 @@ static int pick_device(struct ogpu_vk *vk, char *err, int errlen) {
     return 1;
 }
 
+#ifdef OGPU_WITH_3D
+/* TRIANGLES on the GPU: three more buffers, the 3D shader's pipeline, and
+ * the recorder. 0 leaves the 3D range on the core, as before. */
+#define OGPU_VK_STAGE (32UL << 20)  /* staged targets, Z and stencil buffers outside video RAM */
+#define OGPU_VK_TEX   (32UL << 20)  /* the texture cache */
+#define OGPU_VK_DATA  (16UL << 20)  /* a submit's draw states, triangles, spans and tile lists */
+static int setup_3d(struct ogpu_vk *vk) {
+    VkDescriptorSetLayoutBinding b[4];
+    VkDescriptorSetLayoutCreateInfo dli = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    VkPushConstantRange pcr;
+    VkPipelineLayoutCreateInfo pli = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    VkShaderModuleCreateInfo smi = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+    VkComputePipelineCreateInfo cpi = { .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+    VkDescriptorPoolSize ps;
+    VkDescriptorPoolCreateInfo dpi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    VkDescriptorSetAllocateInfo dai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    VkDescriptorBufferInfo dbi[4];
+    VkWriteDescriptorSet wr[4];
+    VkPhysicalDeviceProperties pr;
+    struct ogpu3d_rec_cfg rc;
+    char err[160];
+    unsigned long stage = OGPU_VK_STAGE, tex = OGPU_VK_TEX, data = OGPU_VK_DATA;
+    const char *m = getenv("OGPU_VK_3D");
+    uint32_t q;
+    int i;
+    if (m && !strcmp(m, "core")) return 0;
+    vkGetPhysicalDeviceProperties(vk->phys, &pr);
+    if (pr.limits.maxStorageBufferRange < stage) stage = tex = pr.limits.maxStorageBufferRange & ~15UL;
+    if (pr.limits.maxStorageBufferRange < data) data = pr.limits.maxStorageBufferRange & ~15UL;
+    if (pr.limits.maxComputeWorkGroupCount[0] < 8192 || pr.limits.maxComputeWorkGroupCount[1] < 8192) return 0;
+    if (!make_buffer(vk, stage, 1, &vk->stage_buf, &vk->stage_mem, &vk->stage, err, sizeof err)
+        || !make_buffer(vk, tex, 0, &vk->tex_buf, &vk->tex_mem, &vk->texc, err, sizeof err)
+        || !make_buffer(vk, data, 0, &vk->data_buf, &vk->data_mem, &vk->data3, err, sizeof err)) return 0;
+    memset(b, 0, sizeof b);
+    for (q = 0; q < 4; q++) {
+        b[q].binding = q;
+        b[q].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b[q].descriptorCount = 1;
+        b[q].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    dli.bindingCount = 4;
+    dli.pBindings = b;
+    if (vkCreateDescriptorSetLayout(vk->dev, &dli, 0, &vk->dsl3) != VK_SUCCESS) return 0;
+    pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pcr.offset = 0;
+    pcr.size = P3_COUNT * 4;
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &vk->dsl3;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
+    if (vkCreatePipelineLayout(vk->dev, &pli, 0, &vk->layout3) != VK_SUCCESS) return 0;
+    smi.codeSize = sizeof ogpu3d_comp_spv;
+    smi.pCode = ogpu3d_comp_spv;
+    if (vkCreateShaderModule(vk->dev, &smi, 0, &vk->shader3) != VK_SUCCESS) return 0;
+    cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    cpi.stage.module = vk->shader3;
+    cpi.stage.pName = "main";
+    cpi.layout = vk->layout3;
+    if (vkCreateComputePipelines(vk->dev, VK_NULL_HANDLE, 1, &cpi, 0, &vk->pipe3) != VK_SUCCESS) return 0;
+    ps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    ps.descriptorCount = 4;
+    dpi.maxSets = 1;
+    dpi.poolSizeCount = 1;
+    dpi.pPoolSizes = &ps;
+    if (vkCreateDescriptorPool(vk->dev, &dpi, 0, &vk->dpool3) != VK_SUCCESS) return 0;
+    dai.descriptorPool = vk->dpool3;
+    dai.descriptorSetCount = 1;
+    dai.pSetLayouts = &vk->dsl3;
+    if (vkAllocateDescriptorSets(vk->dev, &dai, &vk->dset3) != VK_SUCCESS) return 0;
+    memset(wr, 0, sizeof wr);
+    dbi[0].buffer = vk->vram_buf;
+    dbi[1].buffer = vk->stage_buf;
+    dbi[2].buffer = vk->tex_buf;
+    dbi[3].buffer = vk->data_buf;
+    for (q = 0; q < 4; q++) {
+        dbi[q].offset = 0;
+        dbi[q].range = VK_WHOLE_SIZE;
+        wr[q].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        wr[q].dstSet = vk->dset3;
+        wr[q].dstBinding = q;
+        wr[q].descriptorCount = 1;
+        wr[q].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        wr[q].pBufferInfo = &dbi[q];
+    }
+    vkUpdateDescriptorSets(vk->dev, 4, wr, 0, 0);
+    /* the round trip a submit costs: what the first command of a submit is routed by */
+    vk->round_trip_ns = 1e12;
+    for (i = 0; i < 5 && !vk->failed; i++) {
+        double t0 = now_ns(), dt;
+        begin(vk);
+        flush(vk);
+        dt = now_ns() - t0;
+        if (dt < vk->round_trip_ns) vk->round_trip_ns = dt;
+    }
+    vk->stats.submits = 0;
+    if (vk->failed) return 0;
+    memset(&rc, 0, sizeof rc);
+    rc.vram = vk->vram; rc.vram_size = vk->cfg.vram_size;
+    rc.stage = vk->stage; rc.stage_size = stage;
+    rc.tex = vk->texc; rc.tex_size = tex;
+    rc.data = vk->data3; rc.data_size = data;
+    rc.dispatch = dispatch3d; rc.flush = flush3d; rc.pending = pending3d; rc.user = vk;
+    rc.round_trip_ns = vk->round_trip_ns;
+    vk->rec = ogpu3d_rec_create(&rc);
+    return vk->rec != 0;
+}
+#endif
+
 struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int errlen) {
     struct ogpu_vk *vk = calloc(1, sizeof *vk);
     VkApplicationInfo app = { .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO };
@@ -1080,6 +1318,9 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
     vk->core.fence = core_fence;
     vk->core.ext = vk->cfg.ext ? core_ext : 0;
     vk->core.user = vk;
+#ifdef OGPU_WITH_3D
+    setup_3d(vk);       /* without it, the 3D range stays on the core */
+#endif
     return vk;
 bad:
     ogpu_vk_destroy(vk);
@@ -1090,6 +1331,20 @@ void ogpu_vk_destroy(struct ogpu_vk *vk) {
     if (!vk) return;
     if (vk->dev) {
         vkDeviceWaitIdle(vk->dev);
+#ifdef OGPU_WITH_3D
+        ogpu3d_rec_destroy(vk->rec);
+        if (vk->pipe3) vkDestroyPipeline(vk->dev, vk->pipe3, 0);
+        if (vk->shader3) vkDestroyShaderModule(vk->dev, vk->shader3, 0);
+        if (vk->layout3) vkDestroyPipelineLayout(vk->dev, vk->layout3, 0);
+        if (vk->dpool3) vkDestroyDescriptorPool(vk->dev, vk->dpool3, 0);
+        if (vk->dsl3) vkDestroyDescriptorSetLayout(vk->dev, vk->dsl3, 0);
+        if (vk->stage_buf) vkDestroyBuffer(vk->dev, vk->stage_buf, 0);
+        if (vk->tex_buf) vkDestroyBuffer(vk->dev, vk->tex_buf, 0);
+        if (vk->data_buf) vkDestroyBuffer(vk->dev, vk->data_buf, 0);
+        if (vk->stage_mem) vkFreeMemory(vk->dev, vk->stage_mem, 0);
+        if (vk->tex_mem) vkFreeMemory(vk->dev, vk->tex_mem, 0);
+        if (vk->data_mem) vkFreeMemory(vk->dev, vk->data_mem, 0);
+#endif
         if (vk->done) vkDestroyFence(vk->dev, vk->done, 0);
         if (vk->cpool) vkDestroyCommandPool(vk->dev, vk->cpool, 0);
         if (vk->dpool) vkDestroyDescriptorPool(vk->dev, vk->dpool, 0);
