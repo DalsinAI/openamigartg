@@ -12,7 +12,12 @@
  * A command the GPU path doesn't take (a target outside video RAM or not
  * aligned to its pixels, a composite that reads what it writes, anything
  * that would be an error) runs on the C core after the GPU has finished, so
- * results and errors are always the core's. */
+ * results and errors are always the core's.
+ *
+ * Stream v1.2's 3D range (0x0030-0x003F) runs on that core too, with 3D
+ * state of its own, when ogpu_vk.c is built with OGPU_WITH_3D, as
+ * ogpu_core.c is for it, and ogpu_3d.c is linked. Without it, those
+ * opcodes are OGPU_ERR_BADOP and ogpu_vk_supports answers OGPU_NONE. */
 #ifndef OGPU_VK_H
 #define OGPU_VK_H
 
@@ -66,9 +71,13 @@ const char *ogpu_vk_vram_mode(struct ogpu_vk *vk);
  * commands done; the GPU's work is finished when it returns. Slots, the
  * target and the clip carry over from run to run, as the core's do. */
 long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words);
-/* Forget the slots, the target and the clip, as a board reset does (the
- * GPU's work is finished first; video RAM is left as it is). */
+/* Forget the slots, the target, the clip and the 3D state, as a board
+ * reset does (the GPU's work is finished first; video RAM is left as it is). */
 void ogpu_vk_reset(struct ogpu_vk *vk);
+/* OGPU_FULL, OGPU_PARTIAL or OGPU_NONE for an opcode into a format: what a
+ * run carries out, on the GPU or on the core here. As ogpu_core_supports,
+ * but OGPU_NONE for the 3D range when built without OGPU_WITH_3D. */
+int ogpu_vk_supports(const struct ogpu_vk *vk, int op, int format);
 int ogpu_vk_last_error(const struct ogpu_vk *vk);      /* OGPU_OK, or the first error */
 long ogpu_vk_error_word(const struct ogpu_vk *vk);
 

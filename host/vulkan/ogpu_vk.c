@@ -7,7 +7,14 @@
  * error are the core's own. Drawing commands the GPU takes become one
  * compute dispatch each, recorded into one command buffer and sent when the
  * run ends, a FENCE comes, the C core needs the memory, or the upload arena
- * is full. A barrier between dispatches keeps them in stream order. */
+ * is full. A barrier between dispatches keeps them in stream order.
+ *
+ * Built with OGPU_WITH_3D (as ogpu_core.c, with ogpu_3d.c linked), the core
+ * here has its own 3D state (struct ogpu3d), so stream v1.2's 3D range
+ * (TRIANGLES, RENDER3D, TEXENV, TEXTURE, DEPTH, CLEAR3D) runs on it as on
+ * the CPU path: the state lasts from run to run, and a reset starts it
+ * afresh. Built without it, those opcodes are OGPU_ERR_BADOP, and
+ * ogpu_vk_supports says so. */
 #define _DEFAULT_SOURCE  /* mmap's MAP_ANONYMOUS under -std=c99 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +26,9 @@
 #define OGPU_VK_MMAP 1
 #endif
 #include "ogpu_vk.h"
+#ifdef OGPU_WITH_3D
+#include "../../library/opengpu/ogpu_3d.h"
+#endif
 #include "ogpu_vk_spv.h"    /* ogpu_comp_spv[]: ogpu.comp compiled (host/vulkan/build_spv.sh) */
 
 struct ogpu_vk {
@@ -44,6 +54,9 @@ struct ogpu_vk {
     char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
 
     struct ogpu_core core;      /* the state, and the CPU path */
+#ifdef OGPU_WITH_3D
+    struct ogpu3d d3;           /* the core's 3D state: the 3D range runs on the core */
+#endif
     int recording;              /* cmd is open */
     long dispatches;            /* recorded since it opened */
     ogpu_u32 arena_used;
@@ -654,9 +667,29 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
     return done;
 }
 
+/* The core with no slots, target or clip (its hooks stay) and, built with
+ * the 3D range, its 3D state as new: as the CPU path's core after a reset. */
+static void core_afresh(struct ogpu_vk *vk) {
+    ogpu_core_init(&vk->core);
+#ifdef OGPU_WITH_3D
+    ogpu3d_init(&vk->d3, &vk->core);
+    vk->core.d3 = &vk->d3;
+#endif
+}
+
 void ogpu_vk_reset(struct ogpu_vk *vk) {
     flush(vk);
-    ogpu_core_init(&vk->core);
+    core_afresh(vk);
+}
+
+/* What a run carries out, wherever it is drawn: the GPU what it takes, the
+ * core here the rest, so the answer is the core's. */
+int ogpu_vk_supports(const struct ogpu_vk *vk, int op, int format) {
+    (void)vk;
+#ifndef OGPU_WITH_3D
+    if (op >= 0x0030 && op <= 0x003F) return OGPU_NONE;   /* no 3D state on this core */
+#endif
+    return ogpu_core_supports(op, format);
 }
 
 int ogpu_vk_last_error(const struct ogpu_vk *vk) { return vk->last_error; }
@@ -1037,7 +1070,7 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
     if ((r = vkAllocateCommandBuffers(vk->dev, &cbi, &vk->cmd)) != VK_SUCCESS) { fail(err, errlen, "vkAllocateCommandBuffers", r); goto bad; }
     if ((r = vkCreateFence(vk->dev, &fi, 0, &vk->done)) != VK_SUCCESS) { fail(err, errlen, "vkCreateFence", r); goto bad; }
 
-    ogpu_core_init(&vk->core);
+    core_afresh(vk);
     vk->core.map = core_map;
     vk->core.fence = core_fence;
     vk->core.ext = vk->cfg.ext ? core_ext : 0;
