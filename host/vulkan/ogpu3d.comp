@@ -34,6 +34,9 @@ shared uint tile_rows0[168];     // as they were read
 #define SH(i) tile_rows[i]
 #define SH0(i) tile_rows0[i]
 #define XOR_SH(i, v) atomicXor(tile_rows[i], v)
+#define LD_SH(i) atomicOr(tile_rows[i], 0u)
+#define LD_VRAM(i) atomicOr(vram[i], 0u)
+#define LD_STAGE(i) atomicOr(stage[i], 0u)
 #define TOF(x) float(x)
 #define FLOORF(x) floor(x)
 #define UMUL_EXT(x, y, hi, lo) umulExtended(x, y, hi, lo)

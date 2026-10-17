@@ -41,6 +41,9 @@ static uint g_pc[24], g_sh[168], g_sh0[168];
 #define SH(i) g_sh[i]
 #define SH0(i) g_sh0[i]
 #define XOR_SH(i, v) (g_sh[i] ^= (v))
+#define LD_SH(i) g_sh[i]
+#define LD_VRAM(i) g_vram[i]
+#define LD_STAGE(i) g_stage[i]
 #define TOF(x) ((float)(x))
 #define FLOORF(x) floorf(x)
 #define UMUL_EXT(x, y, hi, lo) do { unsigned long long p_ = (unsigned long long)(x) * (y); (hi) = (uint)(p_ >> 32); (lo) = (uint)p_; } while (0)

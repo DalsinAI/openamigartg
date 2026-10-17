@@ -17,6 +17,8 @@
  *   SH(i), SH0(i), XOR_SH(i, v)                the workgroup's shared words
  *                                              (O3X_SHARED of them), as read,
  *                                              and an atomic exclusive or
+ *   LD_SH(i), LD_VRAM(i), LD_STAGE(i)          atomic loads, for words others
+ *                                              change atomically meanwhile
  *   PC(n)              push constant n (ogpu3d_layout.h's P3_)
  *   TOF(x), FLOORF(x)  a conversion to float, and floor of a float
  *   UMUL_EXT(x, y, hi, lo)                     GLSL's umulExtended
@@ -65,14 +67,16 @@ uint o3x_get(uint b, uint a, uint n) {
  * written back after them: a row is up to 9 words (8 pixels of 4 bytes, not
  * word aligned). Shared positions are bytes: word p >> 2, byte p & 3. A
  * pixel's bytes belong to its invocation alone, but a word may hold other
- * pixels: those words change by an atomic exclusive or of its bytes only. */
+ * pixels: those words change by an atomic exclusive or of its bytes only,
+ * and are read with atomic loads (so no load races the others' updates).
+ * The same holds in the buffers for a word two tiles share. */
 #define O3X_ROW         9u
 #define O3X_SH_T        0u              /* the target's rows, 9 words each */
 #define O3X_SH_Z        72u             /* the Z buffer's */
 #define O3X_SH_S        144u            /* the stencil buffer's, 3 words each */
 #define O3X_SHARED      168
 
-uint o3x_sh_ld8(uint p) { return (SH(p >> 2u) >> ((p & 3u) << 3u)) & 255u; }
+uint o3x_sh_ld8(uint p) { return (LD_SH(p >> 2u) >> ((p & 3u) << 3u)) & 255u; }
 
 uint o3x_sh_get(uint p, uint n) {
     uint v = 0u, k;
@@ -86,7 +90,7 @@ void o3x_sh_put(uint p, uint n, uint v) {
     if (n == 4u && (p & 3u) == 0u) { SH(p >> 2u) = o3x_bswap(v); return; }
     for (k = 0u; k < n; k++) {
         uint pk = p + k, sh = (pk & 3u) << 3u;
-        uint d = ((SH(pk >> 2u) >> sh) ^ (v >> ((n - 1u - k) << 3u))) & 255u;
+        uint d = ((LD_SH(pk >> 2u) >> sh) ^ (v >> ((n - 1u - k) << 3u))) & 255u;
         if (d != 0u) XOR_SH(pk >> 2u, d << sh);
     }
 }
@@ -114,18 +118,20 @@ void o3x_row(uint b, uint off, uint bpr, uint bpp, int w, int h, int y, int x0t,
     w0 = a >> 2u;
     n = ((e + 3u) >> 2u) - w0;
     for (i = 0u; i < 2u; i++) {
+        uint lo, m, j;
         k = lx + i * 8u;
         if (k >= n) continue;
+        /* the bytes of this word inside [a, e): all four, or a word shared with the next tile */
+        lo = (w0 + k) << 2u;
+        m = 0u;
+        for (j = 0u; j < 4u; j++) if (lo + j >= a && lo + j < e) m |= 255u << (j << 3u);
         if (!store) {
-            uint v = o3x_ldw(b, w0 + k);
+            uint v = m == 0xFFFFFFFFu ? o3x_ldw(b, w0 + k) : b == B3_VRAM ? LD_VRAM(w0 + k) : LD_STAGE(w0 + k);
             SH(base + k) = v;
             SH0(base + k) = v;
         } else {
             uint v = SH(base + k), d = v ^ SH0(base + k);
             if (d != 0u) {
-                /* the bytes of this word inside [a, e) */
-                uint lo = (w0 + k) << 2u, m = 0u, j;
-                for (j = 0u; j < 4u; j++) if (lo + j >= a && lo + j < e) m |= 255u << (j << 3u);
                 if (m == 0xFFFFFFFFu) {
                     if (b == B3_VRAM) VRAM(w0 + k) = v;
                     else STAGE(w0 + k) = v;

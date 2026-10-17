@@ -826,6 +826,7 @@ void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s) {
         s->tex_uploads = r.tex_uploads; s->tex_checks = r.tex_checks; s->tex_hits = r.tex_hits;
         s->core_px_ns = r.core_px_ns; s->gpu_px_ns = r.gpu_px_ns;
         s->record_ms = r.record_ns / 1e6;
+        s->shader3d = 1;
     }
     s->round_trip_us = vk->round_trip_ns / 1000.0;
 #endif
@@ -1058,7 +1059,30 @@ static int pick_device(struct ogpu_vk *vk, char *err, int errlen) {
 #define OGPU_VK_STAGE (32UL << 20)  /* staged targets, Z and stencil buffers outside video RAM */
 #define OGPU_VK_TEX   (32UL << 20)  /* the texture cache */
 #define OGPU_VK_DATA  (16UL << 20)  /* a submit's draw states, triangles, spans and tile lists */
-static int setup_3d(struct ogpu_vk *vk) {
+
+/* Everything setup_3d made, gone (after the device is idle): the back end
+ * then keeps the 3D range on its core, with no memory left behind. */
+static void teardown_3d(struct ogpu_vk *vk) {
+    ogpu3d_rec_destroy(vk->rec);
+    vk->rec = 0;
+    if (vk->pipe3) vkDestroyPipeline(vk->dev, vk->pipe3, 0);
+    if (vk->shader3) vkDestroyShaderModule(vk->dev, vk->shader3, 0);
+    if (vk->layout3) vkDestroyPipelineLayout(vk->dev, vk->layout3, 0);
+    if (vk->dpool3) vkDestroyDescriptorPool(vk->dev, vk->dpool3, 0);
+    if (vk->dsl3) vkDestroyDescriptorSetLayout(vk->dev, vk->dsl3, 0);
+    if (vk->stage_buf) vkDestroyBuffer(vk->dev, vk->stage_buf, 0);
+    if (vk->tex_buf) vkDestroyBuffer(vk->dev, vk->tex_buf, 0);
+    if (vk->data_buf) vkDestroyBuffer(vk->dev, vk->data_buf, 0);
+    if (vk->stage_mem) vkFreeMemory(vk->dev, vk->stage_mem, 0);
+    if (vk->tex_mem) vkFreeMemory(vk->dev, vk->tex_mem, 0);
+    if (vk->data_mem) vkFreeMemory(vk->dev, vk->data_mem, 0);
+    vk->pipe3 = 0; vk->shader3 = 0; vk->layout3 = 0; vk->dpool3 = 0; vk->dsl3 = 0; vk->dset3 = 0;
+    vk->stage_buf = vk->tex_buf = vk->data_buf = 0;
+    vk->stage_mem = vk->tex_mem = vk->data_mem = 0;
+    vk->stage = vk->texc = vk->data3 = 0;
+}
+
+static int setup_3d_parts(struct ogpu_vk *vk) {
     VkDescriptorSetLayoutBinding b[4];
     VkDescriptorSetLayoutCreateInfo dli = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     VkPushConstantRange pcr;
@@ -1159,6 +1183,12 @@ static int setup_3d(struct ogpu_vk *vk) {
     rc.round_trip_ns = vk->round_trip_ns;
     vk->rec = ogpu3d_rec_create(&rc);
     return vk->rec != 0;
+}
+
+static int setup_3d(struct ogpu_vk *vk) {
+    if (setup_3d_parts(vk)) return 1;
+    teardown_3d(vk);
+    return 0;
 }
 #endif
 
@@ -1335,18 +1365,7 @@ void ogpu_vk_destroy(struct ogpu_vk *vk) {
     if (vk->dev) {
         vkDeviceWaitIdle(vk->dev);
 #ifdef OGPU_WITH_3D
-        ogpu3d_rec_destroy(vk->rec);
-        if (vk->pipe3) vkDestroyPipeline(vk->dev, vk->pipe3, 0);
-        if (vk->shader3) vkDestroyShaderModule(vk->dev, vk->shader3, 0);
-        if (vk->layout3) vkDestroyPipelineLayout(vk->dev, vk->layout3, 0);
-        if (vk->dpool3) vkDestroyDescriptorPool(vk->dev, vk->dpool3, 0);
-        if (vk->dsl3) vkDestroyDescriptorSetLayout(vk->dev, vk->dsl3, 0);
-        if (vk->stage_buf) vkDestroyBuffer(vk->dev, vk->stage_buf, 0);
-        if (vk->tex_buf) vkDestroyBuffer(vk->dev, vk->tex_buf, 0);
-        if (vk->data_buf) vkDestroyBuffer(vk->dev, vk->data_buf, 0);
-        if (vk->stage_mem) vkFreeMemory(vk->dev, vk->stage_mem, 0);
-        if (vk->tex_mem) vkFreeMemory(vk->dev, vk->tex_mem, 0);
-        if (vk->data_mem) vkFreeMemory(vk->dev, vk->data_mem, 0);
+        teardown_3d(vk);
 #endif
         if (vk->done) vkDestroyFence(vk->dev, vk->done, 0);
         if (vk->cpool) vkDestroyCommandPool(vk->dev, vk->cpool, 0);
