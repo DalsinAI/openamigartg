@@ -683,9 +683,10 @@ void ogpu_vk_reset(struct ogpu_vk *vk) {
 }
 
 /* What a run carries out, wherever it is drawn: the GPU what it takes, the
- * core here the rest, so the answer is the core's. */
+ * core here the rest, so the answer is the core's; and the GPU APIs'
+ * range (OGPU_OP_VIRGL) goes to the caller's ext, when there is one. */
 int ogpu_vk_supports(const struct ogpu_vk *vk, int op, int format) {
-    (void)vk;
+    if (op >= OGPU_OP_EXT_FIRST && op <= OGPU_OP_EXT_LAST) return vk->cfg.ext ? OGPU_FULL : OGPU_NONE;
 #ifndef OGPU_WITH_3D
     if (op >= 0x0030 && op <= 0x003F) return OGPU_NONE;   /* no 3D state on this core */
 #endif
@@ -694,6 +695,7 @@ int ogpu_vk_supports(const struct ogpu_vk *vk, int op, int format) {
 
 int ogpu_vk_last_error(const struct ogpu_vk *vk) { return vk->last_error; }
 long ogpu_vk_error_word(const struct ogpu_vk *vk) { return vk->error_word; }
+int ogpu_vk_lost(const struct ogpu_vk *vk) { return vk->failed; }
 ogpu_u8 *ogpu_vk_vram(struct ogpu_vk *vk) { return vk->vram; }
 const char *ogpu_vk_vram_mode(struct ogpu_vk *vk) { return vk->vram_mode; }
 const char *ogpu_vk_device(struct ogpu_vk *vk) { return vk->name; }

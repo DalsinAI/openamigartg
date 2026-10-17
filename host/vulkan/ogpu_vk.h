@@ -78,10 +78,16 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words);
 void ogpu_vk_reset(struct ogpu_vk *vk);
 /* OGPU_FULL, OGPU_PARTIAL or OGPU_NONE for an opcode into a format: what a
  * run carries out, on the GPU or on the core here. As ogpu_core_supports,
- * but OGPU_NONE for the 3D range when built without OGPU_WITH_3D. */
+ * but OGPU_NONE for the 3D range when built without OGPU_WITH_3D, and for
+ * OGPU_OP_EXT_FIRST..LAST (OGPU_OP_VIRGL) OGPU_FULL when the config has an
+ * ext, which carries them out (whether it has the API behind one, such as
+ * virglrenderer, is the caller's to say), else OGPU_NONE. */
 int ogpu_vk_supports(const struct ogpu_vk *vk, int op, int format);
 int ogpu_vk_last_error(const struct ogpu_vk *vk);      /* OGPU_OK, or the first error */
 long ogpu_vk_error_word(const struct ogpu_vk *vk);
+/* 1 once a submit has failed (the device lost; that run's error is
+ * OGPU_ERR_DEVICE): from then on the core here draws everything. */
+int ogpu_vk_lost(const struct ogpu_vk *vk);
 
 struct ogpu_vk_stats {
     unsigned long gpu;      /* drawing commands the GPU did */

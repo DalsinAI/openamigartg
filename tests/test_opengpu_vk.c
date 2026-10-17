@@ -344,9 +344,29 @@ static void test_xrgb32(void) {
 
 /* ---- the 3D range ------------------------------------------------------------------ */
 
+/* A caller's ext (OGPU_OP_VIRGL's API): what it was given, in stream order. */
+static int ext_calls, ext_op, ext_order, ext_fences;
+static unsigned long ext_addr, ext_bytes;
+static int ext_vk(void *user, int op, const ogpu_u8 *cmd, long words) {
+    (void)user;
+    ext_calls++;
+    ext_op = op;
+    ext_order = ext_fences;
+    if (words >= 3) {
+        ext_addr = (unsigned long)cmd[4] << 24 | (unsigned long)cmd[5] << 16 | (unsigned long)cmd[6] << 8 | cmd[7];
+        ext_bytes = (unsigned long)cmd[8] << 24 | (unsigned long)cmd[9] << 16 | (unsigned long)cmd[10] << 8 | cmd[11];
+    }
+    return OGPU_OK;
+}
+static void fence_ext(void *user, ogpu_u32 id) { (void)user; (void)id; ext_fences++; }
+
 /* What the back end answers is what it carries out: the core's answers,
- * and the 3D range only when it has the core's 3D state. */
+ * the 3D range only when it has the core's 3D state, and the GPU APIs'
+ * range (OGPU_OP_VIRGL) only when the caller gave it an ext. */
 static void test_supports(void) {
+    struct ogpu_vk_config cfg;
+    struct ogpu_vk *X;
+    char err[200];
     int op, f, bad = 0;
     for (op = 0; op <= 0xFF; op++)
         for (f = 0; f <= 8; f++) {
@@ -363,6 +383,31 @@ static void test_supports(void) {
 #else
     CHECK(ogpu_vk_supports(V, OGPU_OP_TRIANGLES, OGPU_FMT_ARGB32) == OGPU_NONE, "without OGPU_WITH_3D, no 3D");
 #endif
+    CHECK(ogpu_vk_supports(V, OGPU_OP_VIRGL, 0) == OGPU_NONE, "with no ext, VIRGL is NONE");
+
+    /* A second back end, with an ext: VIRGL is FULL, and a run hands it the
+     * command, in order, once. Its other answers are the first one's. */
+    memset(&cfg, 0, sizeof cfg);
+    cfg.vram_base = VBASE;
+    cfg.vram_size = 1u << 16;
+    cfg.fence = fence_ext;
+    cfg.ext = ext_vk;
+    X = ogpu_vk_create(&cfg, err, sizeof err);
+    CHECK(X != 0, "a second back end, with an ext: %s", err);
+    if (!X) return;
+    CHECK(ogpu_vk_supports(X, OGPU_OP_VIRGL, 0) == OGPU_FULL && ogpu_vk_supports(X, OGPU_OP_EXT_FIRST, OGPU_FMT_ARGB32) == OGPU_FULL
+          && ogpu_vk_supports(X, OGPU_OP_EXT_LAST, 0) == OGPU_FULL, "with an ext, the range 0x80-0x8F is FULL");
+    for (op = 0, bad = 0; op <= 0xFF; op++)
+        for (f = 0; f <= 8; f++)
+            if ((op < OGPU_OP_EXT_FIRST || op > OGPU_OP_EXT_LAST) && ogpu_vk_supports(X, op, f) != ogpu_vk_supports(V, op, f) && bad++ < 4)
+                CHECK(0, "with an ext, ogpu_vk_supports(%#x, %d) is %d, without %d", op, f, ogpu_vk_supports(X, op, f), ogpu_vk_supports(V, op, f));
+    begin(); ogpu_fence(&B, 1); ogpu_virgl(&B, 0x1000, 256); ogpu_fence(&B, 2);
+    ext_calls = ext_fences = 0;
+    ogpu_vk_run(X, sbuf, B.words);
+    CHECK(ogpu_vk_last_error(X) == OGPU_OK && ext_calls == 1 && ext_op == OGPU_OP_VIRGL && ext_order == 1 && ext_addr == 0x1000
+          && ext_bytes == 256 && ext_fences == 2, "with an ext, VIRGL is handed to it once, in order (calls %d, error %d)",
+          ext_calls, ogpu_vk_last_error(X));
+    ogpu_vk_destroy(X);
 }
 
 #ifdef OGPU_WITH_3D
@@ -502,9 +547,11 @@ int main(int argc, char **argv) {
     }
     V = ogpu_vk_create(&cfg, err, sizeof err);
     if (!V) {
-        /* Only a machine with no Vulkan device skips; anything else is a failure. */
-        int none = !strncmp(err, "no Vulkan device", 16) || !strncmp(err, "no device with compute", 22)
-                   || !strncmp(err, "vkCreateInstance", 16);
+        /* Only a machine with no Vulkan device skips: no driver (the loader's
+         * VK_ERROR_INCOMPATIBLE_DRIVER), none listed, or none that computes.
+         * Any other error, a driver that fails to start among them, fails. */
+        int none = !strcmp(err, "vkCreateInstance (VkResult -9)") || !strcmp(err, "no Vulkan device (VkResult 0)")
+                   || !strncmp(err, "no device with compute", 22);
         printf("opengpu vulkan: %s (%s)\n", none ? "no device; skipped" : "FAILED to start", err);
         return none ? 0 : 1;
     }

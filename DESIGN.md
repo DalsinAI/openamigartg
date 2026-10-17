@@ -648,7 +648,9 @@ uses the host's driver through Vulkan:
   `OGPU_WITH_3D` as the core is; the state lasts from run to run and a reset
   clears it, as on the CPU path. So `OGPU_Query` answers FULL for them
   under Vulkan as on the CPU: the board carries them out whole, and nothing
-  falls back to the 68k. `ogpu_vk_supports` gives the back end's answer.
+  falls back to the 68k. `ogpu_vk_supports` gives the back end's answer;
+  for the GPU APIs' range (OGPU_OP_VIRGL) it is FULL when the caller gave
+  the back end an `ext`, which the run hands those commands to.
   Before this, they were OGPU_ERR_BADOP under Vulkan.
 
 ### Compute for TLS: AmiSSL's maths through OpenGPU
