@@ -19,6 +19,8 @@ typedef unsigned long long o3r_u64;
 #define O3R_STAGED   8                      /* surfaces staged in one submit */
 #define O3R_RANGES   64                     /* pending writes tracked one by one */
 #define O3R_TEX      256                    /* texture cache entries */
+#define O3R_BANDS    8200                   /* bands to start with: one triangle's most (65535 rows / 8 + 2) */
+#define O3R_ROWS     65536                  /* spans of one triangle: every row a target has */
 #define O3R_MODE_AUTO 0
 #define O3R_MODE_GPU  1
 #define O3R_MODE_CORE 2
@@ -424,12 +426,7 @@ void ogpu3d_rec_close(struct ogpu3d_rec *r) {
     th = r->gty1 - r->gty0 + 1;
     tiles = tw * th;
     need = (unsigned long)(tiles * 2 + r->entries);
-    if ((long)need > r->scap) {
-        o3r_u32 *n = realloc(r->scratch, need * 4 + (unsigned long)tiles * 4);
-        if (!n) { r->nb = 0; return; }      /* can't happen: sized on the way */
-        r->scratch = n;
-        r->scap = (long)need;
-    }
+    if ((long)need > r->scap) { r->nb = 0; r->stats.lost++; return; }   /* can't happen: the data buffer holds them */
     /* counts, then each tile's first entry, then the entries in stream order */
     hdr = r->scratch;
     ent = r->scratch + tiles * 2;
@@ -717,11 +714,7 @@ static void o3r_tri(void *user, const struct o3_tri *tr, int ystart, int yend) {
     long rows = yend - ystart;
     r->tri = *tr;
     r->t_ys = ystart; r->t_ye = yend;
-    if (rows > r->spcap) {
-        o3r_u32 *n = realloc(r->spans, (size_t)rows * 2 * sizeof *n);
-        if (n) { r->spans = n; r->spcap = rows * 2; }
-        else r->lost = 1;
-    }
+    if (rows > r->spcap) r->lost = 1;       /* can't happen: a row of every row a target has */
 }
 
 /* A triangle, its spans all in: written out, with its place in the tiles. */
@@ -760,9 +753,10 @@ static void o3r_commit(struct ogpu3d_rec *r) {
     if (r->nb + (ty1 - ty0 + 1) > r->bcap) {
         long cap = (r->nb + (ty1 - ty0 + 1)) * 2;
         struct o3r_band *n = realloc(r->bands, (size_t)cap * sizeof *n);
-        if (!n) { r->lost = 1; return; }
-        r->bands = n;
-        r->bcap = cap;
+        if (n) { r->bands = n; r->bcap = cap; }
+        /* out of memory: send the group, whose bands then start again (one
+         * triangle's always fit: O3R_BANDS) */
+        else if (o3r_flush(r), !o3r_prepare(r)) { r->lost = 1; return; }
     }
     /* room: the record, its spans and the group's tile lists with it */
     for (k = 0; k < 2; k++) {
@@ -914,11 +908,14 @@ struct ogpu3d_rec *ogpu3d_rec_create(const struct ogpu3d_rec_cfg *cfg) {
     r->mode = m && !strcmp(m, "gpu") ? O3R_MODE_GPU : m && !strcmp(m, "core") ? O3R_MODE_CORE : O3R_MODE_AUTO;
     r->core_px_ns = O3R_CORE_PX_NS;
     r->gpu_px_ns = O3R_GPU_PX_NS;
-    r->bcap = 4096;
+    /* host memory taken now, so a command never finds itself without it */
+    r->bcap = O3R_BANDS;
     r->bands = malloc((size_t)r->bcap * sizeof *r->bands);
-    r->spcap = 4096;
+    r->spcap = O3R_ROWS;
     r->spans = malloc((size_t)r->spcap * sizeof *r->spans);
-    if (!r->bands || !r->spans) { ogpu3d_rec_destroy(r); return 0; }
+    r->scap = (long)(cfg->data_size / 4);
+    r->scratch = malloc((size_t)r->scap * sizeof *r->scratch);
+    if (!r->bands || !r->spans || !r->scratch) { ogpu3d_rec_destroy(r); return 0; }
     o3r_forget(r);
     o3r_tex_reset(r);
     return r;

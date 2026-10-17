@@ -103,6 +103,7 @@ struct ogpu_vk_stats {
     unsigned long tri_gpu, tri_cpu, tri_declined;
     unsigned long tex_uploads, tex_checks, tex_hits;
     double core_px_ns, gpu_px_ns, round_trip_us;
+    int shader3d;           /* 1: TRIANGLES can go to the 3D shader (it was set up) */
     double record_ms;       /* the CPU's time on TRIANGLES the GPU drew */
     double wait_ms;         /* time spent waiting for the GPU (every submit) */
 };

@@ -557,7 +557,8 @@ static void test_3d_random(int rounds) {
            "textures %lu up, %lu checked, %lu hits\n", n, st.tri_gpu - st0.tri_gpu, st.tri_cpu - st0.tri_cpu,
            st.tri_declined - st0.tri_declined, st.tex_uploads - st0.tex_uploads, st.tex_checks - st0.tex_checks, st.tex_hits - st0.tex_hits);
     if (getenv("OGPU_VK_3D") && !strcmp(getenv("OGPU_VK_3D"), "gpu"))
-        CHECK(st.tri_gpu - st0.tri_gpu > (unsigned long)rounds, "the 3D shader drew the scenes (%lu commands)", st.tri_gpu - st0.tri_gpu);
+        CHECK(st.shader3d && st.tri_gpu - st0.tri_gpu > (unsigned long)rounds, "the 3D shader drew the scenes (set up %d, %lu commands)",
+              st.shader3d, st.tri_gpu - st0.tri_gpu);
 }
 #endif
 
