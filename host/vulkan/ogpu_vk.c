@@ -355,15 +355,15 @@ static void list_send(struct ogpu_vk *vk) {
                 if (fill) fill[ty * across + tx + 1]++;
     }
     if (fill) {
-        ogpu_u32 *start = (ogpu_u32 *)(void *)(vk->arena + table);
+        uint32_t *start = (uint32_t *)(void *)(vk->arena + table);   /* 32-bit words, as the shader reads them */
         for (k = 1; k <= tiles; k++) fill[k] += fill[k - 1];
-        for (k = 0; k <= tiles; k++) start[k] = refs / 4 + (ogpu_u32)fill[k];
+        for (k = 0; k <= tiles; k++) start[k] = (uint32_t)(refs / 4 + fill[k]);
         for (i = 0; i < n; i++) {       /* each tile's entries, in stream order */
             const ogpu_u32 *a = vk->list[i].args;
             unsigned long tx, ty;
             for (ty = (unsigned long)((int)a[A_Y] - y0) / LIST_TILE; ty <= (unsigned long)((int)(a[A_Y] + a[A_H] - 1) - y0) / LIST_TILE; ty++)
                 for (tx = (unsigned long)((int)a[A_X] - x0) / LIST_TILE; tx <= (unsigned long)((int)(a[A_X] + a[A_W] - 1) - x0) / LIST_TILE; tx++)
-                    ((ogpu_u32 *)(void *)(vk->arena + refs))[fill[ty * across + tx]++] = (at + (ogpu_u32)i * 128) / 4;
+                    ((uint32_t *)(void *)(vk->arena + refs))[fill[ty * across + tx]++] = (uint32_t)((at + (ogpu_u32)i * 128) / 4);
         }
         free(fill);
     }
@@ -1083,16 +1083,47 @@ static double work(const struct ogpu_vk *vk, int op, const ogpu_u8 *a, int *kind
     return 0;
 }
 
+static int listable(ogpu_u32 op);
+
+/* The run of commands a composite list could take from word `at` on (the
+ * first one is the command being routed): what they cost on the core and
+ * as one list on the GPU, by their rectangles as given (clipping is only
+ * known as they run). It ends at anything else that draws, a TARGET or a
+ * FENCE; SURFACE and CLIP go on. */
+static void run_ahead(const struct ogpu_vk *vk, const ogpu_u8 *stream, long at, long words, double *core, double *gpu) {
+    int seen = 0;
+    *core = *gpu = 0;
+    while (at < words && seen < 512) {
+        ogpu_u32 hdr = rd32(stream + at * 4);
+        int op = (int)OGPU_HDR_OP(hdr), len = (int)OGPU_HDR_WORDS(hdr), kind;
+        if (len < 1 || at + len > words) break;
+        if (op == OGPU_OP_SURFACE || op == OGPU_OP_CLIP || op == OGPU_OP_NOP) { at += len; continue; }
+        if (!listable((ogpu_u32)op) || len - 1 < args_for(op)) break;
+        {
+            double n = work(vk, op, stream + at * 4 + 4, &kind);
+            *core += n * k_cost[kind].core / 1000;
+            *gpu += n * k_cost[kind].gpu / 1000 + 2;
+        }
+        seen++;
+        at += len;
+    }
+}
+
 /* 1 when the command, which the GPU path may take, is to go there: always
  * with OGPU_VK_ROUTE_GPU, never with OGPU_VK_ROUTE_CORE, and by cost
  * otherwise. With nothing recorded, the GPU costs a round trip and the core
- * no wait; with something recorded, the GPU only its dispatch, and the core
- * a wait for what is recorded first. */
-static int route_gpu(struct ogpu_vk *vk, int op, const ogpu_u8 *a) {
+ * no wait (for a command a composite list takes, the whole run of them a
+ * list would take is weighed); with something recorded, the GPU only its
+ * dispatch, and the core a wait for what is recorded first. */
+static int route_gpu(struct ogpu_vk *vk, int op, const ogpu_u8 *a, const ogpu_u8 *stream, long at, long words) {
     double n, core, gpu;
     int kind;
     if (vk->route == OGPU_VK_ROUTE_GPU) return 1;
     if (vk->route == OGPU_VK_ROUTE_CORE) return 0;
+    if (!vk->recording && !vk->list_n && vk->list && listable((ogpu_u32)op)) {
+        run_ahead(vk, stream, at, words, &core, &gpu);
+        return gpu + vk->trip < core;
+    }
     n = work(vk, op, a, &kind);
     core = n * k_cost[kind].core / 1000;
     gpu = n * k_cost[kind].gpu / 1000;
@@ -1164,7 +1195,7 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
         }
         int drawable = !vk->failed && gpu_op(op) && vk->core.target >= 0 && vk->core.slot[vk->core.target].pixels;
         ogpu_u32 dst;
-        if (drawable && gpu_target(vk, &dst) && !route_gpu(vk, op, stream + at * 4 + 4)) {
+        if (drawable && gpu_target(vk, &dst) && !route_gpu(vk, op, stream + at * 4 + 4, stream, at, words)) {
             drawable = 0;           /* cheaper on the core */
             vk->stats.routed++;
         }
