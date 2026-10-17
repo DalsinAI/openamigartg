@@ -234,6 +234,38 @@ PX_FN void xor_raw(ogpu_u8 *p, int bpp, const ogpu_u8 *v) {
     if (bpp > 1) { p[1] ^= v[1]; if (bpp > 2) { p[2] ^= v[2]; p[3] ^= v[3]; } }
 }
 
+/* v1.4: whole 32-bit words where a row allows it (fills and copies): the
+ * same bytes as the byte loops, a quarter of the stores. The word is put
+ * together in memory order, so it is right on either byte order. */
+typedef unsigned int ogpu_w32;          /* 32 bits on the 68k and the hosts */
+PX_FN ogpu_w32 word_of(const ogpu_u8 *b) {
+    ogpu_w32 w;
+    ogpu_u8 *p = (ogpu_u8 *)&w;
+    p[0] = b[0]; p[1] = b[1]; p[2] = b[2]; p[3] = b[3];
+    return w;
+}
+PX_FN int aligned4(const void *p) { return ((unsigned long)p & 3) == 0; }
+
+/* n bytes of one row from sp to dp, front to back (no overlap that matters) */
+PX_FN void copy_fwd(ogpu_u8 *dp, const ogpu_u8 *sp, int n) {
+    if (aligned4(dp) && aligned4(sp)) {
+        ogpu_w32 *q = (ogpu_w32 *)dp;
+        const ogpu_w32 *r = (const ogpu_w32 *)sp;
+        int k = n >> 2;
+        n &= 3;
+        while (k >= 4) { q[0] = r[0]; q[1] = r[1]; q[2] = r[2]; q[3] = r[3]; q += 4; r += 4; k -= 4; }
+        while (k--) *q++ = *r++;
+        dp = (ogpu_u8 *)q; sp = (const ogpu_u8 *)r;
+    }
+    while (n--) *dp++ = *sp++;
+}
+
+/* n words of wv from q */
+PX_FN void fill_words(ogpu_w32 *q, ogpu_w32 wv, int n) {
+    while (n >= 4) { q[0] = wv; q[1] = wv; q[2] = wv; q[3] = wv; q += 4; n -= 4; }
+    while (n--) *q++ = wv;
+}
+
 /* The draw modes of a 1-bit source (TEMPLATE, PATTERN, LINE), worked out
  * once per command. */
 struct pen { ogpu_u8 fg[4], bg[4], flip[4]; int bpp, mode; };
@@ -385,10 +417,24 @@ OP_FN op_fill(struct ogpu_core *c, const ogpu_u8 *a, int invert) {
             else { ogpu_u8 b0 = pv[0]; for (i = 0; i < w; i++) p[i] ^= b0; }
         } else if (bpp == 4) {
             ogpu_u8 b0 = pv[0], b1 = pv[1], b2 = pv[2], b3 = pv[3];
-            for (i = 0; i < w; i++, p += 4) { p[0] = b0; p[1] = b1; p[2] = b2; p[3] = b3; }
+            if (aligned4(p)) {
+                fill_words((ogpu_w32 *)p, word_of(pv), w);
+            } else
+                for (i = 0; i < w; i++, p += 4) { p[0] = b0; p[1] = b1; p[2] = b2; p[3] = b3; }
         } else if (bpp == 2) {
             ogpu_u8 b0 = pv[0], b1 = pv[1];
-            for (i = 0; i < w; i++, p += 2) { p[0] = b0; p[1] = b1; }
+            i = 0;
+            if (((unsigned long)p & 1) == 0) {
+                if (!aligned4(p) && w) { p[0] = b0; p[1] = b1; p += 2; i = 1; }
+                if (i + 2 <= w) {
+                    ogpu_u8 q4[4];
+                    int k = (w - i) >> 1;
+                    q4[0] = b0; q4[1] = b1; q4[2] = b0; q4[3] = b1;
+                    fill_words((ogpu_w32 *)p, word_of(q4), k);
+                    i += k << 1; p += k << 2;
+                }
+            }
+            for (; i < w; i++, p += 2) { p[0] = b0; p[1] = b1; }
         } else {
             ogpu_u8 b0 = pv[0];
             for (i = 0; i < w; i++) p[i] = b0;
@@ -423,7 +469,7 @@ OP_FN op_copy(struct ogpu_core *c, const ogpu_u8 *a) {
         const ogpu_u8 *sp = px_at(s, sx, sy + r);
         ogpu_u8 *dp = px_at(t, x, y + r);
         if (dp > sp && dp < sp + n) { for (j = n - 1; j >= 0; j--) dp[j] = sp[j]; }
-        else { for (j = 0; j < n; j++) dp[j] = sp[j]; }
+        else copy_fwd(dp, sp, n);
     }
     return OGPU_OK;
 }
@@ -1073,6 +1119,47 @@ OP_FN op_composite_pd(struct ogpu_core *c, const ogpu_u8 *a) {
     if (op == OGPU_PD_DST) return OGPU_OK;
     dbpp = bytes_per_pixel(t->format);
     drow = px_at(t, x, y);
+    /* The browser's two commonest, without the general reads and writes
+     * (the same arithmetic): an ARGB32 image OVER ARGB32 or XRGB32, and a
+     * solid colour OVER them through an A8 mask (text). */
+    if (op == OGPU_PD_OVER && (t->format == OGPU_FMT_ARGB32 || t->format == OGPU_FMT_XRGB32) && !srep && !mrep &&
+        ((s && s->format == OGPU_FMT_ARGB32 && !(of & (OGPU_PD_MASK | OGPU_PD_MASK_SOLID)) &&
+          sx + ox >= 0 && sy + oy >= 0 && sx + ox + w <= s->w && sy + oy + h <= s->h) ||
+         (!s && m && m->format == OGPU_FMT_A8 && mx + ox >= 0 && my + oy >= 0 && mx + ox + w <= m->w && my + oy + h <= m->h))) {
+        int xa = t->format == OGPU_FMT_XRGB32;
+        for (j = 0; j < h; j++, drow += t->bpr) {
+            ogpu_u8 *dp = drow;
+            if (s) {
+                const ogpu_u8 *sp = row_at(s, sy + oy + j) + xoff(sx + ox, 4);
+                for (i = 0; i < w; i++, dp += 4, sp += 4) {
+                    unsigned sa = sp[0], ia;
+                    if (sa == 255) { dp[0] = xa ? 0 : 255; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = sp[3]; continue; }
+                    if (!(sa | sp[1] | sp[2] | sp[3])) continue;
+                    ia = 255 - sa;
+                    dp[0] = xa ? 0 : (ogpu_u8)sat8(sa + mul255(dp[0], ia));
+                    dp[1] = (ogpu_u8)sat8(sp[1] + mul255(dp[1], ia));
+                    dp[2] = (ogpu_u8)sat8(sp[2] + mul255(dp[2], ia));
+                    dp[3] = (ogpu_u8)sat8(sp[3] + mul255(dp[3], ia));
+                }
+            } else {
+                const ogpu_u8 *mp = row_at(m, my + oy + j) + (mx + ox);
+                for (i = 0; i < w; i++, dp += 4) {
+                    unsigned ma = mp[i], ca, cr, cg, cb, ia;
+                    if (!ma) continue;
+                    if (ma == 255) { ca = solid.a; cr = solid.r; cg = solid.g; cb = solid.b; }
+                    else { ca = mul255(solid.a, ma); cr = mul255(solid.r, ma); cg = mul255(solid.g, ma); cb = mul255(solid.b, ma); }
+                    if (ca == 255) { dp[0] = xa ? 0 : 255; dp[1] = (ogpu_u8)cr; dp[2] = (ogpu_u8)cg; dp[3] = (ogpu_u8)cb; continue; }
+                    if (!(ca | cr | cg | cb)) continue;
+                    ia = 255 - ca;
+                    dp[0] = xa ? 0 : (ogpu_u8)sat8(ca + mul255(dp[0], ia));
+                    dp[1] = (ogpu_u8)sat8(cr + mul255(dp[1], ia));
+                    dp[2] = (ogpu_u8)sat8(cg + mul255(dp[2], ia));
+                    dp[3] = (ogpu_u8)sat8(cb + mul255(dp[3], ia));
+                }
+            }
+        }
+        return OGPU_OK;
+    }
     for (j = 0; j < h; j++, drow += t->bpr) {
         ogpu_u8 *dp = drow;
         const ogpu_u8 *srow = 0, *mrow = 0;
