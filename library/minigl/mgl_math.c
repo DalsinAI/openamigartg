@@ -5,17 +5,32 @@
  * takes square roots; sines, exponentials and the conversions it does not
  * have trap to software that is slow or missing, so these are written out
  * with what it has. Accurate to a few units in the last place of a float,
- * which is all OpenGL asks. */
+ * which is all OpenGL asks.
+ *
+ * build.sh compiles this file, with the rest of the front end, twice: for
+ * the FPU (-m68881, where __HAVE_68881__ is defined and the FPU's own FMOVE.L
+ * and FSQRT are used) and soft (the C below; libm's sqrtf goes through
+ * mathieeesingtrans). The C rounds as FMOVE.L does, so both draw the same. */
 #include "mgl_internal.h"
 
 LONG mgl_f2l(float f)
 {
-#if defined(__m68k__) && !defined(MGL_HOST)
+#ifdef __HAVE_68881__
     LONG r;
     __asm__("fmove.l %1,%0" : "=d"(r) : "f"(f));   /* rounded to the nearest (the FPU's own mode) */
     return r;
 #else
-    return (LONG)(f < 0.0f ? f - 0.5f : f + 0.5f);
+    /* To the nearest, ties to even, out of range saturated: FMOVE.L's answers. */
+    LONG i;
+    float r;
+    if (f >= 2147483648.0f) return 0x7fffffff;
+    if (f <= -2147483648.0f) return (LONG)0x80000000;
+    if (f != f) return 0x7fffffff;
+    i = (LONG)f;                    /* toward zero */
+    r = f - (float)i;               /* exact: the fraction */
+    if (r > 0.5f || (r == 0.5f && (i & 1))) i++;
+    else if (r < -0.5f || (r == -0.5f && (i & 1))) i--;
+    return i;
 #endif
 }
 
@@ -38,7 +53,7 @@ float mgl_floor(float x)
 float mgl_sqrt(float x)
 {
     if (!(x > 0.0f)) return 0.0f;
-#if defined(__m68k__) && !defined(MGL_HOST)
+#ifdef __HAVE_68881__
     {
         float r;
         __asm__("fsqrt.x %1,%0" : "=f"(r) : "f"(x));
