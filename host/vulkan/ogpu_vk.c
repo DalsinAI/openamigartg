@@ -133,12 +133,23 @@ static int args_for(int op) {
     case OGPU_OP_PIXELS: return 6;
     case OGPU_OP_MASK: return 5;
     case OGPU_OP_COMPOSITE: return 7;
-    case OGPU_OP_FILL_BLEND: return 4;
+    case OGPU_OP_FILL_BLEND: case OGPU_OP_LINES_BLEND: case OGPU_OP_POINTS_BLEND: return 4;
     case OGPU_OP_COMPOSITE_AFFINE: return 11;
     case OGPU_OP_YUV: return 9;
     case OGPU_OP_FENCE: return 1;
     }
-    return -1;     /* LINES_BLEND, POINTS_BLEND and the rest: the core's, length and all */
+    return -1;     /* the 3D range, the GPU APIs' and the rest: the core's, length and all */
+}
+
+/* The drawing commands the GPU path takes (gpu_draw). */
+static int gpu_op(int op) {
+    switch (op) {
+    case OGPU_OP_FILL: case OGPU_OP_INVERT: case OGPU_OP_COPY: case OGPU_OP_TEMPLATE: case OGPU_OP_PATTERN:
+    case OGPU_OP_LINE: case OGPU_OP_PIXELS: case OGPU_OP_MASK: case OGPU_OP_COMPOSITE:
+    case OGPU_OP_FILL_BLEND: case OGPU_OP_COMPOSITE_AFFINE: case OGPU_OP_YUV:
+        return 1;
+    }
+    return 0;
 }
 
 static int clip_rect(const struct ogpu_core *c, int *x, int *y, int *w, int *h, int *ox, int *oy) {
@@ -981,8 +992,7 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
             if (vk->last_error == OGPU_OK) { vk->last_error = OGPU_ERR_BADLEN; vk->error_word = at; }
             break;
         }
-        int drawable = !vk->failed && need >= 0 && op >= OGPU_OP_FILL && op < OGPU_OP_FENCE
-                       && vk->core.target >= 0 && vk->core.slot[vk->core.target].pixels;
+        int drawable = !vk->failed && gpu_op(op) && vk->core.target >= 0 && vk->core.slot[vk->core.target].pixels;
         ogpu_u32 dst;
         if (drawable && gpu_target(vk, &dst) && !route_gpu(vk, op, stream + at * 4 + 4)) {
             drawable = 0;           /* cheaper on the core */
