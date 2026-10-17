@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 //
 // OpenGPU's compute shader (G2, DESIGN.md section 5): the drawing commands of
-// OGPU stream v1.1, as library/opengpu/ogpu_core.c does them, on the host's
-// GPU. ogpu_vk.c decodes the stream, clips each command as the core does and
-// dispatches this shader once per command, so the GPU only draws.
+// OGPU stream v1.1, and v1.2's FILL_BLEND, COMPOSITE's blend modes,
+// COMPOSITE_AFFINE and YUV, as library/opengpu/ogpu_core.c does them, on the
+// host's GPU. ogpu_vk.c decodes the stream, clips each command as the core
+// does and dispatches this shader once per command, so the GPU only draws.
 //
 // Video RAM and the upload arena are byte arrays in the Amiga's order, seen
 // here as 32-bit words (byte a is bits 8*(a&3) of word a>>2). Each word of
@@ -23,10 +24,14 @@ layout(push_constant) uniform P { uint p[32]; } pc;
 
 // Opcodes as stream.h's
 const uint OP_FILL = 0x10u, OP_INVERT = 0x11u, OP_COPY = 0x12u, OP_TEMPLATE = 0x13u,
-           OP_PATTERN = 0x14u, OP_LINE = 0x15u, OP_PIXELS = 0x16u, OP_MASK = 0x17u, OP_COMPOSITE = 0x20u;
+           OP_PATTERN = 0x14u, OP_LINE = 0x15u, OP_PIXELS = 0x16u, OP_MASK = 0x17u, OP_COMPOSITE = 0x20u,
+           OP_FILL_BLEND = 0x18u, OP_AFFINE = 0x21u, OP_YUV = 0x22u;
 const uint FMT_CLUT8 = 1u, FMT_RGB565 = 2u, FMT_ARGB32 = 3u, FMT_INDEX8 = 4u, FMT_A8 = 5u;
 const uint JAM2 = 1u, COMPLEMENT = 2u, INVERSVID = 4u;
-const uint COMP_SRCALPHA = 1u, COMP_BILINEAR = 2u, COMP_MASK = 4u, COMP_ADD = 8u, COMP_IN = 16u;
+const uint COMP_SRCALPHA = 1u, COMP_BILINEAR = 2u, COMP_MASK = 4u, COMP_ADD = 8u, COMP_IN = 16u, COMP_BLENDMODE = 128u;
+const uint BLEND_NONE = 0u, BLEND_BLEND = 1u, BLEND_ADD = 2u, BLEND_MOD = 3u, BLEND_MUL = 4u;
+const uint AFF_SRCALPHA = 8u, AFF_BILINEAR = 16u;
+const uint YUV_NV12 = 3u, YUV_NV21 = 4u, YUV_YUY2 = 5u, YUV_UYVY = 6u;
 
 // The push constants (ogpu_vk.c fills them; see its struct ogpu_vk_args)
 #define A_OP        pc.p[0]
@@ -47,13 +52,14 @@ const uint COMP_SRCALPHA = 1u, COMP_BILINEAR = 2u, COMP_MASK = 4u, COMP_ADD = 8u
 #define A_FG        pc.p[14]    // FILL's colour, INVERT's mask
 #define A_BG        pc.p[15]
 #define A_MODE      pc.p[16]
-#define A_FIRST     pc.p[17]    // TEMPLATE's first bit; PATTERN's rows
-#define A_TABLE     pc.p[18]    // PIXELS' INDEX8 table, or 0xFFFFFFFF
+#define A_FIRST     pc.p[17]    // TEMPLATE's first bit; PATTERN's rows; COMPOSITE_AFFINE's row starts (in the arena)
+#define A_TABLE     pc.p[18]    // PIXELS' INDEX8 table, or 0xFFFFFFFF; YUV's U (or UV) plane
+#define A_VSRC      pc.p[19]    // YUV's V plane (its bytes per row: A_VBPR; the U plane's: A_BG)
 #define A_SX        int(pc.p[20])
 #define A_SY        int(pc.p[21])
 #define A_SW        int(pc.p[22])
 #define A_SH        int(pc.p[23])
-#define A_STEPX     pc.p[24]
+#define A_STEPX     pc.p[24]    // COMPOSITE's 16.16 steps; COMPOSITE_AFFINE's du and dv a pixel
 #define A_STEPY     pc.p[25]
 #define A_ALPHA     pc.p[26]
 #define A_FLAGS     pc.p[27]
@@ -65,6 +71,7 @@ const uint COMP_SRCALPHA = 1u, COMP_BILINEAR = 2u, COMP_MASK = 4u, COMP_ADD = 8u
 #define A_MBPR      pc.p[29]
 #define A_MX        int(pc.p[30])
 #define A_MY        int(pc.p[31])
+#define A_VBPR      pc.p[28]      // YUV's V plane's bytes per row
 
 uint ld8(uint inArena, uint a) {
     uint w = inArena != 0u ? arena[a >> 2] : vram[a >> 2];
@@ -159,6 +166,51 @@ uint blend(uint old, uint f, uint sp, uint ea, uint flags) {
     return from_argb((min(oa, 255u) << 24) | (min(r, 255u) << 16) | (min(g, 255u) << 8) | min(b, 255u), f);
 }
 
+// v1.2's blend modes, SDL's (as ogpu_core.c's blend12): source sp (its
+// colour; its alpha is sa) put on `old`.
+uint blend12(uint old, uint f, uint sp, uint sa, uint mode) {
+    uint sr = (sp >> 16) & 255u, sg = (sp >> 8) & 255u, sb = sp & 255u;
+    uint d, dr, dg, db, r, g, b, oa, ia;
+    if (mode == BLEND_NONE) return from_argb((sa << 24) | (sr << 16) | (sg << 8) | sb, f);
+    if (mode != BLEND_ADD && mode != BLEND_MOD && mode != BLEND_MUL) {     // BLEND
+        if (sa == 255u) return from_argb(0xFF000000u | (sr << 16) | (sg << 8) | sb, f);
+        if (sa == 0u) return old;
+    } else if (mode == BLEND_ADD && sa == 0u) return old;
+    d = to_argb(old, f);
+    dr = (d >> 16) & 255u; dg = (d >> 8) & 255u; db = d & 255u;
+    if (mode == BLEND_ADD) {
+        r = dr + mul255(sr, sa); g = dg + mul255(sg, sa); b = db + mul255(sb, sa); oa = d >> 24;
+    } else if (mode == BLEND_MOD) {
+        r = mul255(sr, dr); g = mul255(sg, dg); b = mul255(sb, db); oa = d >> 24;
+    } else if (mode == BLEND_MUL) {
+        ia = 255u - sa;
+        r = mul255(sr, dr) + mul255(dr, ia); g = mul255(sg, dg) + mul255(dg, ia); b = mul255(sb, db) + mul255(db, ia);
+        oa = d >> 24;
+    } else {
+        ia = 255u - sa;
+        r = mul255(sr, sa) + mul255(dr, ia); g = mul255(sg, sa) + mul255(dg, ia); b = mul255(sb, sa) + mul255(db, ia);
+        oa = sa + mul255(d >> 24, ia);
+    }
+    return from_argb((min(oa, 255u) << 24) | (min(r, 255u) << 16) | (min(g, 255u) << 8) | min(b, 255u), f);
+}
+
+// A bilinear sample at 16.16 source position (px, py) from the pixel's
+// centre, as ogpu_core.c's sample_bi: in the sw x sh rectangle at A_SX, A_SY.
+uint bilinear(int px, int py, int sw, int sh) {
+    int fx = px - 0x8000, fy = py - 0x8000;
+    if (fx < 0) fx = 0;
+    if (fy < 0) fy = 0;
+    int x0 = fx >> 16, y0 = fy >> 16;
+    uint wx = uint(fx >> 8) & 255u, wy = uint(fy >> 8) & 255u;
+    if (x0 >= sw - 1) { x0 = sw - 1; wx = 0u; }
+    if (y0 >= sh - 1) { y0 = sh - 1; wy = 0u; }
+    int x1 = x0 + 1 < sw ? x0 + 1 : x0, y1 = y0 + 1 < sh ? y0 + 1 : y0;
+    return mix_px(mix_px(sample_src(A_SX + x0, A_SY + y0), sample_src(A_SX + x1, A_SY + y0), wx),
+                  mix_px(sample_src(A_SX + x0, A_SY + y1), sample_src(A_SX + x1, A_SY + y1), wx), wy);
+}
+
+uint clamp255(int v) { return v < 0 ? 0u : v > 255 ? 255u : uint(v); }
+
 // The new value of pixel (i, j) of the clipped rectangle, which was `old`.
 uint pixel(int i, int j, uint old) {
     uint op = A_OP, f = A_DFMT, sb = A_SBUF & 1u;
@@ -188,16 +240,7 @@ uint pixel(int i, int j, uint old) {
         uint px = uint(A_OX + i) * A_STEPX + (A_STEPX >> 1), py = uint(A_OY + j) * A_STEPY + (A_STEPY >> 1), sp;
         int sw = A_SW, sh = A_SH;
         if ((A_FLAGS & COMP_BILINEAR) != 0u) {
-            int fx = int(px) - 0x8000, fy = int(py) - 0x8000;
-            if (fx < 0) fx = 0;
-            if (fy < 0) fy = 0;
-            int x0 = fx >> 16, y0 = fy >> 16;
-            uint wx = uint(fx >> 8) & 255u, wy = uint(fy >> 8) & 255u;
-            if (x0 >= sw - 1) { x0 = sw - 1; wx = 0u; }
-            if (y0 >= sh - 1) { y0 = sh - 1; wy = 0u; }
-            int x1 = x0 + 1 < sw ? x0 + 1 : x0, y1 = y0 + 1 < sh ? y0 + 1 : y0;
-            sp = mix_px(mix_px(sample_src(A_SX + x0, A_SY + y0), sample_src(A_SX + x1, A_SY + y0), wx),
-                        mix_px(sample_src(A_SX + x0, A_SY + y1), sample_src(A_SX + x1, A_SY + y1), wx), wy);
+            sp = bilinear(int(px), int(py), sw, sh);
         } else {
             int nx = int(px >> 16), ny = int(py >> 16);
             if (nx >= sw) nx = sw - 1;
@@ -207,7 +250,54 @@ uint pixel(int i, int j, uint old) {
         uint ea = mul255((A_FLAGS & COMP_SRCALPHA) != 0u ? (sp >> 24) & 255u : 255u, A_ALPHA);
         if ((A_FLAGS & COMP_MASK) != 0u)
             ea = mul255(ea, ld8((A_SBUF >> 3) & 1u, A_MSRC + uint(A_MY + A_OY + j) * A_MBPR + uint(A_MX + A_OX + i)));
+        if ((A_FLAGS & COMP_BLENDMODE) != 0u) return blend12(old, f, sp, ea, (A_FLAGS >> 8) & 7u);
         return blend(old, f, sp, ea, A_FLAGS);
+    }
+    if (op == OP_FILL_BLEND) return blend12(old, f, A_FG, A_FG >> 24, A_MODE);
+    if (op == OP_AFFINE) {
+        // This row's first pixel's source position, as ogpu_core.c works it
+        // out in 64 bits (ogpu_vk.c checks every step stays in 32), then steps.
+        uint rt = (A_FIRST >> 2) + uint(j) * 2u;
+        int u = int(arena[rt]) + i * int(A_STEPX), v = int(arena[rt + 1u]) + i * int(A_STEPY);
+        int sw = A_SW, sh = A_SH;
+        if (u < 0 || v < 0 || u >= (sw << 16) || v >= (sh << 16)) return old;
+        uint sp = (A_FLAGS & AFF_BILINEAR) != 0u ? bilinear(u, v, sw, sh) : sample_src(A_SX + (u >> 16), A_SY + (v >> 16));
+        uint col = A_FG, ca = col >> 24, cr = (col >> 16) & 255u, cg = (col >> 8) & 255u, cb = col & 255u;
+        uint sr = (sp >> 16) & 255u, sg = (sp >> 8) & 255u, sb = sp & 255u;
+        uint sa = (A_FLAGS & AFF_SRCALPHA) != 0u ? mul255(sp >> 24, ca) : ca;
+        if (cr != 255u) sr = mul255(sr, cr);
+        if (cg != 255u) sg = mul255(sg, cg);
+        if (cb != 255u) sb = mul255(sb, cb);
+        return blend12(old, f, (sr << 16) | (sg << 8) | sb, sa, A_MODE);
+    }
+    if (op == OP_YUV) {
+        uint lay = A_MODE & 255u, space = (A_MODE >> 8) & 255u, yb = A_SBUF & 1u;
+        int sx = A_OX + i, sy = A_OY + j, Y, U, V, ky, kr, kgu, kgv, kb, yoff;
+        uint yr = A_SRC + uint(sy) * A_SBPR;
+        if (lay >= YUV_YUY2) {
+            uint q = yr + (uint(sx >> 1) << 2), k = uint(sx & 1) << 1;
+            if (lay == YUV_YUY2) { Y = int(ld8(yb, q + k)); U = int(ld8(yb, q + 1u)); V = int(ld8(yb, q + 3u)); }
+            else if (lay == YUV_UYVY) { Y = int(ld8(yb, q + 1u + k)); U = int(ld8(yb, q)); V = int(ld8(yb, q + 2u)); }
+            else { Y = int(ld8(yb, q + k)); V = int(ld8(yb, q + 1u)); U = int(ld8(yb, q + 3u)); }      // YVYU
+        } else {
+            uint ub = (A_SBUF >> 2) & 1u, ur = A_TABLE + uint(sy >> 1) * A_BG;
+            Y = int(ld8(yb, yr + uint(sx)));
+            if (lay == YUV_NV12 || lay == YUV_NV21) {
+                uint q = ur + (uint(sx >> 1) << 1);
+                if (lay == YUV_NV12) { U = int(ld8(ub, q)); V = int(ld8(ub, q + 1u)); }
+                else { V = int(ld8(ub, q)); U = int(ld8(ub, q + 1u)); }
+            } else {
+                U = int(ld8(ub, ur + uint(sx >> 1)));
+                V = int(ld8((A_SBUF >> 3) & 1u, A_VSRC + uint(sy >> 1) * A_VBPR + uint(sx >> 1)));
+            }
+        }
+        if (space == 1u) { ky = 298; kr = 459; kgu = 55; kgv = 136; kb = 541; yoff = 16; }          // BT.709
+        else if (space == 2u) { ky = 256; kr = 359; kgu = 88; kgv = 183; kb = 454; yoff = 0; }       // JPEG
+        else { ky = 298; kr = 409; kgu = 100; kgv = 208; kb = 516; yoff = 16; }                     // BT.601
+        int cy = (Y - yoff) * ky + 128;
+        U -= 128; V -= 128;
+        uint r = clamp255((cy + V * kr) >> 8), g = clamp255((cy - U * kgu - V * kgv) >> 8), b = clamp255((cy + U * kb) >> 8);
+        return from_argb(0xFF000000u | (r << 16) | (g << 8) | b, f);
     }
     if (op == OP_MASK) {
         uint m = ld8(sb, A_SRC + uint(A_OY + j) * A_SBPR + uint(A_OX + i));
