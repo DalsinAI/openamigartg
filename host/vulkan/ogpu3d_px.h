@@ -18,6 +18,8 @@
  *                                              (O3X_SHARED of them), as read,
  *                                              and an atomic exclusive or
  *   PC(n)              push constant n (ogpu3d_layout.h's P3_)
+ *   TOF(x), FLOORF(x)  a conversion to float, and floor of a float
+ *   UMUL_EXT(x, y, hi, lo)                     GLSL's umulExtended
  *   uint, bool, true, false, and struct o3x_level as a type name (C)
  * Integer arithmetic wraps modulo 2^32 (C builds with -fwrapv), shifts of
  * signed values are arithmetic, and no division has a negative operand. */
@@ -170,19 +172,36 @@ void o3x_from565(uint hi, uint lo, INOUT int c[4]) {
     c[3] = 255;
 }
 
-/* v * 2^28 / q (q > 0), rounded toward zero and saturating: o3_div_shl28. */
+/* v * 2^28 / q (q > 0), rounded toward zero and saturating: o3_div_shl28.
+ * |v| / q in whole numbers, then the 28 bits below from a float estimate
+ * made exact with the remainder in 64 bits: the estimate is within about 64
+ * (whatever the GPU's float division rounds), one float step of the
+ * remainder takes it to within one, and the remainder's sign fixes that.
+ * (A host check takes estimates 300 off and every float step 3 units in the
+ * last place off, and still gets every quotient.) */
 int o3x_div28(int v, int q) {
     bool neg = v < 0;
-    uint a = neg ? 0u - TOU(v) : TOU(v), uq = TOU(q), qh, r, ql;
-    int i, res;
+    uint a = neg ? 0u - TOU(v) : TOU(v), uq = TOU(q), qh, r, ql, hi, lo, ph, pl, rh, rl;
+    float fq, fr;
+    int res, t;
     qh = a / uq;
     r = a - qh * uq;
     if (qh >= 8u) return neg ? -0x7FFFFFFF : 0x7FFFFFFF;
-    ql = 0u;
-    for (i = 0; i < 28; i++) {
-        r <<= 1u; ql <<= 1u;
-        if (r >= uq) { r -= uq; ql |= 1u; }
-    }
+    /* ql = r * 2^28 / q, rounded down; r < q, so ql < 2^28 */
+    fq = TOF(uq);
+    ql = TOU(TOF(r) * 268435456.0 / fq);
+    hi = r >> 4u; lo = r << 28u;                        /* r * 2^28 */
+    UMUL_EXT(ql, uq, ph, pl);
+    rl = lo - pl; rh = hi - ph - (lo < pl ? 1u : 0u);  /* the remainder r * 2^28 - ql * q, signed */
+    /* the remainder as a float: from its low word alone when it fits one (no cancelling) */
+    if ((rh == 0u && rl < 0x80000000u) || (rh == 0xFFFFFFFFu && rl >= 0x80000000u)) fr = TOF(TOI(rl));
+    else fr = TOF(TOI(rh)) * 4294967296.0 + TOF(rl);
+    t = TOI(ql) + TOI(FLOORF(fr / fq));
+    ql = t < 0 ? 0u : t > 0x0FFFFFFF ? 0x0FFFFFFFu : TOU(t);
+    UMUL_EXT(ql, uq, ph, pl);
+    rl = lo - pl; rh = hi - ph - (lo < pl ? 1u : 0u);
+    if (TOI(rh) < 0) ql -= 1u;
+    else if (rh != 0u || rl >= uq) ql += 1u;
     res = TOI((qh << 28u) | ql);
     return neg ? -res : res;
 }

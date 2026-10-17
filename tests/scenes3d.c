@@ -297,6 +297,8 @@ static const struct bench benches[OGPU_SCENE3D_BENCHES] = {
     { "tiny", 320, 240, OGPU_FMT_ARGB32, 0, 0 },
     { "fill640", 640, 480, OGPU_FMT_ARGB32, 0, 0 },
     { "w3dtest-fastram", 320, 240, OGPU_FMT_ARGB32, 1, 0x40000L },
+    { "fill640-affine", 640, 480, OGPU_FMT_ARGB32, 0, 0 },
+    { "fill640-gouraud", 640, 480, OGPU_FMT_ARGB32, 0, 0 },
 };
 
 void ogpu_scene3d_bench_target(int which, int *region, long *offset, int *w, int *h, int *format) {
@@ -462,9 +464,11 @@ const unsigned char *ogpu_scene3d_bench(struct ogpu_scene3d_env *e, int which, l
         }
         ogpu_triangles3d(&B, AD(1, BVB), (unsigned long)nv, VS, 0, 0, 0, OGPU_TRI_NOTEX, 0, LAY_FULL | OGPU_LAY_LIST);
         break;
-    case 4:                             /* 640x480, the screen covered: bilinear, fog, perspective */
+    case 4: case 6: case 7:             /* 640x480, the screen covered: bilinear, fog, perspective (6: neither, 7: no texture) */
         bench_texture(1, BTEX, 256, 256, 1, lad);
-        r3d(R, OGPU_R3D_GOURAUD | OGPU_R3D_ZTEST | OGPU_R3D_ZWRITE | OGPU_R3D_TEXTURE | OGPU_R3D_PERSPECTIVE | OGPU_R3D_FOG);
+        r3d(R, which == 7 ? OGPU_R3D_GOURAUD | OGPU_R3D_ZTEST | OGPU_R3D_ZWRITE
+                          : which == 6 ? OGPU_R3D_GOURAUD | OGPU_R3D_ZTEST | OGPU_R3D_ZWRITE | OGPU_R3D_TEXTURE
+                          : OGPU_R3D_GOURAUD | OGPU_R3D_ZTEST | OGPU_R3D_ZWRITE | OGPU_R3D_TEXTURE | OGPU_R3D_PERSPECTIVE | OGPU_R3D_FOG);
         R[7] = OGPU_FOG_LINEAR; R[8] = 0xFF303848UL; R[9] = fbits(0.9f); R[10] = fbits(0.05f);
         ogpu_render3d(&B, R);
         ogpu_texenv(&B, 0, OGPU_ENV_MODULATE, 0);
