@@ -6,6 +6,13 @@
  * MiniGLOpen() in libminigl.a opens the library and fetches it. Built bare
  * by library/minigl/build.sh: no startup code, no C library.
  *
+ * The front end is in the library twice (build.sh): built for the FPU, its
+ * table mgl_table_fpu, and soft float, its table mgl_table_soft. The first
+ * open chooses one from AttnFlags (any FPU: the FPU table) and keeps it until
+ * the library is expunged; ENV:MINIGL_FORCE_SOFT (or a local variable of that
+ * name) set to anything but 0 takes the soft one on an FPU too. This file is
+ * soft float and does no float work, so it calls both the same way.
+ *
  * The Team wrote this library. Hyperion's MiniGL 1.2 and the 2026 68k
  * minigl.library were references for the interface and its behaviour only;
  * no code was taken from either. */
@@ -34,6 +41,12 @@ struct Library *CyberGfxBase;
 struct Library *UtilityBase;
 struct Library *OpenGPUBase;
 struct Device *TimerBase;
+/* The soft table's float work goes through libnix's soft libm (libm020) to
+ * these, under the names it uses; open only when that table is chosen. */
+struct Library *MathIeeeSingBasBase, *MathIeeeSingTransBase, *MathIeeeDoubBasBase, *MathIeeeDoubTransBase;
+
+extern const MGLDispatchTable mgl_table_fpu, mgl_table_soft;
+static const MGLDispatchTable *mgl_chosen;
 
 GLcontext mgl_current;
 struct mgl_prefs mgl_prefs;
@@ -60,7 +73,8 @@ static struct Library *lib_open(REG(a6, struct MGLBase *base));
 static BPTR lib_close(REG(a6, struct MGLBase *base));
 static BPTR lib_expunge(REG(a6, struct MGLBase *base));
 static ULONG lib_null(void) { return 0; }
-static const MGLDispatchTable *lib_dispatch(REG(a6, struct MGLBase *base)) { return &mgl_table; }
+static int choose_table(void);
+static const MGLDispatchTable *lib_dispatch(REG(a6, struct MGLBase *base)) { return mgl_chosen; }
 
 static const APTR lib_vectors[] = {
     (APTR)lib_open, (APTR)lib_close, (APTR)lib_expunge, (APTR)lib_null,
@@ -98,6 +112,7 @@ static int open_libs(struct MGLBase *base)
     if (!UtilityBase) UtilityBase = OpenLibrary("utility.library", 39);
     if (!CyberGfxBase) CyberGfxBase = OpenLibrary("cybergraphics.library", 40);
     if (!DOSBase || !GfxBase || !IntuitionBase || !UtilityBase || !CyberGfxBase) return 0;
+    if (!mgl_chosen && !choose_table()) return 0;
     if (!base->timer_open) {
         if (OpenDevice((STRPTR)"timer.device", UNIT_MICROHZ, &base->treq.tr_node, 0) == 0) {
             TimerBase = base->treq.tr_node.io_Device;
@@ -148,10 +163,34 @@ static BPTR lib_expunge(REG(a6, struct MGLBase *base))
     if (IntuitionBase) CloseLibrary((struct Library *)IntuitionBase);
     if (GfxBase) CloseLibrary((struct Library *)GfxBase);
     if (DOSBase) CloseLibrary((struct Library *)DOSBase);
+    if (MathIeeeDoubTransBase) CloseLibrary(MathIeeeDoubTransBase);
+    if (MathIeeeDoubBasBase) CloseLibrary(MathIeeeDoubBasBase);
+    if (MathIeeeSingTransBase) CloseLibrary(MathIeeeSingTransBase);
+    if (MathIeeeSingBasBase) CloseLibrary(MathIeeeSingBasBase);
+    MathIeeeSingBasBase = MathIeeeSingTransBase = MathIeeeDoubBasBase = MathIeeeDoubTransBase = 0;
+    mgl_chosen = 0;
     OpenGPUBase = CyberGfxBase = UtilityBase = 0;
     IntuitionBase = 0; GfxBase = 0; DOSBase = 0; TimerBase = 0;
     FreeMem((UBYTE *)base - base->lib.lib_NegSize, base->lib.lib_NegSize + base->lib.lib_PosSize);
     return seglist;
+}
+
+/* The FPU table on a 68881/68882 or a 68040/68060's FPU, unless
+ * MINIGL_FORCE_SOFT says otherwise; else the soft table, with the four
+ * mathieee libraries open (they use the FPU themselves where there is one). */
+static int choose_table(void)
+{
+    char v[4];
+    int fpu = (SysBase->AttnFlags & (AFF_68881 | AFF_FPU40)) != 0;
+    if (fpu && GetVar((STRPTR)"MINIGL_FORCE_SOFT", (STRPTR)v, sizeof v, 0) > 0 && v[0] != '0') fpu = 0;
+    if (fpu) { mgl_chosen = &mgl_table_fpu; return 1; }
+    if (!MathIeeeSingBasBase) MathIeeeSingBasBase = OpenLibrary("mathieeesingbas.library", 37);
+    if (!MathIeeeSingTransBase) MathIeeeSingTransBase = OpenLibrary("mathieeesingtrans.library", 37);
+    if (!MathIeeeDoubBasBase) MathIeeeDoubBasBase = OpenLibrary("mathieeedoubbas.library", 37);
+    if (!MathIeeeDoubTransBase) MathIeeeDoubTransBase = OpenLibrary("mathieeedoubtrans.library", 37);
+    if (!MathIeeeSingBasBase || !MathIeeeSingTransBase || !MathIeeeDoubBasBase || !MathIeeeDoubTransBase) return 0;
+    mgl_chosen = &mgl_table_soft;
+    return 1;
 }
 
 /* ---- preferences ---------------------------------------------------------------------- */

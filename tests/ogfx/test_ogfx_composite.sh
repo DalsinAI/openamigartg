@@ -11,7 +11,7 @@ command -v "$cc" >/dev/null || { echo "skipped: no $cc"; exit 0; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 fail=0
 
-for build in "-O0 -m68020" "-O2 -m68020" "-O0 -m68040" "-O2 -m68040"; do
+for build in "-O0 -m68040" "-O2 -m68040"; do
     set -- $build
     opt=$1 cpu=$2
     # shellcheck disable=SC2086

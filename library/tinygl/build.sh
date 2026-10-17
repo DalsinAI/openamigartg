@@ -20,7 +20,8 @@ mkdir -p "$OUT" "$OBJ"
 # an Amiga, and without it GCC puts TRAP #7 (Software Failure 80000027) where
 # it proves a pointer null, in place of the access.
 WARN="-Wall -Wextra -Werror -Wno-unused-parameter"
-"$CC" -m68020 -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-toplevel-reorder -fno-builtin $WARN \
+# tinygl.library is soft float; the specs file keeps its libgcc the soft one.
+"$CC" -m68040 -specs="$ROOT/tools/m68k-soft-m68040.specs" -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-toplevel-reorder -fno-builtin $WARN \
     -nostartfiles -nostdlib -I"$ROOT/include" -o "$OUT/tinygl.library" "$HERE/tinygl_lib.c" -lgcc
 echo "$OUT/tinygl.library ($(wc -c < "$OUT/tinygl.library") bytes)"
 # GLA's headers come from the GL module's source; GL's own (GL/gl.h) from

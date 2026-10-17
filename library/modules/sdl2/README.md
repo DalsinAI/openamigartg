@@ -1,6 +1,8 @@
 # SDL 2 in OpenGPU: SDL2.module
 
-SDL 2 for AmigaOS 3.2, as part of the one library. Programs open only
+SDL 2 for AmigaOS 3.2, as part of the one library. SDL2.module, its
+satellites and libSDL2.a are built hard float (`-m68040 -m68881`): they need
+a 68040 or 68060 with its FPU, not an LC040 or EC040 (no FPU). Programs open only
 opengpu.library and link `-lSDL2` as on any other system. Their SDL calls
 go to `LIBS:OpenGPU/SDL2.module`: SDL 2.32.10 with Amiga back ends that
 draw through OpenGPU, play through AHI and read the Amiga's input. When

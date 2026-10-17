@@ -152,10 +152,10 @@ $(CORE_DIR)/ogpu_%.o: $(OGPU_SRC)/ogpu_%.c
 	$(CC) $(CFLAGS_BASE) $(MODULE_CFLAGS) -c $< -o $@
 $(STATIC_DIR)/c2p.o: $(SDL)/src/$(C2P_SRC)
 	@mkdir -p $(dir $@)
-	$(VASM) -Fhunk -m68020 -DBPLSIZE=10240 -quiet -o $@ $<
+	$(VASM) -Fhunk -m68040 -DBPLSIZE=10240 -quiet -o $@ $<
 $(CORE_DIR)/c2p.o: $(SDL)/src/$(C2P_SRC)
 	@mkdir -p $(dir $@)
-	$(VASM) -Fhunk -m68020 -DBPLSIZE=10240 -quiet -o $@ $<
+	$(VASM) -Fhunk -m68040 -DBPLSIZE=10240 -quiet -o $@ $<
 
 $(OUT)/libSDL2_static.a: $(STATIC_OBJS)
 	@rm -f $@; $(AR) rcs $@ $^; $(RANLIB) $@; echo "built $@"
