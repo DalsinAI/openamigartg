@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <math.h>
 #include "../host/vulkan/ogpu3d_rec.h"
 #include "../include/opengpu/build3d.h"
 #include "golden_scenes.h"
@@ -40,6 +41,9 @@ static uint g_pc[24], g_sh[168], g_sh0[168];
 #define SH(i) g_sh[i]
 #define SH0(i) g_sh0[i]
 #define XOR_SH(i, v) (g_sh[i] ^= (v))
+#define TOF(x) ((float)(x))
+#define FLOORF(x) floorf(x)
+#define UMUL_EXT(x, y, hi, lo) do { unsigned long long p_ = (unsigned long long)(x) * (y); (hi) = (uint)(p_ >> 32); (lo) = (uint)p_; } while (0)
 #include "../host/vulkan/ogpu3d_px.h"
 
 /* ---- memory ------------------------------------------------------------------------------- */
@@ -222,6 +226,34 @@ static long golden_run(void *user, const unsigned char *s, long words) {
     return e;
 }
 
+/* The shader's perspective divide against the core's: edges and random values. */
+static void test_div28(void) {
+    static const int qs[] = { 1, 2, 3, 7, 255, 256, 65535, 65536, 0x7FFFFF, 0x1000000, 0x0FFFFFFF, 0x10000000, 0x7FFFFFFE, 0x7FFFFFFF };
+    static const int vs[] = { 0, 1, -1, 2, 7, 255, -255, 0x7FFFFFF, 0x8000000, -0x8000000, 0x7FFFFFFF, -0x7FFFFFFF, (int)0x80000000 };
+    unsigned long long st = 88172645463325252ULL;
+    long i, bad = 0;
+    int a, b;
+    for (i = 0; i < 3000000; i++) {
+        int v, q;
+        long long want;
+        if (i < (long)(sizeof vs / sizeof vs[0]) * (long)(sizeof qs / sizeof qs[0])) {
+            v = vs[i % (long)(sizeof vs / sizeof vs[0])]; q = qs[i / (long)(sizeof vs / sizeof vs[0])];
+        } else {
+            st ^= st << 13; st ^= st >> 7; st ^= st << 17;
+            v = (int)(unsigned)(st >> 32) >> (int)(st & 31);
+            q = (int)((unsigned)st >> 1) >> (int)((st >> 8) % 31);
+            if (q < 1) q = 1;
+            if (i & 1) q = q % 0x10000000 + 1;
+        }
+        want = (long long)v * 268435456LL / q;
+        if (want > 0x7FFFFFFFLL) want = 0x7FFFFFFF;
+        if (want < -0x7FFFFFFFLL) want = -0x7FFFFFFF;
+        if (o3x_div28(v, q) != (int)want && bad++ < 5) CHECK(0, "div28(%d, %d) = %d, the core's %lld", v, q, o3x_div28(v, q), want);
+    }
+    for (a = -3; a <= 3; a++) for (b = 1; b <= 4; b++) if (o3x_div28(a, b) != (int)((long long)a * 268435456LL / b)) bad++;
+    CHECK(!bad, "the perspective divide: %ld wrong", bad);
+}
+
 int main(int argc, char **argv) {
     long rounds = argc > 2 ? atol(argv[2]) : 2000, n;
     int k, bad = 0;
@@ -231,6 +263,7 @@ int main(int argc, char **argv) {
     if (!vram_ref || !fast_ref || !vram_gpu || !fast_gpu || !stage_buf || !tex_buf || !data_buf) { printf("out of memory\n"); return 1; }
     env_ref.mem[0] = vram_ref; env_ref.mem[1] = fast_ref; env_ref.addr[0] = VBASE; env_ref.addr[1] = FBASE;
     env_gpu.mem[0] = vram_gpu; env_gpu.mem[1] = fast_gpu; env_gpu.addr[0] = VBASE; env_gpu.addr[1] = FBASE;
+    test_div28();
 
     /* the golden scene through the GPU path */
     if (argc > 1) {

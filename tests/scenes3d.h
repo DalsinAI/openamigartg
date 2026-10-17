@@ -9,7 +9,9 @@
  *    video RAM or elsewhere, and unaligned rows;
  *  - bench scenes shaped like the programs we measure (W3DTest, Cow3D,
  *    MGLTest): their sizes, triangle counts and modes, with Warp3D's memory
- *    (the target in video RAM, Z buffer, textures and vertices in Fast RAM).
+ *    (the target in video RAM, Z buffer, textures and vertices in Fast RAM);
+ *    and the 640x480 one without perspective and fog, and without a
+ *    texture, to show what each costs.
  * A scene writes its data into two regions and returns its batch (valid
  * until the next call). Built the same way twice, a scene starts from the
  * same memory, so two back ends can be compared byte for byte. */
@@ -29,7 +31,7 @@ struct ogpu_scene3d_env {
 const unsigned char *ogpu_scene3d_random(struct ogpu_scene3d_env *e, unsigned long seed, long *words);
 
 /* Bench scene `which` (0 .. OGPU_SCENE3D_BENCHES - 1), its name in *name. */
-#define OGPU_SCENE3D_BENCHES 6
+#define OGPU_SCENE3D_BENCHES 8
 const unsigned char *ogpu_scene3d_bench(struct ogpu_scene3d_env *e, int which, long *words, const char **name);
 
 /* The bench scene's picture: its target's place (region, offset), size and format. */
