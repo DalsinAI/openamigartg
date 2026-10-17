@@ -29,9 +29,9 @@ mkdir -p "$OUT" "$OBJ"
 WARN="-Wall -Wextra -Werror -Wno-unused-parameter"
 FLAGS="-m68040 -mhard-float -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -ffixed-a4 -fno-builtin $WARN -I$ROOT/include ${MGL_CFLAGS:-}"
 OGPU="$ROOT/library/opengpu"
-# The cores as opengpu.library builds them (-m68020; see library/warp3d/build.sh).
+# The cores as opengpu.library builds them (-m68040, no FPU code).
 for f in ogpu_core ogpu_3d ogpu_build ogpu_build3d; do
-    "$CC" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -ffixed-a4 -fno-builtin $WARN -I"$ROOT/include" \
+    "$CC" -m68040 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -ffixed-a4 -fno-builtin $WARN -I"$ROOT/include" \
         -c -o "$OBJ/$f.o" "$OGPU/$f.c"
 done
 "$CC" $FLAGS -fno-toplevel-reorder -nostartfiles -nostdlib -o "$OUT/minigl.library" \
@@ -52,14 +52,14 @@ for f in "$HERE"/mgl_*.c; do
 done
 python3 "$ROOT/tests/scan_68k_branches.py" "$OBJ"/mgl_*.s
 # libminigl.a: MiniGLOpen and the table, for programs that include <proto/minigl.h>.
-"$CC" -m68000 -O2 -fno-delete-null-pointer-checks $WARN -I"$ROOT/include" -c -o "$OBJ/minigl_base.o" "$HERE/client/minigl_base.c"
-"$CC" -m68000 -O2 -fno-delete-null-pointer-checks $WARN -I"$ROOT/include" -c -o "$OBJ/minigl_open.o" "$HERE/client/minigl_open.c"
-"$CC" -m68000 -c -o "$OBJ/minigl_getdispatch.o" "$HERE/client/minigl_getdispatch.s"
+"$CC" -m68040 -O2 -fno-delete-null-pointer-checks $WARN -I"$ROOT/include" -c -o "$OBJ/minigl_base.o" "$HERE/client/minigl_base.c"
+"$CC" -m68040 -O2 -fno-delete-null-pointer-checks $WARN -I"$ROOT/include" -c -o "$OBJ/minigl_open.o" "$HERE/client/minigl_open.c"
+"$CC" -m68040 -c -o "$OBJ/minigl_getdispatch.o" "$HERE/client/minigl_getdispatch.s"
 
 "$AR" rcs "$OUT/libminigl.a" "$OBJ/minigl_base.o" "$OBJ/minigl_open.o" "$OBJ/minigl_getdispatch.o"
 echo "$OUT/libminigl.a"
 # libmgl.a: every call as a function, for programs written for the linked-in MiniGL.
-"$CC" -m68000 -O2 -fno-delete-null-pointer-checks $WARN -I"$ROOT/include" -c -o "$OBJ/mgl_static.o" "$HERE/mgl_static.c"
+"$CC" -m68040 -O2 -fno-delete-null-pointer-checks $WARN -I"$ROOT/include" -c -o "$OBJ/mgl_static.o" "$HERE/mgl_static.c"
 "$AR" rcs "$OUT/libmgl.a" "$OBJ/mgl_static.o" "$OBJ/minigl_base.o" "$OBJ/minigl_open.o" "$OBJ/minigl_getdispatch.o"
 echo "$OUT/libmgl.a"
 # MGLTest, the test scene.

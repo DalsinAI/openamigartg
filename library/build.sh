@@ -28,7 +28,7 @@ mkdir -p "$OUT"
 # $1 the file, $2 the optimisation, the rest its sources
 build_ortg() {
     out=$1 opt=$2; shift 2
-    "$CC" -m68020 -mnobitfield $opt -ffixed-a4 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-toplevel-reorder -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
+    "$CC" ${ORTG_CPU:--m68040} -mnobitfield $opt -ffixed-a4 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-toplevel-reorder -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
         -nostartfiles -nostdlib -I"$ROOT/include" -o "$out" "$@" -lgcc
     echo "$out ($(wc -c < "$out") bytes)"
 }
@@ -44,6 +44,9 @@ rom_clean() {
 }
 if [ "$TARGET" = module ]; then
     OPT=${OPT:--Os}
+    # The ROM modules stay as the ROM build has them (-m68020) until the ROM
+    # side moves them; everything else here is built for the 68040.
+    ORTG_CPU=-m68020
     mkdir -p "$OUT/modules"
     # shellcheck disable=SC2086
     build_ortg "$OUT/modules/openrtg.library.module" "$OPT" $ORTG_SRC
@@ -71,24 +74,24 @@ if [ -f "$HERE/opengpu/ogpu_3d.c" ]; then D3=-DOGPU_WITH_3D; D3SRC="$HERE/opengp
 # OpenGfx's drawing core comes from openamigagfx at a pinned commit (one copy).
 sh "$ROOT/tools/fetch_ogfx_core.sh" "$OUT"
 for f in gfx_core gfx_rp; do
-    "$CC" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
+    "$CC" -m68040 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
         -I"$OUT/ogfx-core" -c -o "$OUT/ogfx_$f.o" "$OUT/ogfx-core/$f.c"
 done
-"$CC" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
+"$CC" -m68040 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
     -I"$ROOT/include" -I"$OUT/ogfx-core" -c -o "$OUT/ogfx_lib.o" "$HERE/ogfx/ogfx_lib.c"
-"$CC" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-lto -fno-builtin -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror \
+"$CC" -m68040 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-lto -fno-builtin -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror \
     -c -o "$OUT/ogfx_leaves.o" "$HERE/ogfx/ogfx_leaves.c"
 # -mnobitfield: GCC's bitfield instructions are slow on the AC090's JIT (opengpu_core.c's header).
-"$CC" -m68020 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-toplevel-reorder -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
+"$CC" -m68040 -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -fno-toplevel-reorder -fno-builtin -Wall -Wextra -Werror -Wno-unused-parameter \
     -nostartfiles -nostdlib -I"$ROOT/include" \
     $D3 -o "$OUT/opengpu.library" "$HERE/opengpu/opengpu_lib.c" "$HERE/opengpu/ogpu_core.c" $D3SRC "$HERE/opengpu/ogpu_module.c" "$HERE/string.c" \
     "$OUT/ogfx_lib.o" "$OUT/ogfx_leaves.o" "$OUT/ogfx_gfx_core.o" "$OUT/ogfx_gfx_rp.o" -lgcc
 echo "$OUT/opengpu.library ($(wc -c < "$OUT/opengpu.library") bytes)"
 # No writable data: it may run from ROM, so everything it keeps is in its base.
 python3 "$ROOT/tools/hunk_rw_check.py" "$OUT/opengpu.library"
-"$CC" -m68020 -O2 -fno-delete-null-pointer-checks -Wall -Werror -Wno-pointer-sign -noixemul -I"$ROOT/include" -o "$OUT/OpenRTG" "$ROOT/tools/openrtg_cmd.c"
+"$CC" -m68040 -O2 -fno-delete-null-pointer-checks -Wall -Werror -Wno-pointer-sign -noixemul -I"$ROOT/include" -o "$OUT/OpenRTG" "$ROOT/tools/openrtg_cmd.c"
 echo "$OUT/OpenRTG ($(wc -c < "$OUT/OpenRTG") bytes)"
-"$CC" -m68020 -O2 -fno-delete-null-pointer-checks -Wall -Werror -Wno-pointer-sign -noixemul -I"$ROOT/include" -o "$OUT/OpenRTG-Monitor" "$ROOT/tools/openrtg_monitor.c"
+"$CC" -m68040 -O2 -fno-delete-null-pointer-checks -Wall -Werror -Wno-pointer-sign -noixemul -I"$ROOT/include" -o "$OUT/OpenRTG-Monitor" "$ROOT/tools/openrtg_monitor.c"
 echo "$OUT/OpenRTG-Monitor ($(wc -c < "$OUT/OpenRTG-Monitor") bytes)"
 "$HERE/warp3d/build.sh" "$OUT"        # Warp3D.library, its tools and checks
 "$HERE/minigl/build.sh" "$OUT"        # minigl.library, libminigl.a, libmgl.a and MGLTest

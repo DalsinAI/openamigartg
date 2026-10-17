@@ -227,8 +227,8 @@ nothing in it may need them:
 - **The look, the AGA pseudo card and the blitter's 3D** need only the
   chipset and the OS, so they work on any A1200 or A4000. Pass-through on
   a real card is the card's own switch, which SetSwitch already drives.
-- **CPU:** 68020 or better, as Picasso96 needs; a PiStorm with Emu68 counts
-  as a 68040.
+- **CPU:** a 68040 or better: every build is 68040 only (17 October 2026);
+  a PiStorm with Emu68 counts as a 68040.
 - **Testing:** our runtime first, then real hardware. We or testers run a
   phase on a real Amiga with a Picasso96 card and on a PiStorm before it is
   called done there.
