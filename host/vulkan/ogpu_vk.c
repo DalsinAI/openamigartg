@@ -998,9 +998,12 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
     vkGetDeviceQueue(vk->dev, qfam, 0, &vk->queue);
 
     if (vk->cfg.host_vram) {
-        if (!(can_import && import_host_vram(vk))
-            && !(can_dma_buf && map_host_vram(vk, 1))
-            && !(can_map && map_host_vram(vk, 0))) {
+        /* The GPU's memory mapped over the caller's first, then the
+         * caller's imported: a round trip costs a quarter as much mapped
+         * (90 us against 340 us on daletop's RX 460). */
+        if (!(can_dma_buf && map_host_vram(vk, 1))
+            && !(can_map && map_host_vram(vk, 0))
+            && !(can_import && import_host_vram(vk))) {
             fail(err, errlen, "the device can't draw in the caller's video RAM", VK_ERROR_FEATURE_NOT_PRESENT);
             goto bad;
         }

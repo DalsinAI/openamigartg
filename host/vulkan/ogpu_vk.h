@@ -39,9 +39,11 @@ struct ogpu_vk_config {
     const char *device;
     /* Video RAM the caller already has (the runtime's board memory, which
      * its 68k reaches directly), or 0 for the back end's own. The GPU then
-     * draws in place: the memory is imported (VK_EXT_external_memory_host,
-     * RADV and lavapipe), or the GPU's memory is exported and mapped over it
-     * (VK_KHR_external_memory_fd, V3DV on the Pi 5), keeping what was there.
+     * draws in place: the GPU's memory is exported and mapped over it
+     * (VK_KHR_external_memory_fd: RADV, V3DV on the Pi 5), keeping what was
+     * there, or else the memory is imported (VK_EXT_external_memory_host:
+     * RADV, lavapipe). Mapped first: on daletop's RX 460 a GPU round trip
+     * takes about 90 us mapped against 340 us imported.
      * It must be page aligned and vram_size a multiple of the page size.
      * OGPU_VK_HOSTMEM=import or map tries only that way. */
     ogpu_u8 *host_vram;
