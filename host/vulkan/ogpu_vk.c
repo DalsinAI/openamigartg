@@ -340,10 +340,18 @@ static void list_send(struct ogpu_vk *vk) {
     across = (unsigned long)(x1 - x0 + LIST_TILE - 1) / LIST_TILE;
     down = (unsigned long)(y1 - y0 + LIST_TILE - 1) / LIST_TILE;
     tiles = across * down;
+    if (!(fill = calloc(tiles + 1, sizeof *fill))) {
+        /* no room to bin them: each its own dispatch, in order (no arena needed) */
+        for (i = 0; i < n; i++) {
+            const ogpu_u32 *a = vk->list[i].args;
+            unsigned words = (unsigned)(((long)a[A_W] * bytes_per_pixel((int)a[A_DFMT]) + 3) / 4 + 1);
+            dispatch(vk, a, (words + 63) / 64, a[A_H]);
+        }
+        return;
+    }
     at = arena_take(vk, list_bytes(vk, n, 0));
     table = at + (ogpu_u32)n * 128;
     refs = table + (ogpu_u32)(tiles + 1) * 4;
-    fill = calloc(tiles + 1, sizeof *fill);
     for (i = 0; i < n; i++) {           /* the entries, as words, and how many each tile has */
         const ogpu_u32 *a = vk->list[i].args;
         uint32_t *w = (uint32_t *)(void *)(vk->arena + at + (unsigned long)i * 128);   /* the host's order: the GPU's */
@@ -352,9 +360,9 @@ static void list_send(struct ogpu_vk *vk) {
         for (q = 0; q < 32; q++) w[q] = (uint32_t)a[q];
         for (ty = (unsigned long)((int)a[A_Y] - y0) / LIST_TILE; ty <= (unsigned long)((int)(a[A_Y] + a[A_H] - 1) - y0) / LIST_TILE; ty++)
             for (tx = (unsigned long)((int)a[A_X] - x0) / LIST_TILE; tx <= (unsigned long)((int)(a[A_X] + a[A_W] - 1) - x0) / LIST_TILE; tx++)
-                if (fill) fill[ty * across + tx + 1]++;
+                fill[ty * across + tx + 1]++;
     }
-    if (fill) {
+    {
         uint32_t *start = (uint32_t *)(void *)(vk->arena + table);   /* 32-bit words, as the shader reads them */
         for (k = 1; k <= tiles; k++) fill[k] += fill[k - 1];
         for (k = 0; k <= tiles; k++) start[k] = (uint32_t)(refs / 4 + fill[k]);
@@ -976,7 +984,9 @@ static int gpu_yuv(struct ogpu_vk *vk, const ogpu_u8 *a) {
     }
     if (!core_map(vk, ya, (ogpu_u32)ylen) || (ulen && !core_map(vk, ua, (ogpu_u32)ulen)) || (vlen && !core_map(vk, va, (ogpu_u32)vlen)))
         return 0;
-    if (!arena_room(vk, upload_size(vk, ya, ylen) + (ulen ? upload_size(vk, ua, ulen) : 0) + (vlen ? upload_size(vk, va, vlen) : 0)))
+    /* each plane taken as arena_take takes it, rounded to a word */
+    if (!arena_room(vk, ((upload_size(vk, ya, ylen) + 3) & ~3UL) + (ulen ? (upload_size(vk, ua, ulen) + 3) & ~3UL : 0)
+                        + (vlen ? (upload_size(vk, va, vlen) + 3) & ~3UL : 0)))
         return 0;
     if (!clip_rect(&vk->core, &x, &y, &w, &h, &ox, &oy)) return 1;
     if (reads_what_it_draws(vk, ya, ylen, dst, t, x, y, w, h) || (ulen && reads_what_it_draws(vk, ua, ulen, dst, t, x, y, w, h))
