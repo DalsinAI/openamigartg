@@ -634,11 +634,24 @@ uses the host's driver through Vulkan:
   Mesa's lavapipe, with no GPU.
 - **Drawing in the board's own memory:** the runtime's 68k reaches video RAM
   directly, so the back end can take the runtime's memory (`host_vram`)
-  instead of its own. It imports it where the driver can
-  (`VK_EXT_external_memory_host`: RADV, lavapipe), or exports its own memory
-  and maps it over the runtime's (`VK_KHR_external_memory_fd`, dma-buf: V3DV
-  on the Pi 5), keeping what was there. `tools/gpu_check.sh` runs the golden
-  scenes each way on a machine's own GPU and installs nothing.
+  instead of its own. It exports its own memory and maps it over the
+  runtime's where the driver can (`VK_KHR_external_memory_fd`, dma-buf: RADV,
+  V3DV on the Pi 5), keeping what was there, or else imports the runtime's
+  (`VK_EXT_external_memory_host`: RADV, lavapipe). Mapping comes first since
+  17 October 2026: on daletop's RX 460 a GPU round trip takes about 90 µs
+  mapped against 340 µs imported (amigachrome #548). `tools/gpu_check.sh`
+  runs the golden scenes each way on a machine's own GPU and installs nothing.
+- **3D on the back end's core, for now** (17 October 2026): the compute
+  shader draws the 2D commands. Stream v1.2's 3D range (TRIANGLES,
+  RENDER3D, TEXENV, TEXTURE, DEPTH, CLEAR3D) runs on the C core inside the
+  back end, with 3D state of its own, when `ogpu_vk.c` is built with
+  `OGPU_WITH_3D` as the core is; the state lasts from run to run and a reset
+  clears it, as on the CPU path. So `OGPU_Query` answers FULL for them
+  under Vulkan as on the CPU: the board carries them out whole, and nothing
+  falls back to the 68k. `ogpu_vk_supports` gives the back end's answer;
+  for the GPU APIs' range (OGPU_OP_VIRGL) it is FULL when the caller gave
+  the back end an `ext`, which the run hands those commands to.
+  Before this, they were OGPU_ERR_BADOP under Vulkan.
 
 ### Compute for TLS: AmiSSL's maths through OpenGPU
 
@@ -788,6 +801,7 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
 
 - `golden/`: one file per scene.
 - `golden_scenes.c`: the 2D scenes, shared by the host test and OpenGPUCheck.
+- `golden_scene_3d.c`: the 3D scene, shared by `test_3d.c`, the Vulkan back end's test and the Cradle runtime's GPU test.
 - `test_3d.c`: Warp3D helper; the 3D goldens with the ±2 tolerance.
 - `sdl2/`: SDL 2 helper.
 - `gl/`: library owner; the GLA scenes on softpipe and virgl.
