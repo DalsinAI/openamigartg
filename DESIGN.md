@@ -662,9 +662,24 @@ uses the host's driver through Vulkan:
   on the device when the back end starts; the costs a pixel are those
   measured on daletop's RX 460 and its host. With nothing recorded the GPU
   costs a round trip; with GPU work recorded, a command for the core costs
-  a wait. `ogpu_vk_stats` counts what went where (`routed`: what the cost
-  sent to the core). Results are the same whichever way, and `OGPU_Query`
-  still answers FULL for "done exactly". A Pi 5's figures come with GPU-5.
+  a wait. A command a composite list takes (below) is weighed with the
+  run of such commands after it, so a clear and a hundred sprites go to the
+  GPU together where that is faster, though each alone would not. The GPU
+  has to be faster by 20% before a round trip is paid for it, so it never
+  loses to the core by more than the noise. `ogpu_vk_stats` counts what
+  went where (`routed`: what the cost sent to the core). Results are the
+  same whichever way, and `OGPU_Query` still answers FULL for "done
+  exactly". A Pi 5's figures come with GPU-5.
+- **The composite list** (17 October 2026; the same design, 5.3): a run of
+  FILL, INVERT, COMPOSITE, COMPOSITE_AFFINE and FILL_BLEND on one target
+  is one dispatch, with no barriers inside. The host bins the entries by
+  64x64 tile; each GPU thread applies its tile's entries that cover its
+  pixels, in stream order. Threads of one dispatch don't wait for each
+  other, so a list ends before an entry that reads bytes an earlier one
+  writes, or writes bytes an earlier one reads (and at 256 entries, on
+  another target, and before anything else is drawn). On daletop's RX 460
+  a testsprite2-shaped frame in video RAM went from 4.5 ms (101 dispatches)
+  to 0.6 ms, against 0.8 to 1.2 ms on the core.
 - **Stream v1.2 on the GPU path** (17 October 2026): FILL_BLEND,
   COMPOSITE's blend modes (`OGPU_COMP_BLENDMODE`, SDL's copies),
   COMPOSITE_AFFINE (the host works out the inverse and each row's first
