@@ -10,25 +10,29 @@ STOVE=${STOVE:-$HOME/AmigaChrome/stoves/os32}
 CC=${CC:-$STOVE/prefix/bin/m68k-amigaos-gcc}
 OUT=${1:-$HERE/../build}
 mkdir -p "$OUT"
+# All soft float: -m68040 with m68k-soft-m68040.specs links libnix's soft
+# libm020 (maths through the mathieee libraries), so they run on any 68040,
+# LC and EC too. None is float-heavy: floats only for timings and reports.
+CPU="-m68040 -specs=$HERE/m68k-soft-m68040.specs"
 # -fno-delete-null-pointer-checks on every 68k compile: address 0 is memory on
 # an Amiga, and without it GCC puts TRAP #7 (Software Failure 80000027) where
 # it proves a pointer null, in place of the access.
-"$CC" -m68040 -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -o "$OUT/LibCount" "$HERE/libcount.c"
+"$CC" $CPU -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -o "$OUT/LibCount" "$HERE/libcount.c"
 echo "$OUT/LibCount ($(wc -c < "$OUT/LibCount") bytes)"
-"$CC" -m68040 -m68881 -mnobitfield -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenGPUCheck" "$HERE/ogpu_check.c" \
+"$CC" $CPU -mnobitfield -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenGPUCheck" "$HERE/ogpu_check.c" \
     "$HERE/../tests/golden_scenes.c" "$HERE/../library/opengpu/ogpu_core.c" "$HERE/../library/opengpu/ogpu_build.c" -lm
 echo "$OUT/OpenGPUCheck ($(wc -c < "$OUT/OpenGPUCheck") bytes)"
-"$CC" -m68040 -m68881 -mnobitfield -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenGPUBench" "$HERE/ogpu_bench.c" \
+"$CC" $CPU -mnobitfield -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenGPUBench" "$HERE/ogpu_bench.c" \
     "$HERE/../library/opengpu/ogpu_core.c" "$HERE/../library/opengpu/ogpu_build.c" -lm
 echo "$OUT/OpenGPUBench ($(wc -c < "$OUT/OpenGPUBench") bytes)"
-"$CC" -m68040 -m68881 -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/GfxBench" "$HERE/gfx_bench.c" -lm
+"$CC" $CPU -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/GfxBench" "$HERE/gfx_bench.c" -lm
 echo "$OUT/GfxBench ($(wc -c < "$OUT/GfxBench") bytes)"
-"$CC" -m68040 -m68881 -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenRTGExact" "$HERE/ortg_exact.c"
+"$CC" $CPU -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenRTGExact" "$HERE/ortg_exact.c"
 echo "$OUT/OpenRTGExact ($(wc -c < "$OUT/OpenRTGExact") bytes)"
-"$CC" -m68040 -m68881 -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenGfxCheck" "$HERE/ogfx_check.c" -lm
+"$CC" $CPU -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenGfxCheck" "$HERE/ogfx_check.c" -lm
 echo "$OUT/OpenGfxCheck ($(wc -c < "$OUT/OpenGfxCheck") bytes)"
-"$CC" -m68040 -m68881 -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenRTGWPAExact" "$HERE/ortg_wpa_exact.c"
+"$CC" $CPU -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenRTGWPAExact" "$HERE/ortg_wpa_exact.c"
 echo "$OUT/OpenRTGWPAExact ($(wc -c < "$OUT/OpenRTGWPAExact") bytes)"
-"$CC" -m68040 -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenRTGScaleExact" "$HERE/ortg_scale_exact.c"
+"$CC" $CPU -O2 -fno-delete-null-pointer-checks -Wall -Werror -noixemul -I"$HERE/../include" -o "$OUT/OpenRTGScaleExact" "$HERE/ortg_scale_exact.c"
 echo "$OUT/OpenRTGScaleExact ($(wc -c < "$OUT/OpenRTGScaleExact") bytes)"
 python3 "$HERE/fpcr_check.py" "${CC%gcc}objdump" "$OUT/LibCount" "$OUT/OpenGPUCheck" "$OUT/OpenGPUBench" "$OUT/GfxBench" "$OUT/OpenRTGExact" "$OUT/OpenGfxCheck" "$OUT/OpenRTGWPAExact" "$OUT/OpenRTGScaleExact"

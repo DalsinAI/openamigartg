@@ -48,7 +48,8 @@ echo "$OUT/Warp3D.library ($(wc -c < "$OUT/Warp3D.library") bytes)"
 echo "$OUT/W3DTest ($(wc -c < "$OUT/W3DTest") bytes)"
 "$CC" $FLAGS -noixemul -o "$OUT/W3DCheck" "$ROOT/tools/w3dcheck.c"
 echo "$OUT/W3DCheck ($(wc -c < "$OUT/W3DCheck") bytes)"
-"$CC" -m68040 -O2 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -noixemul -I"$ROOT/include" -o "$OUT/Warp3DPrefs" "$ROOT/tools/w3dprefs.c"
+# Warp3DPrefs is soft float (tools/m68k-soft-m68040.specs: libnix's soft libm020).
+"$CC" -m68040 -specs="$ROOT/tools/m68k-soft-m68040.specs" -O2 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -noixemul -I"$ROOT/include" -o "$OUT/Warp3DPrefs" "$ROOT/tools/w3dprefs.c"
 echo "$OUT/Warp3DPrefs ($(wc -c < "$OUT/Warp3DPrefs") bytes)"
 # The headers' structures, as 68k programs were compiled (compile-time checks only).
 "$CC" -m68040 -std=gnu11 -fno-delete-null-pointer-checks -I"$ROOT/include" -c -o "$OUT/w3d_layout.o" "$ROOT/tests/w3d_layout.c"
