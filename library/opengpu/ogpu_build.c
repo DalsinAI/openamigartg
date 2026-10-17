@@ -159,6 +159,14 @@ void ogpu_composite_affine(struct OGPUBatch *b, int src_slot, int sx, int sy, in
     cmd(b, OGPU_OP_COMPOSITE_AFFINE, 11, a);
 }
 
+void ogpu_composite_pd(struct OGPUBatch *b, unsigned long op_flags, unsigned long src, int sx, int sy,
+                       unsigned long mask, int mx, int my, int x, int y, int w, int h) {
+    unsigned long a[7];
+    a[0] = op_flags; a[1] = src; a[2] = OGPU_XY(sx, sy); a[3] = mask; a[4] = OGPU_XY(mx, my);
+    a[5] = OGPU_XY(x, y); a[6] = OGPU_XY(w, h);
+    cmd(b, OGPU_OP_COMPOSITE_PD, 7, a);
+}
+
 void ogpu_yuv(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr, unsigned long u_address, unsigned long u_bpr,
               unsigned long v_address, unsigned long v_bpr, int w, int h, int x, int y, unsigned long format) {
     unsigned long a[9];

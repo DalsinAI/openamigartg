@@ -13,7 +13,10 @@
  * anything newer than it, so a program asks before it uses any of them.
  * v1.3 (12 October 2026) adds XRGB32, ARGB32's colour without its alpha: a
  * 32-bit OpenRTG screen's pixels, whose top byte is always 0, so ARGB
- * pixels reach one through PIXELS on the GPU, not the 68k. The 68k's own CPU back end, ACRTG.gpu on the Cradle and
+ * pixels reach one through PIXELS on the GPU, not the 68k.
+ * v1.4 (17 October 2026) adds COMPOSITE_PD: Porter-Duff compositing of
+ * premultiplied colour, with pixman's operators and rounding, so
+ * pixman.library hands its composites to OpenGPU. The 68k's own CPU back end, ACRTG.gpu on the Cradle and
  * PiStorm.gpu on a spare ARM core all read exactly this, so they draw the
  * same pixels.
  *
@@ -37,7 +40,7 @@
 #define OPENGPU_STREAM_H
 
 #define OGPU_STREAM_VERSION 1
-#define OGPU_STREAM_MINOR   3
+#define OGPU_STREAM_MINOR   4
 
 #define OGPU_HDR(op, words)     (((unsigned long)(op) << 16) | ((unsigned long)(words) & 0xFFFFUL))
 #define OGPU_HDR_OP(w)          ((unsigned)((w) >> 16))
@@ -98,6 +101,9 @@
 #define OGPU_OP_YUV             0x0022  /* v1.2: Y address, Y bytes per row, U (or UV)
                                            address, its bytes per row, V address, its
                                            bytes per row, wh, xy, format                 10 */
+#define OGPU_OP_COMPOSITE_PD    0x0023  /* v1.4: operator and flags, source (slot or
+                                           colour), source xy, mask (slot or alpha),
+                                           mask xy, xy, wh                               8  */
 /* 0x0030-0x003F: 3D (TRIANGLES, RENDER3D, TEXENV, TEXTURE, DEPTH, CLEAR3D):
  * include/opengpu/stream3d.h. */
 #define OGPU_OP_FENCE           0x00F0  /* id: reported when everything before is done   2  */
@@ -134,6 +140,42 @@
 #define OGPU_BLEND_MOD          3   /* dstRGB = srcRGB * dstRGB; dstA kept */
 #define OGPU_BLEND_MUL          4   /* dstRGB = srcRGB * dstRGB + dstRGB * (1 - srcA), saturating; dstA kept */
 #define OGPU_BLEND_MASK         7
+
+/* v1.4: COMPOSITE_PD. Colours are premultiplied (ARGB32's R, G and B are
+ * already times A). The operator is in bits 0-7 of the first word, with
+ * pixman's numbers. For each target pixel d in xy, wh (inside the clip):
+ *   s = the source pixel at (source xy + offset), or the solid colour; a
+ *       pixel outside the source is 0 unless SRC_REPEAT tiles it. XRGB32
+ *       and the 16-bit formats read with alpha 255; A8 as (a, 0, 0, 0).
+ *   with a mask: m = the mask pixel's alpha (an A8 or ARGB32 slot, 0 outside
+ *       unless MASK_REPEAT), or the solid alpha; then each channel of s is
+ *       s * m / 255, rounded.
+ *   d = s * Fa + d * Fb, each product x * y / 255 rounded, the sum saturating
+ *       at 255, with Fa and Fb by the operator (as = s's alpha, ad = d's):
+ *       CLEAR 0, 0; SRC 1, 0; DST 0, 1; OVER 1, 1 - as; OVER_REVERSE 1 - ad, 1;
+ *       IN ad, 0; IN_REVERSE 0, as; OUT 1 - ad, 0; OUT_REVERSE 0, 1 - as;
+ *       ATOP ad, 1 - as; ATOP_REVERSE 1 - ad, as; XOR 1 - ad, 1 - as; ADD 1, 1.
+ *   The pixel is then stored in the target's format (5 and 6-bit channels
+ *   truncated, XRGB32's X as 0), as pixman stores it. */
+#define OGPU_PD_CLEAR           0
+#define OGPU_PD_SRC             1
+#define OGPU_PD_DST             2
+#define OGPU_PD_OVER            3
+#define OGPU_PD_OVER_REVERSE    4
+#define OGPU_PD_IN              5
+#define OGPU_PD_IN_REVERSE      6
+#define OGPU_PD_OUT             7
+#define OGPU_PD_OUT_REVERSE     8
+#define OGPU_PD_ATOP            9
+#define OGPU_PD_ATOP_REVERSE    10
+#define OGPU_PD_XOR             11
+#define OGPU_PD_ADD             12
+#define OGPU_PD_OPS             13      /* operators 0 .. OGPU_PD_OPS - 1; others are UNSUPPORTED */
+#define OGPU_PD_SOLID           0x0100  /* the source word is a premultiplied ARGB32 colour, not a slot */
+#define OGPU_PD_MASK            0x0200  /* a mask: the mask word is a slot (A8 or ARGB32) */
+#define OGPU_PD_MASK_SOLID      0x0400  /* a mask: the mask word's low byte is a constant alpha */
+#define OGPU_PD_SRC_REPEAT      0x0800  /* the source tiles (pixman's REPEAT_NORMAL) */
+#define OGPU_PD_MASK_REPEAT     0x1000  /* the mask tiles */
 
 /* v1.2: LINES_BLEND's flags, above its blend mode. */
 #define OGPU_LINES_STRIP        8   /* each point joins the next (else pairs: 0-1, 2-3, ...) */
