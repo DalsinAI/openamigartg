@@ -106,6 +106,12 @@ struct ogpu3d_sink {
 };
 #define OGPU3D_DECLINED (-100)          /* never an OGPU_ERR_ code */
 
+/* Only the host's back ends take a sink: the 68k's core is built without it,
+ * so its code is as it was. */
+#if !defined(__mc68000__) && !defined(OGPU3D_NO_SINK)
+#define OGPU3D_SINK 1
+#endif
+
 struct ogpu3d {
     struct ogpu_core *core;
     struct ogpu3d_tex tex[OGPU_TEX_UNITS];
@@ -122,8 +128,10 @@ struct ogpu3d {
     unsigned int fogkey[4];             /* what the table was built for */
     long triangles, pixels;             /* counters, for the caller's statistics */
     int slow;                           /* 1: never the fast spans (tests compare the two) */
+#ifdef OGPU3D_SINK
     const struct ogpu3d_sink *sink;     /* 0: TRIANGLES draws here (ogpu3d_init sets 0) */
     void *sink_user;
+#endif
 };
 
 void ogpu3d_init(struct ogpu3d *t, struct ogpu_core *c);
