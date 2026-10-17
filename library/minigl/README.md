@@ -2,7 +2,9 @@
 
 OpenRTG's MiniGL is OpenGL 1.1's fixed-function pipeline for 68k programs. It uses the interface of the 2026 minigl.library 29, so programs built for that library run on this one unchanged.
 
-minigl.library is built hard float (`-m68040 -mhard-float`). It needs a 68040 or 68060 with its FPU; an LC040 or EC040 (no FPU) can't run it.
+minigl.library runs on any 68040 or 68060, LC and EC too, and uses the FPU when there is one. Its front end (every `mgl_*.c` but `mgl_lib.c`: the vertex pipeline, matrices, lighting, `mgl_math.c`) is in it twice, built for the FPU (`-m68040 -m68881`) and soft (`tools/m68k-soft-m68040.specs`, its float work through the mathieee libraries), each with its own dispatch table. The first open chooses one: the FPU table when `AttnFlags` shows an FPU, else the soft one, which opens the four mathieee libraries (closed on expunge). `ENV:MINIGL_FORCE_SOFT` (or a local variable), set to anything but `0`, takes the soft table on an FPU too; the choice holds until the library is expunged. With the FPU, MGLTest CPU ran 40.0 and 38.0 frames a second against 22.75 and 21.95 soft, with the same checksum (AC090, 17 October 2026).
+
+How it is built (`build.sh`): each half's objects and its own libgcc (and, soft, libnix's libm) get every global they define renamed, `mglF_` and `mglS_` (the tables `mgl_table_fpu` and `mgl_table_soft`), so a half only ever calls its own helpers and no float crosses between the two ABIs. `mgl_lib.c` (soft, no float work) and the OpenGPU cores (no float) are there once. The dispatch table's calls take floats on the stack and return none, so programs call either table the same way. MGLTest, MGLTestStatic and MGLGlutTest are soft float; libminigl.a and libmgl.a are stubs that call through the table, as before.
 
 The library does the front end itself:
 
