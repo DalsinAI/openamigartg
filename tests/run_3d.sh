@@ -15,6 +15,12 @@ mkdir -p "$OUT"
 cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined \
     -o "$OUT/test_3d" "$HERE/test_3d.c" "$HERE/golden_scene_3d.c" "$OGPU/ogpu_3d.c" "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c" "$OGPU/ogpu_build3d.c" -lm
 "$OUT/test_3d" "$HERE/golden/opengpu-3d.txt"
+# The Vulkan back end's 3D shader with no GPU: its text built as C (GLSL's
+# integers wrap: -fwrapv) behind host/vulkan/ogpu3d_rec.c, against the core.
+cc -std=gnu99 -O1 -g -fwrapv -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined -DOGPU_WITH_3D \
+    -o "$OUT/test_ogpu3d_emul" "$HERE/test_ogpu3d_emul.c" "$HERE/scenes3d.c" "$HERE/golden_scene_3d.c" "$HERE/../host/vulkan/ogpu3d_rec.c" \
+    "$OGPU/ogpu_3d.c" "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c" "$OGPU/ogpu_build3d.c" -lm
+"$OUT/test_ogpu3d_emul" "$HERE/golden/opengpu-3d.txt" 2000
 STOVE=${STOVE:-$HOME/AmigaChrome/stoves/os32}
 CC68K=${CC68K:-$STOVE/prefix/bin/m68k-amigaos-gcc}
 if [ -x "$CC68K" ]; then

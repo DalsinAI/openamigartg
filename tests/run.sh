@@ -18,11 +18,12 @@ cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanit
 "$OUT/test_opengpu" "$HERE/golden/opengpu-g1.txt" "$HERE/golden/opengpu-v11.txt" "$HERE/golden/opengpu-v12.txt"
 # The Vulkan back end against the core, when Vulkan's loader and headers are there
 # (it skips itself when no device is found; lavapipe will do). Built with the 3D
-# range (OGPU_WITH_3D), as the runtime is: the 3D scene runs on the back end's
-# core; and once without it, where the back end must answer no 3D.
+# range (OGPU_WITH_3D), as the runtime is: TRIANGLES on the 3D shader, the rest
+# of the range on the back end's core; and once without it, where the back end
+# must answer no 3D.
 if [ -e /usr/include/vulkan/vulkan.h ] && { ldconfig -p 2>/dev/null | grep -q libvulkan.so.1; }; then
     cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined -DOGPU_WITH_3D \
-        -o "$OUT/test_opengpu_vk" "$HERE/test_opengpu_vk.c" "$HERE/golden_scene_3d.c" "$HERE/../host/vulkan/ogpu_vk.c" \
+        -o "$OUT/test_opengpu_vk" "$HERE/test_opengpu_vk.c" "$HERE/golden_scene_3d.c" "$HERE/scenes3d.c" "$HERE/../host/vulkan/ogpu_vk.c" \
         "$OGPU/ogpu_core.c" "$OGPU/ogpu_3d.c" "$OGPU/ogpu_build.c" "$OGPU/ogpu_build3d.c" -lvulkan -lm
     ASAN_OPTIONS=detect_leaks=0 "$OUT/test_opengpu_vk" "$HERE/golden/opengpu-g1.txt" 3000 "$HERE/golden/opengpu-v11.txt" \
         "$HERE/golden/opengpu-3d.txt"

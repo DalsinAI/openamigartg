@@ -687,6 +687,27 @@ uses the host's driver through Vulkan:
   row in 32, and the host leaves anything that could overflow to the core)
   and YUV, each as `ogpu_core.c` does it. LINES_BLEND and POINTS_BLEND stay
   on the core.
+- **TRIANGLES on the GPU** (17 October 2026): a second compute shader,
+  `host/vulkan/ogpu3d.comp`, colours the pixels of the triangles
+  `ogpu_3d.c` has set up, in `ogpu_3d.c`'s own integer steps, so the GPU's
+  pictures are the core's byte for byte (inside the ±2 the stream allows).
+  - `ogpu_3d.c` keeps the setup, the spans and the mip level; a sink
+    (`ogpu_3d.h`) hands them to `host/vulkan/ogpu3d_rec.c` instead of
+    drawing. The 68k build doesn't use it.
+  - One dispatch draws consecutive TRIANGLES into one target: 8x8 tiles,
+    each with its triangles listed in stream order, one invocation a pixel.
+    A run is one submit.
+  - A target, Z or stencil buffer outside video RAM (Warp3D's Z buffer is in
+    Fast RAM) is staged: the rows drawn are copied in, then back once the GPU
+    has finished, so memory is right when the run returns.
+  - Textures go into a cache once; an entry is checked by a hash of its
+    texels the first time it is used in a run, since Warp3D starts every
+    texture's generation at 1.
+  - The first command of a submit goes to the GPU only when that is quicker
+    than the core, the round trip included (`OGPU_VK_3D=gpu` or `core`
+    forces it). Anything the shader can't draw exactly goes to the core.
+  - `ogpu3d_px.h` is GLSL that is also C: `tests/test_ogpu3d_emul.c` runs
+    it on the CPU against the core, with no GPU.
 
 ### Compute for TLS: AmiSSL's maths through OpenGPU
 
@@ -837,6 +858,7 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
 - `golden/`: one file per scene.
 - `golden_scenes.c`: the 2D scenes, shared by the host test and OpenGPUCheck.
 - `golden_scene_3d.c`: the 3D scene, shared by `test_3d.c`, the Vulkan back end's test and the Cradle runtime's GPU test.
+- `scenes3d.c`: random 3D scenes (every mode) and bench scenes shaped like W3DTest, Cow3D and MGLTest, shared by `test_ogpu3d_emul.c`, the Vulkan back end's test and the Cradle runtime's 3D GPU test.
 - `test_3d.c`: Warp3D helper; the 3D goldens with the ±2 tolerance.
 - `sdl2/`: SDL 2 helper.
 - `gl/`: library owner; the GLA scenes on softpipe and virgl.
