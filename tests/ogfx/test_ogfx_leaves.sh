@@ -1,8 +1,8 @@
 #!/bin/sh
 # OpenGfx's leaves (library/ogfx/ogfx_leaves.c), built by an m68k cross
 # GCC as a library of ours would build them (-fno-lto, -fno-builtin,
-# -fno-tree-loop-distribute-patterns) at -O0 and -O2 for the 68020 and the
-# 68040 and -O2 for the 68000 (run on a 68040, as the C library needs): each tagged entry the 12-byte tag with its id
+# -fno-tree-loop-distribute-patterns) at -O0 and -O2 for the 68040 (every
+# build is 68040 now): each tagged entry the 12-byte tag with its id
 # and then JMP to its C body, no call out of the object; then
 # ogfx_leaves_test.c under qemu-m68k against the pixel-at-a-time reference.
 # With bebbo's m68k-amigaos-gcc as $M68K_CC (m68k-amigaos- as $M68K_PREFIX)
@@ -18,13 +18,13 @@ command -v "$cc" >/dev/null || { echo "skipped: no $cc"; exit 0; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 ulp=$(echo __USER_LABEL_PREFIX__ | "$cc" -E -P -x c - | tr -d ' \n')
 fail=0
-for build in "-O0 -m68020" "-O2 -m68020" "-O0 -m68040" "-O2 -m68040" "-O2 -m68000"; do
+for build in "-O0 -m68040" "-O2 -m68040"; do
     set -- $build
     opt=$1 cpu=$2
     # shellcheck disable=SC2086
     "$cc" -std=gnu99 $opt $cpu -fno-delete-null-pointer-checks -fno-lto -fno-builtin -fno-tree-loop-distribute-patterns -Wall -Wextra -Werror \
         -c "$gfx/ogfx_leaves.c" -o "$tmp/leaves.o"
-    und=$("${prefix}nm" -u "$tmp/leaves.o" | tr -d ' U' | grep -v '^__mulsi3$' | tr -d '\n' || true)   # a 68000 has no 32-bit multiply: libgcc's, which -lgcc links
+    und=$("${prefix}nm" -u "$tmp/leaves.o" | tr -d ' U' | grep -v '^__mulsi3$' | tr -d '\n' || true)   # libgcc's 32-bit multiply, which -lgcc links (a 68000 build needed it)
     [ -z "$und" ] || { echo "FAIL $build: the leaves call $und"; fail=1; }
     for f in "ogfx_planar_rect 00010100" "ogfx_chunky_rect 00010101" "ogfx_chunky_copy 00010102"; do
         set -- $f

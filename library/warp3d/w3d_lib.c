@@ -32,6 +32,10 @@ struct Library *OpenGPUBase;
 struct IntuitionBase *IntuitionBase;
 struct Library *AslBase;
 struct W3DBase *W3DBase;
+/* Warp3D is soft float: libnix's soft libm (libm020) does its float work
+ * through these four, under the names it uses. A bare library runs no libnix
+ * start-up, so open_libs() opens them. */
+struct Library *MathIeeeSingBasBase, *MathIeeeSingTransBase, *MathIeeeDoubBasBase, *MathIeeeDoubTransBase;
 
 /* Run as a program, the library does nothing. This must stay the first code
  * in the file: build.sh keeps source order (-fno-toplevel-reorder). */
@@ -118,7 +122,12 @@ static int open_libs(struct W3DBase *base)
     if (!UtilityBase) UtilityBase = OpenLibrary("utility.library", 39);
     if (!IntuitionBase) IntuitionBase = (struct IntuitionBase *)OpenLibrary("intuition.library", 39);
     if (!CyberGfxBase) CyberGfxBase = OpenLibrary("cybergraphics.library", 40);
+    if (!MathIeeeSingBasBase) MathIeeeSingBasBase = OpenLibrary("mathieeesingbas.library", 37);
+    if (!MathIeeeSingTransBase) MathIeeeSingTransBase = OpenLibrary("mathieeesingtrans.library", 37);
+    if (!MathIeeeDoubBasBase) MathIeeeDoubBasBase = OpenLibrary("mathieeedoubbas.library", 37);
+    if (!MathIeeeDoubTransBase) MathIeeeDoubTransBase = OpenLibrary("mathieeedoubtrans.library", 37);
     if (!DOSBase || !GfxBase || !UtilityBase || !IntuitionBase) return 0;
+    if (!MathIeeeSingBasBase || !MathIeeeSingTransBase || !MathIeeeDoubBasBase || !MathIeeeDoubTransBase) return 0;
     if (!OpenGPUBase) {
         OpenGPUBase = OpenLibrary("opengpu.library", 0);
         base->gpu_3d = 0;
@@ -172,6 +181,11 @@ static BPTR lib_expunge(REG(a6, struct W3DBase *base))
     if (UtilityBase) CloseLibrary(UtilityBase);
     if (GfxBase) CloseLibrary((struct Library *)GfxBase);
     if (DOSBase) CloseLibrary((struct Library *)DOSBase);
+    if (MathIeeeDoubTransBase) CloseLibrary(MathIeeeDoubTransBase);
+    if (MathIeeeDoubBasBase) CloseLibrary(MathIeeeDoubBasBase);
+    if (MathIeeeSingTransBase) CloseLibrary(MathIeeeSingTransBase);
+    if (MathIeeeSingBasBase) CloseLibrary(MathIeeeSingBasBase);
+    MathIeeeSingBasBase = MathIeeeSingTransBase = MathIeeeDoubBasBase = MathIeeeDoubTransBase = 0;
     OpenGPUBase = AslBase = CyberGfxBase = UtilityBase = 0;
     IntuitionBase = 0; GfxBase = 0; DOSBase = 0;
     FreeMem((UBYTE *)base - base->lib.lib_NegSize, base->lib.lib_NegSize + base->lib.lib_PosSize);
@@ -255,13 +269,21 @@ void w3d_clear(void *d, ULONG n)
     while (n--) *dd++ = 0;
 }
 
-/* Rounded to the nearest (the FPU's own mode); no FPCR changes, which cost
- * time on emulated FPUs. */
+/* Rounded to the nearest, ties to even: what the FPU's FMOVE.L gives in its
+ * own mode, so pictures match the hard-float build. In C: Warp3D is soft
+ * float. Out of range saturates, as FMOVE.L does. */
 LONG w3d_f2l(float f)
 {
-    LONG r;
-    __asm__("fmove.l %1,%0" : "=d"(r) : "f"(f));
-    return r;
+    LONG i;
+    float r;
+    if (f >= 2147483648.0f) return 0x7fffffff;
+    if (f <= -2147483648.0f) return (LONG)0x80000000;
+    if (f != f) return 0x7fffffff;
+    i = (LONG)f;                    /* toward zero */
+    r = f - (float)i;               /* exact: the fraction */
+    if (r > 0.5f || (r == 0.5f && (i & 1))) i++;
+    else if (r < -0.5f || (r == -0.5f && (i & 1))) i--;
+    return i;
 }
 
 ULONG w3d_fbits(float f)

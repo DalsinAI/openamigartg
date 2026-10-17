@@ -227,8 +227,15 @@ nothing in it may need them:
 - **The look, the AGA pseudo card and the blitter's 3D** need only the
   chipset and the OS, so they work on any A1200 or A4000. Pass-through on
   a real card is the card's own switch, which SetSwitch already drives.
-- **CPU:** 68020 or better, as Picasso96 needs; a PiStorm with Emu68 counts
-  as a 68040.
+- **CPU:** a 68040 or better: every build is 68040 only (17 October 2026);
+  a PiStorm with Emu68 counts as a 68040.
+  The libraries (Warp3D too), OpenRTG's commands and the tools are soft
+  float (`-m68040`, linked through `tools/m68k-soft-m68040.specs`: libnix's
+  soft libm020, its maths through the mathieee libraries), so they run on an
+  LC/EC040 too. MiniGL carries its front end twice, for the FPU and soft,
+  and takes the FPU one when there is an FPU, so it runs on any 68040.
+  libtinygl.a and the GL and SDL modules stay hard float (`-m68881`): they
+  need a 68040 with its FPU, not an LC/EC040.
 - **Testing:** our runtime first, then real hardware. We or testers run a
   phase on a real Amiga with a Picasso96 card and on a PiStorm before it is
   called done there.

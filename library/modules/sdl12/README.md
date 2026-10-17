@@ -2,6 +2,8 @@
 
 SDL 1.2 programs build for AmigaOS 3.2 and run on OpenGPU's SDL 2 (`SDL2.module`). This is sdl12-compat, SDL's own layer that turns every SDL 1.2 call into SDL 2 calls. SDL 1.2 programs therefore draw, play and read input through the same engine as SDL 2 programs. There is no second SDL here.
 
+As SDL 2 is, SDL 1.2 is built hard float (`-m68040 -m68881`). It needs a 68040 or 68060 with its FPU; an LC040 or EC040 (no FPU) can't run it.
+
 ## What it makes
 
 `build.sh OUT_DIR` writes three things into `OUT_DIR/sdl12/`. `library/build.sh` runs it after SDL 2. `tools/make_sdk.py` picks the result up for the developer kit.

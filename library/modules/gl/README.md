@@ -13,6 +13,9 @@ drivers:
   `OGPU_Query(OGPU_OP_VIRGL)` doesn't answer "full". It gives GL 3.3 and
   GLES 3.1.
 
+GL.module and libGL.a are built hard float (`-m68040 -m68881`). The module
+needs a 68040 or 68060 with its FPU; an LC040 or EC040 (no FPU) can't run it.
+
 Both draw the same scenes: `tests/test_gla.c` checks softpipe against stored
 pictures. It then checks virgl against softpipe's pictures, allowing a
 little rounding: 99% of pixels within 8 on every channel.

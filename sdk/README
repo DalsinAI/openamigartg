@@ -5,6 +5,10 @@ Everything for building programs on OpenGPU: SDL 2 (and SDL 1.2, where the
 kit was built with it), OpenGL and GLES, GLA, TinyGL, Warp3D, MiniGL and
 opengpu.library itself, for AmigaOS 3.2 on a 68040 or
 68060 with an FPU, with bebbo's m68k-amigaos-gcc (GCC 6.5 or GCC 16).
+SDL, GL, GLES, GLA and TinyGL are hard float (-m68881): programs using them
+need the FPU, so they don't run on an LC040 or EC040. Warp3D and
+opengpu.library are soft float, and minigl.library uses the FPU when there
+is one; all three run on any 68040.
 
 Programs built with it run on OpenGPU's runtime, which OpenUp installs:
 opengpu.library, and LIBS:OpenGPU/SDL2.module, SDL2_image.module,
