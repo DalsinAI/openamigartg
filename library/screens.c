@@ -1645,12 +1645,67 @@ static void bltmaskbmrp_patch(REG(a0, struct BitMap *src), REG(d0, WORD sx), REG
     old_bltmaskbmrp(src, sx, sy, rp, x, y, w, h, m, mask, g);
 }
 
+/* 1 when a hidden ClipRect of l with a bitmap of its own lies in the screen box x0, y0 to x1, y1: the source's
+ * pixels there are in that bitmap, not in the screen's. OpenLayers 47.101's composited layers keep all of a layer
+ * in such a ClipRect, and the screen's bitmap has them only after the next compose: copying from the screen read
+ * pixels from before the last drawing (team5 W49, lab t5-font, 17 Oct 2026: openbar's spread of one column across
+ * its window by ClipBlits within it, on the composited Workbench, left 5980 of 6000 pixels unlike the column; on a
+ * custom screen, none). */
+static int clipblit_hidden(struct Layer *l, LONG x0, LONG y0, LONG x1, LONG y1)
+{
+    struct ClipRect *cr;
+    for (cr = l->ClipRect; cr; cr = cr->Next)
+        if (cr->obscured && cr->BitMap && cr->bounds.MinX <= x1 && cr->bounds.MaxX >= x0 &&
+            cr->bounds.MinY <= y1 && cr->bounds.MaxY >= y0) return 1;
+    return 0;
+}
+
+/* ClipBlit from a layer with such ClipRects: each piece of the source from where it is (the screen's bitmap,
+ * or the ClipRect's own, its x origin aligned to 16 pixels as pieces() draws there), to the destination's
+ * visible pieces. Both layers are locked, in address order (as graphics.library's ClipBlit does). */
+static void clipblit_layered(struct RastPort *srp, LONG sx, LONG sy, struct RastPort *rp, LONG x, LONG y, LONG w, LONG h, UBYTE m)
+{
+    struct Layer *sl = srp->Layer, *dl = rp->Layer, *first = sl, *second = dl && dl != sl ? dl : NULL;
+    LONG ox = sl->bounds.MinX - sl->Scroll_X, oy = sl->bounds.MinY - sl->Scroll_Y;
+    LONG s0x = sx + ox, s0y = sy + oy, s1x = s0x + w - 1, s1y = s0y + h - 1, dx = 0, dy = 0;
+    struct ClipRect *cr;
+    if (second && (ULONG)second < (ULONG)first) { first = second; second = sl; }
+    if (dl) { dx = dl->bounds.MinX - dl->Scroll_X; dy = dl->bounds.MinY - dl->Scroll_Y; }
+    ObtainSemaphore(&first->Lock);
+    if (second) ObtainSemaphore(&second->Lock);
+    for (cr = sl->ClipRect; cr; cr = cr->Next) {
+        LONG a0 = s0x > cr->bounds.MinX ? s0x : cr->bounds.MinX, b0 = s0y > cr->bounds.MinY ? s0y : cr->bounds.MinY;
+        LONG a1 = s1x < cr->bounds.MaxX ? s1x : cr->bounds.MaxX, b1 = s1y < cr->bounds.MaxY ? s1y : cr->bounds.MaxY;
+        struct blit_ctx b;
+        if (a0 > a1 || b0 > b1) continue;
+        if (!cr->obscured) { b.src = srp->BitMap; b.sx = a0; b.sy = b0; }
+        else if (cr->BitMap) { b.src = cr->BitMap; b.sx = a0 - cr->bounds.MinX + (cr->bounds.MinX & 15); b.sy = b0 - cr->bounds.MinY; }
+        else continue;                                          /* a simple refresh layer's hidden part: nothing there */
+        b.at_x = x + (a0 - s0x); b.at_y = y + (b0 - s0y); b.m = m; b.mask = rp->Mask; b.cookie = NULL; b.cmod = 0;
+        if (ortg_is(rp->BitMap))
+            pieces(rp, b.at_x, b.at_y, b.at_x + (a1 - a0), b.at_y + (b1 - b0), blit_piece, &b);
+        else
+            blit(b.src, b.sx, b.sy, rp->BitMap, b.at_x + dx, b.at_y + dy, a1 - a0 + 1, b1 - b0 + 1, m, rp->Mask, NULL, 0, 0, 0);
+    }
+    if (second) ReleaseSemaphore(&second->Lock);
+    ReleaseSemaphore(&first->Lock);
+}
+
 static void clipblit_patch(REG(a0, struct RastPort *srp), REG(d0, WORD sx), REG(d1, WORD sy), REG(a1, struct RastPort *rp), REG(d2, WORD x), REG(d3, WORD y),
                            REG(d4, WORD w), REG(d5, WORD h), REG(d6, ULONG m), REG(a6, struct GfxBase *g))
 {
     if (ortg_is(rp->BitMap) || ortg_is(srp->BitMap)) {
         LONG ox = 0, oy = 0;
         trace_big("ortg: ClipBlit", sx, sy, x, y, w, h, (ULONG)srp->BitMap);
+        if (srp->Layer && ortg_is(srp->BitMap) && w > 0 && h > 0) {
+            struct Layer *sl = srp->Layer;
+            LONG lx = sl->bounds.MinX - sl->Scroll_X + sx, ly = sl->bounds.MinY - sl->Scroll_Y + sy;
+            int hidden;
+            ObtainSemaphore(&sl->Lock);
+            hidden = clipblit_hidden(sl, lx, ly, lx + w - 1, ly + h - 1);
+            ReleaseSemaphore(&sl->Lock);
+            if (hidden) { clipblit_layered(srp, sx, sy, rp, x, y, w, h, (UBYTE)m); return; }
+        }
         if (srp->Layer) { ox = srp->Layer->bounds.MinX - srp->Layer->Scroll_X; oy = srp->Layer->bounds.MinY - srp->Layer->Scroll_Y; }
         if (ortg_is(rp->BitMap)) {
             struct blit_ctx b = { srp->BitMap, sx + ox, sy + oy, x, y, (UBYTE)m, rp->Mask, NULL, 0 };
