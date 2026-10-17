@@ -229,11 +229,12 @@ nothing in it may need them:
   a real card is the card's own switch, which SetSwitch already drives.
 - **CPU:** a 68040 or better: every build is 68040 only (17 October 2026);
   a PiStorm with Emu68 counts as a 68040.
-  The libraries, OpenRTG's commands and the tools are soft float
-  (`-m68040`, linked through `tools/m68k-soft-m68040.specs`: libnix's soft
-  libm020, its maths through the mathieee libraries), so they run on an
-  LC/EC040 too. Warp3D, MiniGL, libtinygl.a and the GL and SDL modules stay
-  hard float (`-m68881`/`-mhard-float`): they need a 68040 with its FPU.
+  The libraries (Warp3D too), OpenRTG's commands and the tools are soft
+  float (`-m68040`, linked through `tools/m68k-soft-m68040.specs`: libnix's
+  soft libm020, its maths through the mathieee libraries), so they run on an
+  LC/EC040 too. MiniGL, libtinygl.a and the GL and SDL modules stay hard
+  float (`-m68881`/`-mhard-float`): they need a 68040 with its FPU, not an
+  LC/EC040.
 - **Testing:** our runtime first, then real hardware. We or testers run a
   phase on a real Amiga with a Picasso96 card and on a PiStorm before it is
   called done there.

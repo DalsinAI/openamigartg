@@ -2,6 +2,8 @@
 
 OpenRTG's MiniGL is OpenGL 1.1's fixed-function pipeline for 68k programs. It uses the interface of the 2026 minigl.library 29, so programs built for that library run on this one unchanged.
 
+minigl.library is built hard float (`-m68040 -mhard-float`). It needs a 68040 or 68060 with its FPU; an LC040 or EC040 (no FPU) can't run it.
+
 The library does the front end itself:
 
 - transform, lighting, fog and texture coordinates;

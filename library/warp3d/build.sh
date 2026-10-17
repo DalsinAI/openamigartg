@@ -6,8 +6,10 @@
 # and the W3D test program, with the os32 stove (bebbo's m68k-amigaos-gcc).
 #   library/warp3d/build.sh [OUT_DIR]          (default build/)
 #   library/warp3d/build.sh headers            remake include/inline, proto, clib from warp3d_lib.sfd
-# Warp3D needs an FPU (as Warp3D always has): -m68040 -mhard-float, and
-# -mnobitfield so the 3D core's pixel loops keep to fast instructions.
+# Soft float: -m68040 linked through tools/m68k-soft-m68040.specs (libnix's
+# soft libm020, its float work through the mathieee libraries), so Warp3D runs
+# on an LC/EC040 too; with an FPU it was 6% slower in W3DTest (17 October
+# 2026). -mnobitfield so the 3D core's pixel loops keep to fast instructions.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -30,7 +32,7 @@ mkdir -p "$OUT"
 # -fno-delete-null-pointer-checks on every 68k compile: address 0 is memory on
 # an Amiga, and without it GCC puts TRAP #7 (Software Failure 80000027) where
 # it proves a pointer null, in place of the access.
-FLAGS="-m68040 -mhard-float -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -Wall -Wextra -Werror -Wno-unused-parameter -I$ROOT/include"
+FLAGS="-m68040 -specs=$ROOT/tools/m68k-soft-m68040.specs -mnobitfield -O2 -fno-delete-null-pointer-checks -fomit-frame-pointer -Wall -Wextra -Werror -Wno-unused-parameter -I$ROOT/include"
 OGPU="$ROOT/library/opengpu"
 # The cores as opengpu.library builds them (-m68040, no FPU code). Built
 # with -m68040 -mhard-float they ran a quarter slower on the AC090 than at
@@ -42,11 +44,11 @@ for f in ogpu_core ogpu_3d ogpu_build ogpu_build3d; do
 done
 "$CC" $FLAGS -fno-toplevel-reorder -fno-builtin -nostartfiles -nostdlib -o "$OUT/Warp3D.library" \
     "$HERE/w3d_lib.c" "$HERE/w3d_ctx.c" "$HERE/w3d_batch.c" "$HERE/w3d_draw.c" "$HERE/w3d_texture.c" "$HERE/w3d_query.c" \
-    "$OUT/w3d-obj/ogpu_core.o" "$OUT/w3d-obj/ogpu_3d.o" "$OUT/w3d-obj/ogpu_build.o" "$OUT/w3d-obj/ogpu_build3d.o" -lgcc
+    "$OUT/w3d-obj/ogpu_core.o" "$OUT/w3d-obj/ogpu_3d.o" "$OUT/w3d-obj/ogpu_build.o" "$OUT/w3d-obj/ogpu_build3d.o" -noixemul -lm -lgcc
 echo "$OUT/Warp3D.library ($(wc -c < "$OUT/Warp3D.library") bytes)"
-"$CC" $FLAGS -noixemul -o "$OUT/W3DTest" "$ROOT/tools/w3dtest.c"
+"$CC" $FLAGS -noixemul -o "$OUT/W3DTest" "$ROOT/tools/w3dtest.c" -lm
 echo "$OUT/W3DTest ($(wc -c < "$OUT/W3DTest") bytes)"
-"$CC" $FLAGS -noixemul -o "$OUT/W3DCheck" "$ROOT/tools/w3dcheck.c"
+"$CC" $FLAGS -noixemul -o "$OUT/W3DCheck" "$ROOT/tools/w3dcheck.c" -lm
 echo "$OUT/W3DCheck ($(wc -c < "$OUT/W3DCheck") bytes)"
 # Warp3DPrefs is soft float (tools/m68k-soft-m68040.specs: libnix's soft libm020).
 "$CC" -m68040 -specs="$ROOT/tools/m68k-soft-m68040.specs" -O2 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -noixemul -I"$ROOT/include" -o "$OUT/Warp3DPrefs" "$ROOT/tools/w3dprefs.c"
