@@ -1155,7 +1155,10 @@ static void o3_draw_triangle(struct ogpu3d *t, const struct o3_pipe *pp, const s
     if ((pp->en & OGPU_R3D_FOG) && t->fogmode == OGPU_FOG_VERTEX && pp->has_spec) active |= 1u << AT_F;
     if ((pp->en & OGPU_R3D_FOG) && t->fogmode && t->fogmode != OGPU_FOG_VERTEX && pp->has_w) active |= 1u << AT_FI;
     if ((pp->en & OGPU_R3D_ZTEST) && t->depth.mem && pp->has_z) active |= 1u << AT_Z;
-    tr.persp = 0; tr.bilinear = 0; tr.lfrac = 0; tr.level = 0;
+    tr.persp = 0; tr.bilinear = 0; tr.lfrac = 0;
+#ifdef OGPU3D_SINK
+    tr.level = 0;
+#endif
 
     if (pp->tx) {
         const struct ogpu3d_tex *tx = pp->tx;
@@ -1194,7 +1197,9 @@ static void o3_draw_triangle(struct ogpu3d *t, const struct o3_pipe *pp, const s
             tr.lfrac = fr;
         }
         o3_level_of(tx, lv, &tr.L0);
+#ifdef OGPU3D_SINK
         tr.level = lv;
+#endif
         if (tr.lfrac) o3_level_of(tx, lv + 1, &tr.L1);
         /* coordinates at the level drawn from, moved near 0 by whole textures when
          * they repeat, so their products with the perspective divisor fit */
@@ -1275,7 +1280,9 @@ static void o3_draw_triangle(struct ogpu3d *t, const struct o3_pipe *pp, const s
     }
 
     fast = !t->slow && o3_fast_ok(t, pp, &tr);
+#ifdef OGPU3D_SINK
     if (t->sink) t->sink->tri(t->sink_user, &tr, ystart, yend);
+#endif
 
     /* edges: the long one v0-v2 and the short ones v0-v1, v1-v2 */
     elong = area > 0 ? &el : &er;
@@ -1289,8 +1296,11 @@ static void o3_draw_triangle(struct ogpu3d *t, const struct o3_pipe *pp, const s
         xl = o3_edge_px(&el); xr = o3_edge_px(&er);
         if (xl < ax0) xl = ax0;
         if (xr > ax1) xr = ax1;
+#ifdef OGPU3D_SINK
         if (t->sink) t->sink->span(t->sink_user, py, xl, xr);
-        else if (xl < xr) {
+        else
+#endif
+        if (xl < xr) {
             if (fast) o3_span_fast(t, pp, &tr, py, xl, xr);
             else o3_span(t, pp, &tr, py, xl, xr);
         }
@@ -1423,7 +1433,9 @@ static int o3_op_triangles(struct ogpu3d *t, const ogpu_u8 *a, long args) {
     pp.wmask = three_d ? o3_write_mask(t, pp.fmt) : 0xFFFFFFFFu;
     pp.mask_all = !three_d || pp.wmask == (pp.fmt == OGPU_FMT_ARGB32 ? 0xFFFFFFFFu : pp.fmt == OGPU_FMT_RGB565 ? 0xFFFFu : 0xFFu);
     if (!o3_draw_area(t, three_d, &ax0, &ay0, &ax1, &ay1)) return OGPU_OK;
+#ifdef OGPU3D_SINK
     if (t->sink && t->sink->begin(t->sink_user, t, &pp, ax0, ay0, ax1, ay1)) return OGPU3D_DECLINED;
+#endif
 
     /* the primitives */
     n = idx ? icount : vcount;
@@ -1477,7 +1489,9 @@ void ogpu3d_init(struct ogpu3d *t, struct ogpu_core *c) {
     t->chroma_lo = t->chroma_hi = 0; t->current = 0xFFFFFFFFu;
     t->pen_table = 0; t->stipple = 0; t->palette = 0;
     t->triangles = 0; t->pixels = 0; t->slow = 0;
+#ifdef OGPU3D_SINK
     t->sink = 0; t->sink_user = 0;
+#endif
     t->fogkey[0] = 0; t->fogkey[1] = t->fogkey[2] = t->fogkey[3] = 0;
     for (i = 0; i < OGPU3D_FOGTAB; i++) t->fogtab[i] = 255;
 }
