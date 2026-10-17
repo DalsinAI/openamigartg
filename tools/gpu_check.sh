@@ -2,10 +2,10 @@
 # Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
 # SPDX-License-Identifier: MIT
 # OpenGPU's Vulkan back end on this machine's GPU (a Pi 5's V3DV, daletop's
-# RADV): the golden scenes and 3000 random streams against the C core, first
-# in the back end's own memory, then in memory the test owns (as the
-# runtime's board memory is), each way the GPU can reach it. Builds in
-# /tmp, installs nothing; it says what is missing instead.
+# RADV): the golden scenes (the 3D one too) and 3000 random streams against
+# the C core, first in the back end's own memory, then in memory the test
+# owns (as the runtime's board memory is), each way the GPU can reach it.
+# Builds in /tmp, installs nothing; it says what is missing instead.
 #   sh tools/gpu_check.sh
 set -u
 HERE=$(cd "$(dirname "$0")/.." && pwd)
@@ -18,14 +18,17 @@ INC=${VULKAN_INCLUDE:-/usr/include}
 # The loader: libvulkan.so.1 by its path, so the dev symlink isn't needed.
 LIB=$(ldconfig -p 2>/dev/null | awk '/libvulkan\.so\.1 /{print $NF; exit}')
 [ -n "$LIB" ] || { echo "missing: the Vulkan loader (libvulkan1)"; exit 1; }
-cc -std=c99 -O2 -Wall -Wextra -I"$INC" -o "$OUT/test_opengpu_vk" "$HERE/tests/test_opengpu_vk.c" "$HERE/host/vulkan/ogpu_vk.c" \
-    "$HERE/library/opengpu/ogpu_core.c" "$HERE/library/opengpu/ogpu_build.c" "$LIB" || exit 1
+# With the 3D range (OGPU_WITH_3D), as the runtime builds it: the 3D scene runs on the back end's core.
+cc -std=c99 -O2 -Wall -Wextra -I"$INC" -DOGPU_WITH_3D -o "$OUT/test_opengpu_vk" "$HERE/tests/test_opengpu_vk.c" \
+    "$HERE/tests/golden_scene_3d.c" "$HERE/host/vulkan/ogpu_vk.c" "$HERE/library/opengpu/ogpu_core.c" \
+    "$HERE/library/opengpu/ogpu_3d.c" "$HERE/library/opengpu/ogpu_build.c" "$HERE/library/opengpu/ogpu_build3d.c" "$LIB" -lm || exit 1
 rc=0
 for mode in own auto import map; do
     if [ $mode = own ]; then host=0; mem=; elif [ $mode = auto ]; then host=1; mem=; else host=1; mem=$mode; fi
     echo "== video RAM: $mode"
     start=$(date +%s)
-    OGPU_VK_HOST=$host OGPU_VK_HOSTMEM=$mem "$OUT/test_opengpu_vk" "$HERE/tests/golden/opengpu-g1.txt" 3000 "$HERE/tests/golden/opengpu-v11.txt"
+    OGPU_VK_HOST=$host OGPU_VK_HOSTMEM=$mem "$OUT/test_opengpu_vk" "$HERE/tests/golden/opengpu-g1.txt" 3000 "$HERE/tests/golden/opengpu-v11.txt" \
+        "$HERE/tests/golden/opengpu-3d.txt"
     r=$?
     echo "   (exit $r, $(( $(date +%s) - start )) s)"
     # import or map alone may be missing on a device; own and auto must pass.
