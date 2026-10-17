@@ -246,8 +246,47 @@ PX_FN ogpu_w32 word_of(const ogpu_u8 *b) {
 }
 PX_FN int aligned4(const void *p) { return ((unsigned long)p & 3) == 0; }
 
+/* OGPU_HOST (the Cradle's runtime defines it before it includes this file;
+ * hosts with a C library and fast 32-bit multiplies): rows copied with the
+ * C library's memmove, and COMPOSITE_PD's common cases worked on whole
+ * pixels, two channels a multiply (each byte lane rounded and saturated
+ * as mul255 and sat8 do, so the bytes are the same). The 68k keeps the
+ * byte forms: there a 32-bit multiply is slow on the AC090's JIT. */
+#ifndef OGPU_HOST
+#define OGPU_HOST 0
+#endif
+#if OGPU_HOST
+#include <string.h>
+/* each byte lane of x times a / 255, rounded as mul255 */
+PX_FN ogpu_w32 mul_lanes(ogpu_w32 x, ogpu_w32 a) {
+    ogpu_w32 rb = (x & 0x00FF00FFu) * a + 0x00800080u, ag = ((x >> 8) & 0x00FF00FFu) * a + 0x00800080u;
+    rb = ((rb + ((rb >> 8) & 0x00FF00FFu)) >> 8) & 0x00FF00FFu;
+    ag = (ag + ((ag >> 8) & 0x00FF00FFu)) & 0xFF00FF00u;
+    return rb | ag;
+}
+/* each byte lane of x + y, saturating at 255 */
+PX_FN ogpu_w32 add_lanes(ogpu_w32 x, ogpu_w32 y) {
+    ogpu_w32 rb = (x & 0x00FF00FFu) + (y & 0x00FF00FFu), ag = ((x >> 8) & 0x00FF00FFu) + ((y >> 8) & 0x00FF00FFu);
+    rb |= 0x01000100u - ((rb >> 8) & 0x00FF00FFu);
+    ag |= 0x01000100u - ((ag >> 8) & 0x00FF00FFu);
+    return (rb & 0x00FF00FFu) | ((ag & 0x00FF00FFu) << 8);
+}
+/* where an ARGB32 pixel's A (its first byte in memory) is in a word read on this host */
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define LANE_A(w) ((w) & 0xFFu)
+#define LANE_A_MASK 0x000000FFu
+#else
+#define LANE_A(w) ((w) >> 24)
+#define LANE_A_MASK 0xFF000000u
+#endif
+#endif
+
 /* n bytes of one row from sp to dp, front to back (no overlap that matters) */
 PX_FN void copy_fwd(ogpu_u8 *dp, const ogpu_u8 *sp, int n) {
+#if OGPU_HOST
+    memmove(dp, sp, (size_t)n);
+    return;
+#endif
     if (aligned4(dp) && aligned4(sp)) {
         ogpu_w32 *q = (ogpu_w32 *)dp;
         const ogpu_w32 *r = (const ogpu_w32 *)sp;
@@ -468,8 +507,13 @@ OP_FN op_copy(struct ogpu_core *c, const ogpu_u8 *a) {
         int r = px_at(t, x, y) > px_at(s, sx, sy) ? h - 1 - row : row;
         const ogpu_u8 *sp = px_at(s, sx, sy + r);
         ogpu_u8 *dp = px_at(t, x, y + r);
+#if OGPU_HOST
+        (void)j;
+        memmove(dp, sp, (size_t)n);         /* overlap safe, the same bytes as the loops */
+#else
         if (dp > sp && dp < sp + n) { for (j = n - 1; j >= 0; j--) dp[j] = sp[j]; }
         else copy_fwd(dp, sp, n);
+#endif
     }
     return OGPU_OK;
 }
@@ -1127,6 +1171,33 @@ OP_FN op_composite_pd(struct ogpu_core *c, const ogpu_u8 *a) {
           sx + ox >= 0 && sy + oy >= 0 && sx + ox + w <= s->w && sy + oy + h <= s->h) ||
          (!s && m && m->format == OGPU_FMT_A8 && mx + ox >= 0 && my + oy >= 0 && mx + ox + w <= m->w && my + oy + h <= m->h))) {
         int xa = t->format == OGPU_FMT_XRGB32;
+#if OGPU_HOST
+        /* whole pixels, where every row is on a 4-byte boundary */
+        if (aligned4(drow) && !(t->bpr & 3) && (!s || (aligned4(s->pixels) && !(s->bpr & 3)))) {
+            ogpu_u8 cb[4];
+            ogpu_w32 cw, xmask = xa ? ~LANE_A_MASK : 0xFFFFFFFFu;
+            cb[0] = (ogpu_u8)solid.a; cb[1] = (ogpu_u8)solid.r; cb[2] = (ogpu_u8)solid.g; cb[3] = (ogpu_u8)solid.b;
+            cw = word_of(cb);
+            for (j = 0; j < h; j++, drow += t->bpr) {
+                ogpu_w32 *dp = (ogpu_w32 *)drow;
+                if (s) {
+                    const ogpu_w32 *sp = (const ogpu_w32 *)(row_at(s, sy + oy + j) + xoff(sx + ox, 4));
+                    /* no branches: a = 255 gives v, v = 0 gives d, exactly */
+                    for (i = 0; i < w; i++) {
+                        ogpu_w32 v = sp[i];
+                        dp[i] = add_lanes(v, mul_lanes(dp[i], 255 - LANE_A(v))) & xmask;
+                    }
+                } else {
+                    const ogpu_u8 *mp = row_at(m, my + oy + j) + (mx + ox);
+                    for (i = 0; i < w; i++) {
+                        ogpu_w32 v = mul_lanes(cw, mp[i]);     /* 255 gives cw, 0 gives 0, exactly */
+                        dp[i] = add_lanes(v, mul_lanes(dp[i], 255 - LANE_A(v))) & xmask;
+                    }
+                }
+            }
+            return OGPU_OK;
+        }
+#endif
         for (j = 0; j < h; j++, drow += t->bpr) {
             ogpu_u8 *dp = drow;
             if (s) {
