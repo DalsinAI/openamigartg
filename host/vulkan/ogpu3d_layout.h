@@ -17,7 +17,10 @@
  * One dispatch draws a group of TRIANGLES commands into one target: 8x8
  * pixel tiles, one invocation a pixel. Each tile has the list of triangles
  * that touch it, in stream order, and each invocation takes them in turn, so
- * every pixel sees the triangles in the order the core draws them. */
+ * every pixel sees the triangles in the order the core draws them. A tile's
+ * rows of the target, Z and stencil buffers are read into shared memory
+ * first and written back once at the end, whole words where the tile has
+ * them all, so the buffers (often across PCIe) are touched once a tile. */
 #ifndef OGPU3D_LAYOUT_H
 #define OGPU3D_LAYOUT_H
 
@@ -46,7 +49,14 @@
 #define P3_GY0              12
 #define P3_GTW              13          /* tiles across */
 #define P3_BINS             14          /* word offset of the tile lists in the data */
-#define P3_COUNT            16
+#define P3_SON              15          /* 1: a stencil buffer */
+#define P3_TW               16          /* the target's, Z and stencil buffers' sizes */
+#define P3_TH               17
+#define P3_ZW               18
+#define P3_ZH               19
+#define P3_SW               20
+#define P3_SH               21
+#define P3_COUNT            24
 
 /* A tile's list: two words at P3_BINS + 2 * tile (first entry's word offset,
  * entries); each entry is a triangle's word offset. */

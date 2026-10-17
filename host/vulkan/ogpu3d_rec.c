@@ -454,8 +454,15 @@ void ogpu3d_rec_close(struct ogpu3d_rec *r) {
     o3r_put_words(r, o3r_take(r, need * 4), r->scratch, need);
     memset(pc, 0, sizeof pc);
     pc[P3_TBUF] = r->tg.buf; pc[P3_TOFF] = r->tg.off; pc[P3_TBPR] = r->tg.pitch; pc[P3_TFMT] = (o3r_u32)r->tg.fmt;
-    if (r->has_z) { pc[P3_ZBUF] = r->zb.buf; pc[P3_ZOFF] = r->zb.off; pc[P3_ZBPR] = r->zb.pitch; pc[P3_ZFMT] = (o3r_u32)r->zb.fmt; }
-    if (r->has_s) { pc[P3_SBUF] = r->sb.buf; pc[P3_SOFF] = r->sb.off; pc[P3_SBPR] = r->sb.pitch; }
+    pc[P3_TW] = (o3r_u32)r->tg.w; pc[P3_TH] = (o3r_u32)r->tg.h;
+    if (r->has_z) {
+        pc[P3_ZBUF] = r->zb.buf; pc[P3_ZOFF] = r->zb.off; pc[P3_ZBPR] = r->zb.pitch; pc[P3_ZFMT] = (o3r_u32)r->zb.fmt;
+        pc[P3_ZW] = (o3r_u32)r->zb.w; pc[P3_ZH] = (o3r_u32)r->zb.h;
+    }
+    if (r->has_s) {
+        pc[P3_SBUF] = r->sb.buf; pc[P3_SOFF] = r->sb.off; pc[P3_SBPR] = r->sb.pitch; pc[P3_SON] = 1;
+        pc[P3_SW] = (o3r_u32)r->sb.w; pc[P3_SH] = (o3r_u32)r->sb.h;
+    }
     pc[P3_GX0] = (o3r_u32)(r->gtx0 * OGPU3D_TILE);
     pc[P3_GY0] = (o3r_u32)(r->gty0 * OGPU3D_TILE);
     pc[P3_GTW] = (o3r_u32)tw;
@@ -890,6 +897,7 @@ int ogpu3d_rec_triangles(struct ogpu3d_rec *r, struct ogpu3d *t, const ogpu_u8 *
         }
     }
     if (r->cmd_pixels) r->committed = 1;
+    r->stats.record_ns += t1 - t0;
     r->submit_pixels += r->cmd_pixels;
     r->stats.pixels += (unsigned long)r->cmd_pixels;
     r->stats.gpu++;

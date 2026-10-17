@@ -16,7 +16,10 @@ layout(std430, set = 0, binding = 1) buffer Stage { uint stage[]; };
 layout(std430, set = 0, binding = 2) readonly buffer Tex { uint tex[]; };
 layout(std430, set = 0, binding = 3) readonly buffer Data { uint data[]; };
 
-layout(push_constant) uniform P { uint p[16]; } pc;
+layout(push_constant) uniform P { uint p[24]; } pc;
+
+shared uint tile_rows[168];      // O3X_SHARED: the tile's rows
+shared uint tile_rows0[168];     // as they were read
 
 #define TOU(x) uint(x)
 #define TOI(x) int(x)
@@ -28,9 +31,19 @@ layout(push_constant) uniform P { uint p[16]; } pc;
 #define XOR_VRAM(i, v) atomicXor(vram[i], v)
 #define XOR_STAGE(i, v) atomicXor(stage[i], v)
 #define PC(n) pc.p[n]
+#define SH(i) tile_rows[i]
+#define SH0(i) tile_rows0[i]
+#define XOR_SH(i, v) atomicXor(tile_rows[i], v)
 
 #include "ogpu3d_px.h"
 
 void main() {
-    o3x_tile(gl_WorkGroupID.x, gl_WorkGroupID.y, gl_LocalInvocationID.x, gl_LocalInvocationID.y);
+    uint wx = gl_WorkGroupID.x, wy = gl_WorkGroupID.y, lx = gl_LocalInvocationID.x, ly = gl_LocalInvocationID.y;
+    o3x_rows(wx, wy, lx, ly, false);
+    memoryBarrierShared();
+    barrier();
+    o3x_tile(wx, wy, lx, ly);
+    memoryBarrierShared();
+    barrier();
+    o3x_rows(wx, wy, lx, ly, true);
 }
