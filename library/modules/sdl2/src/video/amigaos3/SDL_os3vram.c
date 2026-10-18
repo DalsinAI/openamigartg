@@ -125,7 +125,7 @@ struct BitMap *SDL_OS3_VRAM_AllocBitMap(struct Window *win, int w, int h, void *
     }
     /* SDL's own surfaces start cleared */
     SDL_memset((void *)base, 0, (size_t)bpr * (size_t)h);
-    SDL_AtomicIncRef(&vram_bitmaps);
+    SDL_AtomicAdd(&vram_bitmaps, 1);
     *pixels = (void *)base;
     *pitch = (int)bpr;
     return bm;
@@ -135,7 +135,7 @@ void SDL_OS3_VRAM_FreeBitMap(struct BitMap *bm)
 {
     if (bm) {
         FreeBitMap(bm);
-        SDL_AtomicDecRef(&vram_bitmaps);
+        SDL_AtomicAdd(&vram_bitmaps, -1);
     }
 }
 

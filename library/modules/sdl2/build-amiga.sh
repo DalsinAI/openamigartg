@@ -14,7 +14,6 @@ OUT=${OUT:-$ROOT/build-amiga}
 # build.sh and the Makefile take the stove's prefix directory
 if [ -x "$STOVE/prefix/bin/m68k-amigaos-gcc" ]; then PREFIX=$STOVE/prefix; else PREFIX=$STOVE; fi
 if [ -z "${VASM:-}" ] && [ -x "$PREFIX/bin/vasmm68k_mot" ]; then VASM=$PREFIX/bin/vasmm68k_mot; export VASM; fi
-"$PREFIX/bin/m68k-amigaos-gcc" --version | head -1
 mkdir -p "$OUT"
 STOVE=$PREFIX sh "$HERE/build.sh" "$OUT" module stub static tests
 
@@ -39,3 +38,4 @@ done
 ls -l "$OUT/SDL2.module" "$OUT/libSDL2.a" "$OUT/libSDL2_static.a" "$OUT/libSDL2_test.a"
 ls "$OUT/tests/sdl2"
 sha256sum "$OUT/SDL2.module" "$OUT/libSDL2.a" "$OUT/libSDL2_static.a"
+"$PREFIX/bin/m68k-amigaos-gcc" --version | head -1   # last, so the log's tail has it
