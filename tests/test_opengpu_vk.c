@@ -9,10 +9,16 @@
  * picks a device by name. Built with OGPU_WITH_3D (and ogpu_3d.c,
  * ogpu_build3d.c and golden_scene_3d.c), the 3D golden scene too: stream
  * v1.2's 3D range runs on the back end's core, with its state lasting from
- * run to run and a reset clearing it; and TRIANGLES drawn by the 3D shader
+ * run to run and a reset clearing it; TRIANGLES drawn by the 3D shader
  * (OGPU_VK_3D=gpu unless the environment says otherwise): the golden scene's
  * checksum, and random 3D scenes (tests/scenes3d.c: every mode, buffers in
  * video RAM and in Fast RAM) leaving memory byte for byte as the core does.
+ *
+ * The back end under test draws everything its GPU path takes on the GPU
+ * (OGPU_VK_ROUTE_GPU), stream v1.2's FILL_BLEND, blend modes,
+ * COMPOSITE_AFFINE and YUV among it. test_route then checks routing by cost
+ * (the runtime's default): the same bytes, small work on the core, a large
+ * stretch on the GPU.
  *   test_opengpu_vk [g1-golden] [rounds] [v11-golden] [3d-golden] */
 #define _POSIX_C_SOURCE 200112L
 #include <stdio.h>
@@ -235,9 +241,28 @@ static unsigned long some_address(long span) {
 static int some_mode(void) { static const int m[] = { 0, 1, 2, 4, 5, 6 }; return m[rnd() % 6]; }
 static unsigned long some_colour(void) { return rnd() << 8 | (rnd() & 255); }
 
+/* A COMPOSITE_AFFINE matrix: a turn, a scale and maybe a flip, placed on
+ * the target; now and then one the core refuses or that draws nothing. */
+static void some_matrix(long m[6]) {
+    static const long turn[8][2] = { { 65536, 0 }, { 56756, 32768 }, { 46341, 46341 }, { 0, 65536 },
+                                     { -46341, 46341 }, { -65536, 0 }, { -56756, -32768 }, { 32768, -56756 } };
+    static const long scale[6] = { 16384, 32768, 65536, 98304, 150000, 300000 };
+    int k = (int)(rnd() % 8);
+    long sc = scale[rnd() % 6], fx = rnd() % 4 ? 1 : -1;
+    m[0] = turn[k][0] * sc / 65536 * fx; m[1] = -turn[k][1] * sc / 65536;
+    m[3] = turn[k][1] * sc / 65536 * fx; m[4] = turn[k][0] * sc / 65536;
+    m[2] = ((long)(rnd() % 180) - 30) * 65536 + (long)(rnd() % 65536);
+    m[5] = ((long)(rnd() % 130) - 30) * 65536 + (long)(rnd() % 65536);
+    switch (rnd() % 16) {
+    case 0: m[0] = 0x900000L; break;                          /* scale beyond 127: refused */
+    case 1: m[0] = m[1] = 0; break;                           /* flat: nothing */
+    case 2: m[0] = 3; m[4] = 2; m[1] = m[3] = 0; break;       /* shrunk past 1/16384: refused */
+    }
+}
+
 static void random_command(void) {
     int x = (int)(rnd() % 140) - 20, y = (int)(rnd() % 100) - 20, w = (int)(rnd() % 120), h = (int)(rnd() % 80);
-    switch (rnd() % 15) {
+    switch (rnd() % 22) {
     case 0: {
         int f = rnd() % 5 ? 1 + (int)(rnd() % 3) : OGPU_FMT_A8, sw = 1 + (int)(rnd() % 120), sh = 1 + (int)(rnd() % 90);
         long bpr = (long)sw * bpp_of(f) + (rnd() % 3 ? 0 : (long)(rnd() % 9));
@@ -272,6 +297,40 @@ static void random_command(void) {
                               (int)(rnd() % 20) - 2, (int)(rnd() % 20) - 2);
         break;
     case 14: ogpu_mask(&B, some_address(0x2000), (unsigned long)(w % 64) + rnd() % 8, x, y, w % 64, h % 48, some_colour()); break;
+    /* v1.2: SDL 2's renderer (mode 5 and up: refused) */
+    case 15: ogpu_fill_blend(&B, x, y, w, h, some_colour(), (int)(rnd() % 6)); break;
+    case 16:
+        ogpu_composite(&B, (int)(rnd() % 4), (int)(rnd() % 40), (int)(rnd() % 30), (int)(rnd() % 80), (int)(rnd() % 60),
+                       x, y, w, h, (int)(rnd() % 256),
+                       OGPU_COMP_BLENDMODE | OGPU_COMP_MODE(rnd() % 6) | (rnd() % 4) | (rnd() % 8 ? 0 : rnd() % 32));
+        break;
+    case 17:
+        ogpu_composite_masked(&B, (int)(rnd() % 4), (int)(rnd() % 40), (int)(rnd() % 30), (int)(rnd() % 80), (int)(rnd() % 60),
+                              x, y, w % 70, h % 50, (int)(rnd() % 256), OGPU_COMP_BLENDMODE | OGPU_COMP_MODE(rnd() % 5) | (rnd() % 4),
+                              (int)(rnd() % 4), (int)(rnd() % 20) - 2, (int)(rnd() % 20) - 2);
+        break;
+    case 18: case 19: {
+        long m[6];
+        some_matrix(m);
+        ogpu_composite_affine(&B, (int)(rnd() % 4), (int)(rnd() % 40) - (rnd() % 16 == 0), (int)(rnd() % 30), (int)(rnd() % 80),
+                              (int)(rnd() % 60), m, rnd() % 3 ? 0xFFFFFFFFUL : some_colour(),
+                              (rnd() % 6) | (rnd() % 2 ? OGPU_AFF_SRCALPHA : 0) | (rnd() % 2 ? OGPU_AFF_BILINEAR : 0));
+        break;
+    }
+    case 20: {
+        int lay = (int)(rnd() % 9), space = (int)(rnd() % 4), yw = (int)(rnd() % 64), yh = (int)(rnd() % 48);
+        int packed = lay >= OGPU_YUV_YUY2, semi = lay == OGPU_YUV_NV12 || lay == OGPU_YUV_NV21;
+        if (rnd() % 8) { yw &= ~1; yh &= ~1; }
+        if (rnd() % 8) space %= 3;
+        ogpu_yuv(&B, some_address(0x2000), (unsigned long)(packed ? yw * 2 : yw) + rnd() % 8,
+                 some_address(0x800), (unsigned long)(semi ? yw : yw / 2) + rnd() % 4,
+                 some_address(0x800), (unsigned long)(yw / 2) + rnd() % 4, yw, yh, x, y, OGPU_YUV_FORMAT(lay, space));
+        break;
+    }
+    case 21:        /* on the core inside the back end */
+        if (rnd() % 2) ogpu_lines_blend(&B, some_address(64), rnd() % 16, some_colour(), (rnd() % 6) | (rnd() % 4) << 3);
+        else ogpu_points_blend(&B, some_address(128), rnd() % 32, some_colour(), (int)(rnd() % 6));
+        break;
     }
 }
 
@@ -289,9 +348,10 @@ static void test_random(int rounds) {
             long k;
             for (k = 0; k < n * 6 * 4; k++) p[k] = (ogpu_u8)rnd();
             for (k = 0; k < n * 6; ) {
-                static const int ops[] = { 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x20, 0x01, 0x02, 0x03, 0xF0, 0x99, 0x17, 0x20 };
-                static const int lens[] = { 4, 4, 5, 9, 8, 5, 7, 8, 6, 2, 3, 2, 3, 6, 10 };
-                int j = (int)(rnd() % 15), len = lens[j] + (rnd() % 10 == 0 ? (int)(rnd() % 3) - 1 : 0), q;
+                static const int ops[] = { 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x20, 0x01, 0x02, 0x03, 0xF0, 0x99, 0x17, 0x20,
+                                           0x18, 0x21, 0x22, 0x19, 0x1A };
+                static const int lens[] = { 4, 4, 5, 9, 8, 5, 7, 8, 6, 2, 3, 2, 3, 6, 10, 5, 12, 10, 5, 5 };
+                int j = (int)(rnd() % 20), len = lens[j] + (rnd() % 10 == 0 ? (int)(rnd() % 3) - 1 : 0), q;
                 if (len < 1) len = 1;
                 if (k + len > n * 6) break;
                 p[k * 4] = 0; p[k * 4 + 1] = (ogpu_u8)ops[j]; p[k * 4 + 2] = 0; p[k * 4 + 3] = (ogpu_u8)len;
@@ -562,6 +622,110 @@ static void test_3d_random(int rounds) {
 }
 #endif
 
+/* ---- the composite list ------------------------------------------------------------- */
+
+/* SDL-shaped frames: a clear and sprites in one list; a composite that reads
+ * what the list wrote (a second surface over the same bytes) and a blend
+ * that writes what that composite read, each of which must end the list;
+ * and more sprites than one list holds. All against the core. */
+static void test_list(void) {
+    const unsigned long win = VBASE + 0x10000, tex = VBASE + 0x40000;
+    struct ogpu_vk_stats s0, s1;
+    int i, round;
+    noise_both(1, 0, (long)VSIZE);
+    for (i = 0; i < 16 * 16; i++) {      /* the texture's alpha: clear, solid and between */
+        vram_ref[0x40000 + i * 4] = vram_vk[0x40000 + i * 4] = (ogpu_u8)(i % 3 == 0 ? 0 : i % 3 == 1 ? 255 : i);
+    }
+    for (round = 0; round < 3; round++) {
+        int sprites = round == 2 ? 300 : 40;
+        ogpu_vk_stats(V, &s0);
+        begin();
+        ogpu_surface(&B, 0, win, 160 * 4, 160, 100, OGPU_FMT_ARGB32);
+        ogpu_surface(&B, 1, tex, 16 * 4, 16, 16, OGPU_FMT_ARGB32);
+        ogpu_surface(&B, 2, win, 160 * 4, 160, 100, OGPU_FMT_ARGB32);      /* the window again, as a source */
+        ogpu_target(&B, 0);
+        ogpu_fill(&B, 0, 0, 160, 100, 0xFF203040UL);
+        for (i = 0; i < sprites; i++)
+            ogpu_composite(&B, 1, 0, 0, 16, 16, (int)(rnd() % 150), (int)(rnd() % 90), 16, 16, 255,
+                           round == 1 ? OGPU_COMP_SRCALPHA | OGPU_COMP_BLENDMODE | OGPU_COMP_MODE(rnd() % 5) : OGPU_COMP_SRCALPHA);
+        ogpu_composite(&B, 2, 0, 0, 40, 30, 100, 60, 40, 30, 255, 0);       /* reads what the list wrote */
+        ogpu_fill_blend(&B, 0, 0, 40, 30, 0x80FF0000UL, OGPU_BLEND_BLEND);  /* writes what that read */
+        for (i = 0; i < 10; i++)
+            ogpu_composite(&B, 1, 0, 0, 16, 16, (int)(rnd() % 150), (int)(rnd() % 90), 32, 24, 200, OGPU_COMP_SRCALPHA | OGPU_COMP_BILINEAR);
+        ogpu_fence(&B, 7);
+        CHECK(run_both(round == 2 ? "a list of 300 sprites" : round ? "a list of sprites in blend modes" : "a list of sprites"),
+              "composite list, round %d", round);
+        ogpu_vk_stats(V, &s1);
+        /* the clear and the sprites; the read ends that list, and the
+         * write after the read ends the read's own (one command: sent
+         * alone); the blend and the stretches; 300 sprites need two lists */
+        CHECK(s1.lists - s0.lists >= (round == 2 ? 3UL : 2UL), "round %d: %lu lists", round, s1.lists - s0.lists);
+        CHECK(s1.listed - s0.listed >= (unsigned long)sprites, "round %d: %lu commands in lists", round, s1.listed - s0.listed);
+    }
+}
+
+/* ---- routing by cost ---------------------------------------------------------------- */
+
+/* A back end routing by cost (OGPU_VK_ROUTE_COST, the runtime's default)
+ * draws exactly what the core draws; tiny work stays on the core, and a
+ * large bilinear stretch goes to the GPU unless this device's round trip
+ * is slower than the core's stretch. One routing everything to the core
+ * never touches the GPU. Each in its own video RAM, against the reference
+ * core started afresh. */
+static void test_route(int rounds) {
+    struct ogpu_vk_config cfg;
+    struct ogpu_vk *keep = V, *X;
+    struct ogpu_vk_stats s0, s1;
+    ogpu_u8 *keep_vram = vram_vk;
+    char err[200];
+    int route;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.vram_base = VBASE;
+    cfg.vram_size = VSIZE;
+    cfg.arena_size = 1u << 20;
+    cfg.map = map_vk;
+    cfg.fence = fence_vk;
+    for (route = OGPU_VK_ROUTE_COST; route <= OGPU_VK_ROUTE_CORE; route += OGPU_VK_ROUTE_CORE - OGPU_VK_ROUTE_COST) {
+        const char *name = route == OGPU_VK_ROUTE_COST ? "by cost" : "to the core";
+        cfg.route = route;
+        X = ogpu_vk_create(&cfg, err, sizeof err);
+        CHECK(X != 0, "a back end routing %s: %s", name, err);
+        if (!X) continue;
+        ogpu_vk_stats(X, &s0);
+        CHECK(s0.route == route, "routing %s: the back end says %d", name, s0.route);
+        if (route == OGPU_VK_ROUTE_COST) CHECK(s0.trip_us > 0, "the round trip was measured");
+        V = X;
+        vram_vk = ogpu_vk_vram(X);
+        ogpu_core_init(&C);
+        C.map = map_ref; C.fence = fence_ref; C.user = 0;
+        test_random(rounds);
+        ogpu_vk_stats(X, &s1);
+        if (route == OGPU_VK_ROUTE_CORE) CHECK(s1.gpu == 0 && s1.routed > 0, "routed to the core: %lu on the GPU", s1.gpu);
+        else {
+            /* a 1x1 fill alone, then a 400x300 bilinear stretch of 64x64 from Fast RAM */
+            noise_both(1, 0, (long)VSIZE);
+            begin();
+            ogpu_surface(&B, 0, VBASE + 0x10000, 400 * 4, 400, 300, OGPU_FMT_ARGB32);
+            ogpu_target(&B, 0);
+            ogpu_fill(&B, 3, 3, 1, 1, 0xFF102030UL);
+            run_both("routing: a 1x1 fill");
+            ogpu_vk_stats(X, &s0);
+            CHECK(s0.gpu == s1.gpu && s0.routed == s1.routed + 1, "a 1x1 fill alone was drawn on the core");
+            begin();
+            ogpu_surface(&B, 1, 0x20000, 64 * 4, 64, 64, OGPU_FMT_ARGB32);
+            ogpu_composite(&B, 1, 0, 0, 64, 64, 0, 0, 400, 300, 255, OGPU_COMP_SRCALPHA | OGPU_COMP_BILINEAR);
+            run_both("routing: a 400x300 bilinear stretch");
+            ogpu_vk_stats(X, &s1);
+            if (s1.trip_us < 1500) CHECK(s1.gpu == s0.gpu + 1, "a 400x300 bilinear stretch went to the GPU (round trip %lu us)", s1.trip_us);
+            printf("opengpu vulkan: routing by cost, round trip %lu us; %lu commands on the GPU, %lu on the core, %lu of them by cost\n",
+                   s1.trip_us, s1.gpu, s1.cpu, s1.routed);
+        }
+        ogpu_vk_destroy(X);
+    }
+    V = keep;
+    vram_vk = keep_vram;
+}
+
 int main(int argc, char **argv) {
     struct ogpu_vk_config cfg;
     struct ogpu_vk_stats st;
@@ -578,6 +742,7 @@ int main(int argc, char **argv) {
     cfg.arena_size = 1u << 20;
     cfg.map = map_vk;
     cfg.fence = fence_vk;
+    cfg.route = OGPU_VK_ROUTE_GPU;      /* the GPU draws all it can: what is being tested */
     /* OGPU_VK_HOST=1: draw in our own video RAM, as the runtime does. A
      * mark left there first must still be there once the GPU has it. */
     if (getenv("OGPU_VK_HOST") && atoi(getenv("OGPU_VK_HOST"))) {
@@ -639,6 +804,7 @@ int main(int argc, char **argv) {
     C.map = map_ref; C.fence = fence_ref; C.user = 0;
     test_xrgb32();
     test_random(rounds);
+    test_list();
     test_supports();
 #ifdef OGPU_WITH_3D
     test_3d(argc > 4 ? argv[4] : 0);
@@ -649,9 +815,11 @@ int main(int argc, char **argv) {
 #else
     printf("opengpu vulkan: built without OGPU_WITH_3D: no 3D range\n");
 #endif
+    if (getenv("OGPU_VK_ROUTE")) printf("opengpu vulkan: OGPU_VK_ROUTE is set: routing by cost not tested\n");
+    else test_route(rounds / 4 > 50 ? rounds / 4 : 50);
     ogpu_vk_stats(V, &st);
-    printf("opengpu vulkan: golden scene %08lx and %08lx; %lu commands on the GPU, %lu on the core, %lu submits; %s\n",
-           golden_v, golden_r, st.gpu, st.cpu, st.submits, failures ? "FAILED" : "all tests passed");
+    printf("opengpu vulkan: golden scene %08lx and %08lx; %lu commands on the GPU (%lu of them in %lu composite lists), %lu on the core, %lu submits; %s\n",
+           golden_v, golden_r, st.gpu, st.listed, st.lists, st.cpu, st.submits, failures ? "FAILED" : "all tests passed");
     ogpu_vk_destroy(V);
     return failures != 0;
 }
