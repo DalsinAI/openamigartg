@@ -41,12 +41,14 @@
 #include <devices/inputevent.h>
 #include <exec/interrupts.h>
 #include <exec/io.h>
+#include "../include/oa_protos_begin.h"   /* the protos' unused varargs wrappers dropped */
 #include <proto/exec.h>
 #include <proto/graphics.h>
 #include <proto/intuition.h>
 #include <proto/utility.h>
 #include <proto/opengpu.h>
 #include <proto/dos.h>
+#include "../include/oa_protos_end.h"
 #include <dos/dosextens.h>
 #include <opengpu/build.h>
 #include <opengpu/virgl.h>
