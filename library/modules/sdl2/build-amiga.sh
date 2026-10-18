@@ -15,7 +15,18 @@ OUT=${OUT:-$ROOT/build-amiga}
 if [ -x "$STOVE/prefix/bin/m68k-amigaos-gcc" ]; then PREFIX=$STOVE/prefix; else PREFIX=$STOVE; fi
 if [ -z "${VASM:-}" ] && [ -x "$PREFIX/bin/vasmm68k_mot" ]; then VASM=$PREFIX/bin/vasmm68k_mot; export VASM; fi
 mkdir -p "$OUT"
-STOVE=$PREFIX sh "$HERE/build.sh" "$OUT" module stub static tests
+# The whole log goes to OUT/build.log: the Cradle keeps only the end of
+# what is printed, so the end says how it went and lists every warning.
+LOG=$OUT/build.log
+rc=0
+STOVE=$PREFIX sh "$HERE/build.sh" "$OUT" module stub static tests > "$LOG" 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then
+    tail -n 200 "$LOG"
+    exit "$rc"
+fi
+tail -n 20 "$LOG"
+echo "warnings, each once (file:line, from $(grep -c 'warning:' "$LOG" || true) in all):"
+grep 'warning:' "$LOG" | sed -e "s|$OUT/sdl2-work/||" -e "s|$HOME/||" | sort | uniq -c || true
 
 # The window surface in video RAM goes round the back end's framebuffer
 # functions as SDL calls them (SDL_os3vram.h). Besides SDL_os3video.o, which
