@@ -88,12 +88,14 @@ SRCS_CORE = \
 	hidapi/SDL_hidapi.c
 
 # The Amiga back ends: libSDL2-amigaos3's (Zlib) with patches/amigaos3, and
-# the Team's (src/): AHI, joystick, clipboard, OpenGPU, the opengpu renderer.
+# the Team's (src/): AHI, joystick, clipboard, OpenGPU, video RAM surfaces,
+# the opengpu renderer.
 SRCS_AMIGA = \
 	video/amigaos3/SDL_os3video.c video/amigaos3/SDL_os3window.c \
 	video/amigaos3/SDL_os3framebuffer.c video/amigaos3/SDL_os3events.c \
 	video/amigaos3/SDL_os3mouse.c video/amigaos3/SDL_os3aga.c \
 	video/amigaos3/SDL_os3clipboard.c video/amigaos3/SDL_os3gpu.c video/amigaos3/SDL_os3gl.c \
+	video/amigaos3/SDL_os3vram.c \
 	audio/amigaos3/SDL_os3audio.c audio/amigaos3/SDL_os3paula.c \
 	thread/amigaos3/SDL_systhread.c thread/amigaos3/SDL_sysmutex.c \
 	thread/amigaos3/SDL_syscond.c thread/amigaos3/SDL_syssem.c thread/amigaos3/SDL_systls.c \
