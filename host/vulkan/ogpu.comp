@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 //
 // OpenGPU's compute shader (G2, DESIGN.md section 5): the drawing commands of
-// OGPU stream v1.1, as library/opengpu/ogpu_core.c does them, on the host's
-// GPU. ogpu_vk.c decodes the stream, clips each command as the core does and
-// dispatches this shader once per command, so the GPU only draws.
+// OGPU stream v1.1, and v1.2's FILL_BLEND, COMPOSITE's blend modes,
+// COMPOSITE_AFFINE and YUV, as library/opengpu/ogpu_core.c does them, on the
+// host's GPU. ogpu_vk.c decodes the stream, clips each command as the core
+// does and dispatches this shader once per command, so the GPU only draws.
 //
 // Video RAM and the upload arena are byte arrays in the Amiga's order, seen
 // here as 32-bit words (byte a is bits 8*(a&3) of word a>>2). Each word of
@@ -19,52 +20,63 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(std430, set = 0, binding = 0) buffer Vram  { uint vram[]; };
 layout(std430, set = 0, binding = 1) buffer Arena { uint arena[]; };
 
-layout(push_constant) uniform P { uint p[32]; } pc;
+layout(push_constant) uniform Push { uint p[32]; } pc;
+
+// The command's arguments: the push constants, or (OP_LIST) one list
+// entry's, which ogpu_vk.c writes into the arena in the same 32 words.
+uint P[32];
 
 // Opcodes as stream.h's
 const uint OP_FILL = 0x10u, OP_INVERT = 0x11u, OP_COPY = 0x12u, OP_TEMPLATE = 0x13u,
-           OP_PATTERN = 0x14u, OP_LINE = 0x15u, OP_PIXELS = 0x16u, OP_MASK = 0x17u, OP_COMPOSITE = 0x20u;
+           OP_PATTERN = 0x14u, OP_LINE = 0x15u, OP_PIXELS = 0x16u, OP_MASK = 0x17u, OP_COMPOSITE = 0x20u,
+           OP_FILL_BLEND = 0x18u, OP_AFFINE = 0x21u, OP_YUV = 0x22u,
+           OP_LIST = 0x100u;    // not a stream opcode: ogpu_vk.c's composite list
 const uint FMT_CLUT8 = 1u, FMT_RGB565 = 2u, FMT_ARGB32 = 3u, FMT_INDEX8 = 4u, FMT_A8 = 5u;
 const uint JAM2 = 1u, COMPLEMENT = 2u, INVERSVID = 4u;
-const uint COMP_SRCALPHA = 1u, COMP_BILINEAR = 2u, COMP_MASK = 4u, COMP_ADD = 8u, COMP_IN = 16u;
+const uint COMP_SRCALPHA = 1u, COMP_BILINEAR = 2u, COMP_MASK = 4u, COMP_ADD = 8u, COMP_IN = 16u, COMP_BLENDMODE = 128u;
+const uint BLEND_NONE = 0u, BLEND_BLEND = 1u, BLEND_ADD = 2u, BLEND_MOD = 3u, BLEND_MUL = 4u;
+const uint AFF_SRCALPHA = 8u, AFF_BILINEAR = 16u;
+const uint YUV_NV12 = 3u, YUV_NV21 = 4u, YUV_YUY2 = 5u, YUV_UYVY = 6u;
 
 // The push constants (ogpu_vk.c fills them; see its struct ogpu_vk_args)
-#define A_OP        pc.p[0]
-#define A_DST       pc.p[1]     // the target's byte 0 in its buffer
-#define A_DBPR      pc.p[2]
-#define A_DFMT      pc.p[3]
-#define A_X         int(pc.p[4])  // the clipped rectangle on the target (LINE: the clip x0, y0, x1, y1)
-#define A_Y         int(pc.p[5])
-#define A_W         int(pc.p[6])
-#define A_H         int(pc.p[7])
-#define A_OX        int(pc.p[8])  // how far clipping moved the corner
-#define A_OY        int(pc.p[9])
-#define A_SRC       pc.p[10]    // the source's byte 0 (bits, pattern, pixels or surface)
-#define A_SBUF      pc.p[11]    // bit 0: the source is in the arena; bit 1: the target is; bit 2: the table is;
+#define A_OP        P[0]
+#define A_DST       P[1]     // the target's byte 0 in its buffer
+#define A_DBPR      P[2]
+#define A_DFMT      P[3]
+#define A_X         int(P[4])  // the clipped rectangle on the target (LINE: the clip x0, y0, x1, y1)
+#define A_Y         int(P[5])
+#define A_W         int(P[6])
+#define A_H         int(P[7])
+#define A_OX        int(P[8])  // how far clipping moved the corner
+#define A_OY        int(P[9])
+#define A_SRC       P[10]    // the source's byte 0 (bits, pattern, pixels or surface)
+#define A_SBUF      P[11]    // bit 0: the source is in the arena; bit 1: the target is; bit 2: the table is;
                                 // bit 3: COMPOSITE's mask is
-#define A_SBPR      pc.p[12]
-#define A_SFMT      pc.p[13]
-#define A_FG        pc.p[14]    // FILL's colour, INVERT's mask
-#define A_BG        pc.p[15]
-#define A_MODE      pc.p[16]
-#define A_FIRST     pc.p[17]    // TEMPLATE's first bit; PATTERN's rows
-#define A_TABLE     pc.p[18]    // PIXELS' INDEX8 table, or 0xFFFFFFFF
-#define A_SX        int(pc.p[20])
-#define A_SY        int(pc.p[21])
-#define A_SW        int(pc.p[22])
-#define A_SH        int(pc.p[23])
-#define A_STEPX     pc.p[24]
-#define A_STEPY     pc.p[25]
-#define A_ALPHA     pc.p[26]
-#define A_FLAGS     pc.p[27]
-#define A_X0        int(pc.p[28]) // LINE's ends
-#define A_Y0        int(pc.p[29])
-#define A_X1        int(pc.p[30])
-#define A_Y1        int(pc.p[31])
-#define A_MSRC      pc.p[28]      // COMPOSITE's A8 mask: its byte 0, bytes per row, and corner
-#define A_MBPR      pc.p[29]
-#define A_MX        int(pc.p[30])
-#define A_MY        int(pc.p[31])
+#define A_SBPR      P[12]
+#define A_SFMT      P[13]
+#define A_FG        P[14]    // FILL's colour, INVERT's mask
+#define A_BG        P[15]
+#define A_MODE      P[16]
+#define A_FIRST     P[17]    // TEMPLATE's first bit; PATTERN's rows; COMPOSITE_AFFINE's row starts (in the arena)
+#define A_TABLE     P[18]    // PIXELS' INDEX8 table, or 0xFFFFFFFF; YUV's U (or UV) plane
+#define A_VSRC      P[19]    // YUV's V plane (its bytes per row: A_VBPR; the U plane's: A_BG)
+#define A_SX        int(P[20])
+#define A_SY        int(P[21])
+#define A_SW        int(P[22])
+#define A_SH        int(P[23])
+#define A_STEPX     P[24]    // COMPOSITE's 16.16 steps; COMPOSITE_AFFINE's du and dv a pixel
+#define A_STEPY     P[25]
+#define A_ALPHA     P[26]
+#define A_FLAGS     P[27]
+#define A_X0        int(P[28]) // LINE's ends
+#define A_Y0        int(P[29])
+#define A_X1        int(P[30])
+#define A_Y1        int(P[31])
+#define A_MSRC      P[28]      // COMPOSITE's A8 mask: its byte 0, bytes per row, and corner
+#define A_MBPR      P[29]
+#define A_MX        int(P[30])
+#define A_MY        int(P[31])
+#define A_VBPR      P[28]      // YUV's V plane's bytes per row
 
 uint ld8(uint inArena, uint a) {
     uint w = inArena != 0u ? arena[a >> 2] : vram[a >> 2];
@@ -159,6 +171,51 @@ uint blend(uint old, uint f, uint sp, uint ea, uint flags) {
     return from_argb((min(oa, 255u) << 24) | (min(r, 255u) << 16) | (min(g, 255u) << 8) | min(b, 255u), f);
 }
 
+// v1.2's blend modes, SDL's (as ogpu_core.c's blend12): source sp (its
+// colour; its alpha is sa) put on `old`.
+uint blend12(uint old, uint f, uint sp, uint sa, uint mode) {
+    uint sr = (sp >> 16) & 255u, sg = (sp >> 8) & 255u, sb = sp & 255u;
+    uint d, dr, dg, db, r, g, b, oa, ia;
+    if (mode == BLEND_NONE) return from_argb((sa << 24) | (sr << 16) | (sg << 8) | sb, f);
+    if (mode != BLEND_ADD && mode != BLEND_MOD && mode != BLEND_MUL) {     // BLEND
+        if (sa == 255u) return from_argb(0xFF000000u | (sr << 16) | (sg << 8) | sb, f);
+        if (sa == 0u) return old;
+    } else if (mode == BLEND_ADD && sa == 0u) return old;
+    d = to_argb(old, f);
+    dr = (d >> 16) & 255u; dg = (d >> 8) & 255u; db = d & 255u;
+    if (mode == BLEND_ADD) {
+        r = dr + mul255(sr, sa); g = dg + mul255(sg, sa); b = db + mul255(sb, sa); oa = d >> 24;
+    } else if (mode == BLEND_MOD) {
+        r = mul255(sr, dr); g = mul255(sg, dg); b = mul255(sb, db); oa = d >> 24;
+    } else if (mode == BLEND_MUL) {
+        ia = 255u - sa;
+        r = mul255(sr, dr) + mul255(dr, ia); g = mul255(sg, dg) + mul255(dg, ia); b = mul255(sb, db) + mul255(db, ia);
+        oa = d >> 24;
+    } else {
+        ia = 255u - sa;
+        r = mul255(sr, sa) + mul255(dr, ia); g = mul255(sg, sa) + mul255(dg, ia); b = mul255(sb, sa) + mul255(db, ia);
+        oa = sa + mul255(d >> 24, ia);
+    }
+    return from_argb((min(oa, 255u) << 24) | (min(r, 255u) << 16) | (min(g, 255u) << 8) | min(b, 255u), f);
+}
+
+// A bilinear sample at 16.16 source position (px, py) from the pixel's
+// centre, as ogpu_core.c's sample_bi: in the sw x sh rectangle at A_SX, A_SY.
+uint bilinear(int px, int py, int sw, int sh) {
+    int fx = px - 0x8000, fy = py - 0x8000;
+    if (fx < 0) fx = 0;
+    if (fy < 0) fy = 0;
+    int x0 = fx >> 16, y0 = fy >> 16;
+    uint wx = uint(fx >> 8) & 255u, wy = uint(fy >> 8) & 255u;
+    if (x0 >= sw - 1) { x0 = sw - 1; wx = 0u; }
+    if (y0 >= sh - 1) { y0 = sh - 1; wy = 0u; }
+    int x1 = x0 + 1 < sw ? x0 + 1 : x0, y1 = y0 + 1 < sh ? y0 + 1 : y0;
+    return mix_px(mix_px(sample_src(A_SX + x0, A_SY + y0), sample_src(A_SX + x1, A_SY + y0), wx),
+                  mix_px(sample_src(A_SX + x0, A_SY + y1), sample_src(A_SX + x1, A_SY + y1), wx), wy);
+}
+
+uint clamp255(int v) { return v < 0 ? 0u : v > 255 ? 255u : uint(v); }
+
 // The new value of pixel (i, j) of the clipped rectangle, which was `old`.
 uint pixel(int i, int j, uint old) {
     uint op = A_OP, f = A_DFMT, sb = A_SBUF & 1u;
@@ -188,16 +245,7 @@ uint pixel(int i, int j, uint old) {
         uint px = uint(A_OX + i) * A_STEPX + (A_STEPX >> 1), py = uint(A_OY + j) * A_STEPY + (A_STEPY >> 1), sp;
         int sw = A_SW, sh = A_SH;
         if ((A_FLAGS & COMP_BILINEAR) != 0u) {
-            int fx = int(px) - 0x8000, fy = int(py) - 0x8000;
-            if (fx < 0) fx = 0;
-            if (fy < 0) fy = 0;
-            int x0 = fx >> 16, y0 = fy >> 16;
-            uint wx = uint(fx >> 8) & 255u, wy = uint(fy >> 8) & 255u;
-            if (x0 >= sw - 1) { x0 = sw - 1; wx = 0u; }
-            if (y0 >= sh - 1) { y0 = sh - 1; wy = 0u; }
-            int x1 = x0 + 1 < sw ? x0 + 1 : x0, y1 = y0 + 1 < sh ? y0 + 1 : y0;
-            sp = mix_px(mix_px(sample_src(A_SX + x0, A_SY + y0), sample_src(A_SX + x1, A_SY + y0), wx),
-                        mix_px(sample_src(A_SX + x0, A_SY + y1), sample_src(A_SX + x1, A_SY + y1), wx), wy);
+            sp = bilinear(int(px), int(py), sw, sh);
         } else {
             int nx = int(px >> 16), ny = int(py >> 16);
             if (nx >= sw) nx = sw - 1;
@@ -207,7 +255,54 @@ uint pixel(int i, int j, uint old) {
         uint ea = mul255((A_FLAGS & COMP_SRCALPHA) != 0u ? (sp >> 24) & 255u : 255u, A_ALPHA);
         if ((A_FLAGS & COMP_MASK) != 0u)
             ea = mul255(ea, ld8((A_SBUF >> 3) & 1u, A_MSRC + uint(A_MY + A_OY + j) * A_MBPR + uint(A_MX + A_OX + i)));
+        if ((A_FLAGS & COMP_BLENDMODE) != 0u) return blend12(old, f, sp, ea, (A_FLAGS >> 8) & 7u);
         return blend(old, f, sp, ea, A_FLAGS);
+    }
+    if (op == OP_FILL_BLEND) return blend12(old, f, A_FG, A_FG >> 24, A_MODE);
+    if (op == OP_AFFINE) {
+        // This row's first pixel's source position, as ogpu_core.c works it
+        // out in 64 bits (ogpu_vk.c checks every step stays in 32), then steps.
+        uint rt = (A_FIRST >> 2) + uint(j) * 2u;
+        int u = int(arena[rt]) + i * int(A_STEPX), v = int(arena[rt + 1u]) + i * int(A_STEPY);
+        int sw = A_SW, sh = A_SH;
+        if (u < 0 || v < 0 || u >= (sw << 16) || v >= (sh << 16)) return old;
+        uint sp = (A_FLAGS & AFF_BILINEAR) != 0u ? bilinear(u, v, sw, sh) : sample_src(A_SX + (u >> 16), A_SY + (v >> 16));
+        uint col = A_FG, ca = col >> 24, cr = (col >> 16) & 255u, cg = (col >> 8) & 255u, cb = col & 255u;
+        uint sr = (sp >> 16) & 255u, sg = (sp >> 8) & 255u, sb = sp & 255u;
+        uint sa = (A_FLAGS & AFF_SRCALPHA) != 0u ? mul255(sp >> 24, ca) : ca;
+        if (cr != 255u) sr = mul255(sr, cr);
+        if (cg != 255u) sg = mul255(sg, cg);
+        if (cb != 255u) sb = mul255(sb, cb);
+        return blend12(old, f, (sr << 16) | (sg << 8) | sb, sa, A_MODE);
+    }
+    if (op == OP_YUV) {
+        uint lay = A_MODE & 255u, space = (A_MODE >> 8) & 255u, yb = A_SBUF & 1u;
+        int sx = A_OX + i, sy = A_OY + j, Y, U, V, ky, kr, kgu, kgv, kb, yoff;
+        uint yr = A_SRC + uint(sy) * A_SBPR;
+        if (lay >= YUV_YUY2) {
+            uint q = yr + (uint(sx >> 1) << 2), k = uint(sx & 1) << 1;
+            if (lay == YUV_YUY2) { Y = int(ld8(yb, q + k)); U = int(ld8(yb, q + 1u)); V = int(ld8(yb, q + 3u)); }
+            else if (lay == YUV_UYVY) { Y = int(ld8(yb, q + 1u + k)); U = int(ld8(yb, q)); V = int(ld8(yb, q + 2u)); }
+            else { Y = int(ld8(yb, q + k)); V = int(ld8(yb, q + 1u)); U = int(ld8(yb, q + 3u)); }      // YVYU
+        } else {
+            uint ub = (A_SBUF >> 2) & 1u, ur = A_TABLE + uint(sy >> 1) * A_BG;
+            Y = int(ld8(yb, yr + uint(sx)));
+            if (lay == YUV_NV12 || lay == YUV_NV21) {
+                uint q = ur + (uint(sx >> 1) << 1);
+                if (lay == YUV_NV12) { U = int(ld8(ub, q)); V = int(ld8(ub, q + 1u)); }
+                else { V = int(ld8(ub, q)); U = int(ld8(ub, q + 1u)); }
+            } else {
+                U = int(ld8(ub, ur + uint(sx >> 1)));
+                V = int(ld8((A_SBUF >> 3) & 1u, A_VSRC + uint(sy >> 1) * A_VBPR + uint(sx >> 1)));
+            }
+        }
+        if (space == 1u) { ky = 298; kr = 459; kgu = 55; kgv = 136; kb = 541; yoff = 16; }          // BT.709
+        else if (space == 2u) { ky = 256; kr = 359; kgu = 88; kgv = 183; kb = 454; yoff = 0; }       // JPEG
+        else { ky = 298; kr = 409; kgu = 100; kgv = 208; kb = 516; yoff = 16; }                     // BT.601
+        int cy = (Y - yoff) * ky + 128;
+        U -= 128; V -= 128;
+        uint r = clamp255((cy + V * kr) >> 8), g = clamp255((cy - U * kgu - V * kgv) >> 8), b = clamp255((cy + U * kb) >> 8);
+        return from_argb(0xFF000000u | (r << 16) | (g << 8) | b, f);
     }
     if (op == OP_MASK) {
         uint m = ld8(sb, A_SRC + uint(A_OY + j) * A_SBPR + uint(A_OX + i));
@@ -242,7 +337,50 @@ void line() {
     }
 }
 
+// OP_LIST (docs/design/Design-OpenGPU-2D-On-The-GPU.md 5.3, in amigachrome):
+// many commands on one target in one dispatch. The push constants give the
+// target, the list's bounding box (A_X, A_Y, A_W, A_H), the tile table's
+// word in the arena (A_FIRST) and the tiles across (A_SW). The table holds
+// for each 64x64 tile of the box where its entries start (and the next
+// tile's start where they end), then the entries' words in the arena, in
+// stream order. Each invocation applies, to each pixel of its word, the
+// entries of its tile that cover the pixel, in that order. ogpu_vk.c ends a
+// list before an entry that reads what an earlier one writes or writes
+// what an earlier one reads, so no pixel here depends on another's.
+void list_main() {
+    int j = int(gl_GlobalInvocationID.y);
+    int lx = int(pc.p[4]), ly = int(pc.p[5]), lw = int(pc.p[6]), lh = int(pc.p[7]);
+    if (j >= lh) return;
+    uint dst = pc.p[1], bpr = pc.p[2], f = pc.p[3], bpp = bpp_of(f), table = pc.p[17], across = pc.p[22];
+    uint base0 = dst + uint(ly) * bpr + uint(lx) * bpp, wb = uint(lw) * bpp;
+    uint rowstart = base0 + uint(j) * bpr, rowend = rowstart + wb;
+    uint wa = (rowstart & ~3u) + gl_GlobalInvocationID.x * 4u;
+    if (wa >= rowend) return;
+    if (j > 0 && rowstart - bpr + wb > wa) return;
+    uint w = vram[wa >> 2], nw = w;
+    for (uint k = 0u; k < 4u; k += bpp) {
+        uint b = wa + k;
+        if (b < base0) continue;
+        uint r = (b - base0) / bpr, col = (b - base0) - r * bpr;
+        if (r >= uint(lh) || col >= wb) continue;
+        int px = int(col / bpp), py = int(r), ax = lx + px, ay = ly + py;
+        uint tile = uint(py >> 6) * across + uint(px >> 6);
+        uint e0 = arena[table + tile], e1 = arena[table + tile + 1u], v = word_px(w, k, f);
+        for (uint e = e0; e < e1; e++) {
+            uint at = arena[e];
+            int ex = int(arena[at + 4u]), ey = int(arena[at + 5u]);
+            if (ax < ex || ay < ey || ax >= ex + int(arena[at + 6u]) || ay >= ey + int(arena[at + 7u])) continue;
+            for (uint q = 0u; q < 32u; q++) P[q] = arena[at + q];
+            v = pixel(ax - ex, ay - ey, v);
+        }
+        nw = word_put(nw, k, f, v);
+    }
+    if (nw != w) vram[wa >> 2] = nw;
+}
+
 void main() {
+    if (pc.p[0] == OP_LIST) { list_main(); return; }
+    for (uint q = 0u; q < 32u; q++) P[q] = pc.p[q];
     if (A_OP == OP_LINE) {
         if (gl_GlobalInvocationID.x == 0u && gl_GlobalInvocationID.y == 0u) line();
         return;
