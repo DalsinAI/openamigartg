@@ -37,8 +37,10 @@
 #include <exec/libraries.h>
 #include <exec/execbase.h>
 #include <exec/semaphores.h>
+#include "../../include/oa_protos_begin.h"   /* the protos' unused varargs wrappers dropped */
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include "../../include/oa_protos_end.h"
 
 #include <exec/memory.h>
 #include "ogpu_core.h"
@@ -81,7 +83,6 @@ struct OpenGPUBase {
     UBYTE low_mem_on;                           /* added (exec 39 and later) */
     struct ogfx_state ogfx;                     /* OpenGfx (library/ogfx) */
 };
-const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 
 /* No writable globals (the library may run from ROM): each function takes
  * exec and dos.library from the base, under the names the system's headers
@@ -92,6 +93,10 @@ const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 /* Run as a program, the library does nothing. This must stay the first code
  * in the file: build.sh keeps source order (-fno-toplevel-reorder). */
 int start(void) { return -1; }
+
+/* where OpenGfx's state is in the base (library/ogfx): after the stub, as
+ * a constant before it was the file's first word */
+const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 
 static const char lib_name[] = "opengpu.library";
 static const char lib_id[] = "opengpu.library 0.16 (15.10.2026) OpenGPU, AmigaChrome Team\r\n";
