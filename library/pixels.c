@@ -22,8 +22,10 @@
 #include <graphics/gfxbase.h>
 #include <graphics/rastport.h>
 #include <graphics/view.h>
+#include "../include/oa_protos_begin.h"   /* the protos' unused varargs wrappers dropped */
 #include <proto/exec.h>
 #include <proto/graphics.h>
+#include "../include/oa_protos_end.h"
 
 #include <opengpu/stream.h>
 

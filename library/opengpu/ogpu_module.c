@@ -28,8 +28,10 @@
 #include <exec/execbase.h>
 #include <dos/dos.h>
 #include <dos/dosextens.h>
+#include "../../include/oa_protos_begin.h"   /* the protos' unused varargs wrappers dropped */
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include "../../include/oa_protos_end.h"
 
 #include "ogpu_module.h"
 
