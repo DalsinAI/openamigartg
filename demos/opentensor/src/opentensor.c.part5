@@ -1,0 +1,502 @@
+/* ---- Act II: Beyond First Light ----------------------------------------- */
+
+static const float ot_scene_starts[] = {
+    0.0f, 12.0f, 24.0f, 36.0f, 48.0f,
+    64.0f, 78.0f, 96.0f, 114.0f, 130.0f, 152.0f
+};
+
+static const char *ot_scene_names[] = {
+    "THE NOISE", "THE FIELD", "THE BOING EVENT", "TENSOR STORM",
+    "FIRST LIGHT", "THE TIMECODE", "ACROSS THE FIELD", "FORM",
+    "WINDOW BREAKOUT", "BEYOND FIRST LIGHT", "THE STACK IS OPEN"
+};
+
+static int ot_scene_at(float t, float *local)
+{
+    int i;
+    for (i = OT_SCENE_COUNT - 1; i > 0; i--)
+        if (t >= ot_scene_starts[i]) break;
+    if (local) *local = t - ot_scene_starts[i];
+    return i;
+}
+
+static float ot_scene_start(int scene)
+{
+    if (scene < 0) scene = OT_SCENE_COUNT - 1;
+    if (scene >= OT_SCENE_COUNT) scene = 0;
+    return ot_scene_starts[scene];
+}
+
+static const char *ot_scene_name(int scene)
+{
+    if (scene < 0 || scene >= OT_SCENE_COUNT) return "UNKNOWN";
+    return ot_scene_names[scene];
+}
+
+static float ot_smooth(float x)
+{
+    if (x <= 0.0f) return 0.0f;
+    if (x >= 1.0f) return 1.0f;
+    return x * x * (3.0f - 2.0f * x);
+}
+
+static void ot_caption(struct Demo *d, const char *text, float y, float alpha)
+{
+    float scale = d->width / 520.0f;
+    if (scale < 0.75f) scale = 0.75f;
+    ot_overlay_begin(d);
+    ot_draw_text((d->width - ot_text_width(text, scale)) * 0.5f,
+                 d->height * y, scale, text,
+                 0.72f, 0.82f, 0.96f, alpha);
+    ot_overlay_end();
+}
+
+static void ot_format_timecode(float seconds, char *out)
+{
+    int frames = (int)(seconds * 25.0f);
+    int ff = frames % 25;
+    int total = frames / 25;
+    int ss = total % 60;
+    int mm = (total / 60) % 60;
+    int hh = (total / 3600) % 100;
+    sprintf(out, "%02d:%02d:%02d:%02d", hh, mm, ss, ff);
+}
+
+static void ot_scene_timecode(struct Demo *d, float t)
+{
+    char tc[24], small[24];
+    int i;
+    float big = d->width / 150.0f;
+    float fade = ot_smooth(t / 2.0f);
+
+    glLoadIdentity();
+    glTranslatef(0.0f, 0.0f, -2.5f + 0.08f * t);
+    glRotatef(t * 2.0f, 0.0f, 0.0f, 1.0f);
+    glPointSize(1.0f + 0.15f * ot_absf(ot_sin(t * 2.5f)));
+    ot_draw_mesh(&d->stars);
+
+    ot_format_timecode(64.0f + t, tc);
+    ot_overlay_begin(d);
+
+    /* A restrained scan field: more broadcast clock than cyberpunk soup. */
+    glColor4f(0.24f, 0.34f, 0.52f, 0.20f * fade);
+    glBegin(GL_LINES);
+    for (i = 0; i < 22; i++) {
+        float y = (float)((i * 37 + (int)(t * 46.0f)) % d->height);
+        glVertex2f(0.0f, y);
+        glVertex2f((float)d->width, y);
+    }
+    glEnd();
+
+    for (i = 0; i < 12; i++) {
+        float s = d->width / (680.0f - i * 18.0f);
+        float x = (float)((i * 113 + (int)(t * (18 + i))) % (d->width + 240)) - 120.0f;
+        float y = 34.0f + (float)(i * (d->height - 68) / 12);
+        ot_format_timecode(64.0f + t + i * 11.37f, small);
+        ot_draw_text(x, y, s, small,
+                     0.38f + i * 0.018f, 0.52f + i * 0.014f, 0.78f,
+                     0.16f + i * 0.025f);
+    }
+
+    ot_draw_text((d->width - ot_text_width(tc, big)) * 0.5f,
+                 d->height * 0.37f, big, tc,
+                 0.88f, 0.93f, 1.0f, 0.96f);
+    ot_overlay_end();
+
+    if (t > 3.0f)
+        ot_caption(d, "THE NUMBER BECAME THE TIMECODE", 0.76f,
+                   ot_smooth((t - 3.0f) / 2.0f));
+}
+
+static void ot_draw_tensor_streams(float t, float gather)
+{
+    int stream, seg;
+    const int segments = 58;
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glLineWidth(1.0f);
+    glBegin(GL_LINES);
+    for (stream = 0; stream < 8; stream++) {
+        float base = (stream - 3.5f) * 1.35f;
+        float r = stream & 1 ? 0.82f : 0.46f;
+        float g = 0.48f + 0.055f * stream;
+        float b = stream & 2 ? 0.98f : 0.76f;
+        glColor4f(r, g, b, 0.68f);
+        for (seg = 0; seg < segments; seg++) {
+            float q0 = (float)seg / (float)(segments - 1);
+            float q1 = (float)(seg + 1) / (float)(segments - 1);
+            float z0 = -2.0f - q0 * 43.0f + t * 1.45f;
+            float z1 = -2.0f - q1 * 43.0f + t * 1.45f;
+            float wave0 = ot_sin(q0 * 13.0f + t * (0.8f + stream * 0.035f) + stream);
+            float wave1 = ot_sin(q1 * 13.0f + t * (0.8f + stream * 0.035f) + stream);
+            float x0 = base + wave0 * (0.65f + 0.08f * stream);
+            float x1 = base + wave1 * (0.65f + 0.08f * stream);
+            float y0 = -0.7f + 1.7f + ot_sin(q0 * 8.0f - t * 1.1f + stream * 0.7f) * 1.1f;
+            float y1 = -0.7f + 1.7f + ot_sin(q1 * 8.0f - t * 1.1f + stream * 0.7f) * 1.1f;
+            if (gather > 0.0f) {
+                float k0 = gather * q0;
+                float k1 = gather * q1;
+                x0 *= 1.0f - k0; y0 *= 1.0f - k0;
+                x1 *= 1.0f - k1; y1 *= 1.0f - k1;
+            }
+            glVertex3f(x0, y0, z0);
+            glVertex3f(x1, y1, z1);
+        }
+    }
+    glEnd();
+
+    glPointSize(3.0f);
+    glBegin(GL_POINTS);
+    for (stream = 0; stream < 8; stream++) {
+        int node = ((int)(t * 13.0f) + stream * 7) % segments;
+        float q = (float)node / (float)(segments - 1);
+        float base = (stream - 3.5f) * 1.35f;
+        float x = base + ot_sin(q * 13.0f + t * (0.8f + stream * 0.035f) + stream) *
+                         (0.65f + 0.08f * stream);
+        float y = -0.7f + 1.7f + ot_sin(q * 8.0f - t * 1.1f + stream * 0.7f) * 1.1f;
+        if (gather > 0.0f) { float k = gather * q; x *= 1.0f - k; y *= 1.0f - k; }
+        glColor4f(0.92f, 0.96f, 1.0f, 0.95f);
+        glVertex3f(x, y, -2.0f - q * 43.0f + t * 1.45f);
+    }
+    glEnd();
+    glDisable(GL_BLEND);
+}
+
+static void ot_scene_streams(struct Demo *d, float t)
+{
+    float lift = 0.15f * ot_sin(t * 0.8f);
+    glLoadIdentity();
+    glRotatef(10.0f + 2.0f * ot_sin(t * 0.25f), 1, 0, 0);
+    glTranslatef(0.0f, -0.7f + lift, -5.0f);
+    ot_draw_mesh(&d->ground);
+    ot_draw_tensor_streams(t, 0.0f);
+    glPushMatrix();
+    glTranslatef(0.0f, 3.0f, -9.0f);
+    glPointSize(1.4f);
+    ot_draw_mesh(&d->stars);
+    glPopMatrix();
+    if (t > 2.0f)
+        ot_caption(d, "THE TENSORS WERE MOVED ACROSS THE FIELD", 0.82f,
+                   ot_smooth((t - 2.0f) / 2.0f));
+}
+
+static void ot_draw_wire_cube(float size, float r, float g, float b, float a)
+{
+    static const signed char p[8][3] = {
+        {-1,-1,-1},{1,-1,-1},{1,1,-1},{-1,1,-1},
+        {-1,-1, 1},{1,-1, 1},{1,1, 1},{-1,1, 1}
+    };
+    static const UBYTE e[12][2] = {
+        {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},
+        {0,4},{1,5},{2,6},{3,7}
+    };
+    int i;
+    glColor4f(r, g, b, a);
+    glBegin(GL_LINES);
+    for (i = 0; i < 12; i++) {
+        glVertex3f(p[e[i][0]][0] * size, p[e[i][0]][1] * size, p[e[i][0]][2] * size);
+        glVertex3f(p[e[i][1]][0] * size, p[e[i][1]][1] * size, p[e[i][1]][2] * size);
+    }
+    glEnd();
+}
+
+static void ot_draw_plain_mesh(const struct Mesh *m)
+{
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glDisableClientState(GL_COLOR_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 0, m->v);
+    glDrawArrays(m->mode, 0, m->count);
+    glDisableClientState(GL_VERTEX_ARRAY);
+}
+
+static void ot_draw_tensor_core(float t, float intensity)
+{
+    int i, seg;
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    for (i = 0; i < 5; i++) {
+        glPushMatrix();
+        glRotatef(t * (18.0f + i * 7.0f) + i * 23.0f, i & 1, 1.0f, (i + 1) & 1);
+        ot_draw_wire_cube(0.8f + i * 0.48f,
+                          0.28f + i * 0.10f, 0.55f + i * 0.06f, 1.0f,
+                          intensity * (0.72f - i * 0.08f));
+        glPopMatrix();
+    }
+    glColor4f(0.95f, 0.32f, 0.18f, intensity * 0.70f);
+    glBegin(GL_LINES);
+    for (seg = 0; seg < 96; seg++) {
+        float a0 = seg * OT_TAU / 96.0f;
+        float a1 = (seg + 1) * OT_TAU / 96.0f;
+        float r0 = 3.4f + 0.35f * ot_sin(a0 * 5.0f + t * 2.0f);
+        float r1 = 3.4f + 0.35f * ot_sin(a1 * 5.0f + t * 2.0f);
+        glVertex3f(r0 * ot_cos(a0), r0 * ot_sin(a0), 0.4f * ot_sin(a0 * 3.0f));
+        glVertex3f(r1 * ot_cos(a1), r1 * ot_sin(a1), 0.4f * ot_sin(a1 * 3.0f));
+    }
+    glEnd();
+    glDisable(GL_BLEND);
+}
+
+static void ot_scene_form(struct Demo *d, float t)
+{
+    float solid = ot_smooth((t - 6.0f) / 3.0f);
+    int i;
+
+    glLoadIdentity();
+    glTranslatef(0.0f, 0.0f, -13.0f);
+    glRotatef(t * 9.0f, 0.4f, 1.0f, 0.2f);
+    ot_draw_tensor_core(t, 0.9f);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glColor4f(0.68f, 0.84f, 1.0f, 0.60f * (1.0f - solid * 0.5f));
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glPushMatrix();
+    glScalef(3.0f, 3.0f, 3.0f);
+    ot_draw_plain_mesh(&d->ball);
+    glPopMatrix();
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glDisable(GL_BLEND);
+
+    if (solid > 0.0f) {
+        glPushMatrix();
+        glScalef(0.35f + solid * 2.65f, 0.35f + solid * 2.65f, 0.35f + solid * 2.65f);
+        ot_draw_mesh(&d->ball);
+        glPopMatrix();
+    }
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glColor4f(0.45f, 0.67f, 1.0f, 0.55f);
+    glBegin(GL_LINES);
+    for (i = 0; i < 48; i++) {
+        float a = i * OT_TAU / 48.0f;
+        float r = 9.0f + 1.2f * ot_sin(i * 1.7f + t);
+        glVertex3f(r * ot_cos(a), r * ot_sin(a), -4.0f + (i & 7));
+        glVertex3f(2.2f * ot_cos(a + t * 0.2f), 2.2f * ot_sin(a + t * 0.2f), 0.0f);
+    }
+    glEnd();
+    glDisable(GL_BLEND);
+
+    if (t > 8.0f)
+        ot_caption(d, "AND IT WAS GIVEN FORM", 0.80f,
+                   ot_smooth((t - 8.0f) / 2.0f));
+}
+
+static void ot_desktop_background(struct Demo *d)
+{
+    int x, y;
+    struct RastPort *rp = d->window->RPort;
+    FillPixelArray(rp, 0, 0, d->full_width, d->full_height, 0x004d607cUL);
+    for (y = 24; y < d->full_height; y += 64)
+        for (x = 0; x < d->full_width; x += 64)
+            if (((x >> 6) + (y >> 6)) & 1)
+                FillPixelArray(rp, x, y, OT_MIN(64, d->full_width - x),
+                               OT_MIN(64, d->full_height - y), 0x00576883UL);
+    FillPixelArray(rp, 0, 0, d->full_width, 20, 0x00c5c7caUL);
+    FillPixelArray(rp, 2, 2, 15, 15, 0x002c333dUL);
+    FillPixelArray(rp, d->full_width - 18, 2, 15, 15, 0x002c333dUL);
+}
+
+static int ot_breakout_open(struct Demo *d)
+{
+    struct gla_config cfg = { GLA_COMPAT, 0, 0, 1, 24, 0, 0 };
+    int iw, ih, bw, bh, left, top;
+
+    if (d->windowed || d->breakout_active || !d->screen) return 1;
+    ot_desktop_background(d);
+
+    iw = OT_MIN(720, d->full_width - 96);
+    if (iw < 400) iw = d->full_width - 32;
+    ih = iw * 9 / 16;
+    if (ih > d->full_height - 100) ih = d->full_height - 100;
+    bw = iw + 8; bh = ih + 22;
+    left = (d->full_width - bw) / 2;
+    top = (d->full_height - bh) / 2;
+
+    d->breakout_window = OpenWindowTags(NULL,
+        WA_CustomScreen, (ULONG)d->screen,
+        WA_Title, (ULONG)"OpenTensor - The Universe",
+        WA_Left, left, WA_Top, top,
+        WA_InnerWidth, iw, WA_InnerHeight, ih,
+        WA_DragBar, TRUE, WA_DepthGadget, TRUE, WA_CloseGadget, TRUE,
+        WA_Activate, TRUE, WA_SizeGadget, FALSE, WA_SimpleRefresh, TRUE,
+        WA_RMBTrap, TRUE,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_MOUSEBUTTONS | IDCMP_REFRESHWINDOW,
+        TAG_DONE);
+    if (!d->breakout_window) return 0;
+
+    iw = d->breakout_window->Width - d->breakout_window->BorderLeft - d->breakout_window->BorderRight;
+    ih = d->breakout_window->Height - d->breakout_window->BorderTop - d->breakout_window->BorderBottom;
+    d->target.rp = d->breakout_window->RPort;
+    d->target.bitmap = NULL;
+    d->target.left = d->breakout_window->BorderLeft;
+    d->target.top = d->breakout_window->BorderTop;
+    d->breakout_buffer = gla_buffer_create(d->display, &cfg, iw, ih, &d->present);
+    if (!d->breakout_buffer || !gla_make_current(d->context, d->breakout_buffer)) {
+        if (d->breakout_buffer) gla_buffer_destroy(d->breakout_buffer);
+        d->breakout_buffer = NULL;
+        CloseWindow(d->breakout_window);
+        d->breakout_window = NULL;
+        d->target.rp = d->window->RPort;
+        d->target.bitmap = d->screen->RastPort.BitMap;
+        d->target.left = d->target.top = 0;
+        gla_make_current(d->context, d->main_buffer);
+        return 0;
+    }
+    d->buffer = d->breakout_buffer;
+    d->width = iw; d->height = ih;
+    d->breakout_active = 1;
+    d->breakout_move_tick = -1;
+    return 1;
+}
+
+static void ot_breakout_close(struct Demo *d)
+{
+    if (!d->breakout_active) return;
+    d->target.rp = d->window->RPort;
+    d->target.bitmap = d->screen ? d->screen->RastPort.BitMap : NULL;
+    d->target.left = d->windowed ? d->window->BorderLeft : 0;
+    d->target.top = d->windowed ? d->window->BorderTop : 0;
+    gla_make_current(d->context, d->main_buffer);
+    d->buffer = d->main_buffer;
+    d->width = d->full_width;
+    d->height = d->full_height;
+    if (d->breakout_buffer) gla_buffer_destroy(d->breakout_buffer);
+    d->breakout_buffer = NULL;
+    if (d->breakout_window) CloseWindow(d->breakout_window);
+    d->breakout_window = NULL;
+    d->breakout_active = 0;
+}
+
+static void ot_breakout_update(struct Demo *d, float sequence, float local)
+{
+    int scene = ot_scene_at(sequence, NULL);
+    if (scene == 8 && !d->windowed) {
+        if (!d->breakout_active) ot_breakout_open(d);
+        if (d->breakout_active && d->breakout_window) {
+            int tick = (int)(local * 8.0f);
+            if (tick != d->breakout_move_tick) {
+                int maxx = d->full_width - d->breakout_window->Width;
+                int maxy = d->full_height - d->breakout_window->Height;
+                int x = maxx / 2 + (int)(ot_sin(local * 0.72f) * maxx * 0.28f);
+                int y = maxy / 2 + (int)(ot_cos(local * 0.91f) * maxy * 0.25f);
+                if (x < 0) x = 0;
+                if (x > maxx) x = maxx;
+                if (y < 20) y = 20;
+                if (y > maxy) y = maxy;
+                ChangeWindowBox(d->breakout_window, x, y,
+                                d->breakout_window->Width, d->breakout_window->Height);
+                d->breakout_move_tick = tick;
+            }
+        }
+    } else if (d->breakout_active) {
+        ot_breakout_close(d);
+    }
+}
+
+static void ot_scene_breakout(struct Demo *d, float t)
+{
+    glLoadIdentity();
+    glTranslatef(0.0f, 0.0f, 1.0f + 0.4f * ot_sin(t * 0.6f));
+    glRotatef(t * 15.0f, 0.2f, 0.8f, 1.0f);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    ot_draw_mesh(&d->tunnel);
+    glDisable(GL_BLEND);
+
+    glLoadIdentity();
+    glTranslatef(0.0f, 0.0f, -10.0f);
+    glRotatef(t * 42.0f, 0.7f, 1.0f, 0.2f);
+    glScalef(2.3f, 2.3f, 2.3f);
+    ot_draw_mesh(&d->ball);
+
+    ot_overlay_begin(d);
+    ot_draw_text(18.0f, d->height - 52.0f, OT_MAX(0.8f, d->width / 720.0f),
+                 d->breakout_active ? "LIVE INTUITION WINDOW / COMPAT PRESENT" :
+                                      "WINDOW BREAKOUT / COMPAT PRESENT",
+                 0.80f, 0.88f, 1.0f, 0.92f);
+    ot_overlay_end();
+}
+
+static void ot_scene_beyond(struct Demo *d, float t)
+{
+    int i, seg;
+    glLoadIdentity();
+    glTranslatef(0.0f, 0.0f, 1.5f + ot_sin(t * 0.4f));
+    glRotatef(t * 9.0f, 0.0f, 0.0f, 1.0f);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    ot_draw_mesh(&d->tunnel);
+    glDisable(GL_BLEND);
+
+    glLoadIdentity();
+    glTranslatef(0.0f, 0.0f, -15.0f);
+    ot_draw_tensor_core(t, 0.72f);
+
+    glColor4f(0.55f, 0.72f, 1.0f, 0.42f);
+    glBegin(GL_LINES);
+    for (seg = 0; seg < 96; seg++) {
+        float a0 = seg * OT_TAU / 96.0f;
+        float a1 = (seg + 1) * OT_TAU / 96.0f;
+        glVertex3f(7.0f * ot_cos(a0), 3.2f * ot_sin(a0), 0.0f);
+        glVertex3f(7.0f * ot_cos(a1), 3.2f * ot_sin(a1), 0.0f);
+    }
+    glEnd();
+
+    for (i = 0; i < 5; i++) {
+        float a = t * (0.42f + i * 0.035f) + i * OT_TAU / 5.0f;
+        float x = 7.0f * ot_cos(a);
+        float y = 3.2f * ot_sin(a);
+        float z = 1.5f * ot_sin(a * 2.0f);
+        glPushMatrix();
+        glTranslatef(x, y, z);
+        glRotatef(t * (45.0f + i * 7.0f), 0.4f, 1.0f, 0.2f);
+        glScalef(0.72f, 0.72f, 0.72f);
+        ot_draw_mesh(&d->ball);
+        glPopMatrix();
+    }
+
+    glPushMatrix();
+    glRotatef(t * 28.0f, 0.4f, 1.0f, 0.2f);
+    glScalef(2.0f, 2.0f, 2.0f);
+    ot_draw_mesh(&d->ball);
+    glPopMatrix();
+
+    ot_caption(d, "BEYOND FIRST LIGHT", 0.20f, ot_smooth(t / 2.0f));
+    if (t > 6.0f) {
+        ot_overlay_begin(d);
+        ot_draw_text(d->width * 0.08f, d->height * 0.78f, d->width / 760.0f,
+                     "MESA   OPENRTG   OPENGPU   AHI   AC090",
+                     0.66f, 0.78f, 0.96f, ot_smooth((t - 6.0f) / 2.0f));
+        ot_overlay_end();
+    }
+}
+
+static void ot_scene_stack(struct Demo *d, float t)
+{
+    static const char *lines[] = {
+        "MESA", "OPENRTG", "OPENGPU", "AHI", "AC090", "THE STACK IS OPEN"
+    };
+    int i;
+    float fade = 1.0f;
+    if (t > 8.0f) fade = 1.0f - ot_smooth((t - 8.0f) / 3.5f);
+
+    glLoadIdentity();
+    glPointSize(1.0f + 2.0f * fade);
+    glRotatef(t * 1.2f, 0, 0, 1);
+    ot_draw_mesh(&d->stars);
+
+    ot_overlay_begin(d);
+    for (i = 0; i < 6; i++) {
+        float scale = i == 5 ? d->width / 360.0f : d->width / 620.0f;
+        float appear = ot_smooth((t - i * 0.72f) / 1.2f) * fade;
+        ot_draw_text((d->width - ot_text_width(lines[i], scale)) * 0.5f,
+                     d->height * (0.20f + i * 0.105f), scale, lines[i],
+                     i == 5 ? 0.94f : 0.58f + i * 0.06f,
+                     i == 5 ? 0.20f : 0.72f,
+                     i == 5 ? 0.12f : 0.96f,
+                     appear);
+    }
+    ot_overlay_end();
+}
