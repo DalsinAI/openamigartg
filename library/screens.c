@@ -37,6 +37,12 @@
 #include <intuition/intuitionbase.h>
 #include <intuition/screens.h>
 #include <utility/tagitem.h>
+#ifndef BMATags_Displayable
+#define BMATags_Displayable (TAG_USER + 4)      /* graphics/gfx.h, OS 3.5 on */
+#endif
+#ifndef BMATags_Clear
+#define BMATags_Clear (TAG_USER + 3)
+#endif
 #include <devices/input.h>
 #include <devices/inputevent.h>
 #include <exec/interrupts.h>
@@ -394,16 +400,45 @@ static void vram_free(int monitor, ULONG off)
         if (SC->blk[i].used && SC->blk[i].monitor == monitor && SC->blk[i].off == off) { SC->blk[i].used = 0; return; }
 }
 
+/* The video RAM a w x h bitmap of bpp bytes a pixel takes (ortg_alloc's
+ * ORTG_HEAD and stride, vram_alloc's rounding). */
+static ULONG vram_need(ULONG w, ULONG h, ULONG bpp)
+{
+    return (64 /* ORTG_HEAD */ + ((w * bpp + 63) & ~63UL) * h + 63) & ~63UL;
+}
+
+/* 0.19.1: the video RAM the largest screen this board can open takes: each
+ * mode it shows, and for Native modes its largest picture at 32 bits. */
+static ULONG largest_screen(int monitor)
+{
+    const struct ortg_mode_table *t = tables ? tables[monitor] : NULL;
+    ULONG most = 0;
+    if (!t) return 0;
+    for (int i = 0; i < t->full_count; i++) {
+        const struct ortg_mode *m = &t->full[i];
+        ULONG need = vram_need(m->width, m->height, m->format == ORTG_ARGB32 ? 4 : m->format == ORTG_RGB16 ? 2 : 1);
+        if (need > most) most = need;
+    }
+    if (t->native && vram_need(t->max_width, t->max_height, 4) > most) most = vram_need(t->max_width, t->max_height, 4);
+    return most;
+}
+
 /* 0.19: friends asked for as displayable (BMF_DISPLAYABLE) may take at most
  * half of a board's video RAM between them, so screens opened later still
- * find room. 1 when a w x h one of bpp bytes a pixel fits under that. */
+ * find room. 0.19.1: and never so much that the board's largest screen
+ * wouldn't fit beside them (on a 16 MiB board half was less than a
+ * 1920x1200 32-bit screen leaves). 1 when a w x h one of bpp bytes a pixel
+ * fits under that. */
 static int displayable_room(int monitor, ULONG w, ULONG h, ULONG bpp)
 {
     ULONG used = 0, limit = vram_limit[monitor] ? vram_limit[monitor] : vram_size[monitor];
-    ULONG want = (64 /* ORTG_HEAD */ + ((w * bpp + 63) & ~63UL) * h + 63) & ~63UL;
+    ULONG want = vram_need(w, h, bpp), screen = largest_screen(monitor);
+    ULONG share = limit / 2;
+    if (screen >= limit) return 0;
+    if (limit - screen < share) share = limit - screen;
     for (int i = 0; i < nblk; i++)
         if (SC->blk[i].used && SC->blk[i].monitor == monitor && SC->blk[i].displayable) used += SC->blk[i].size;
-    return used + want <= limit / 2;
+    return used + want <= share;
 }
 
 static void vram_mark_displayable(int monitor, ULONG off)
@@ -1838,6 +1873,9 @@ static const struct ortg_mode *mode_of(ULONG id, int *monitor)
 static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, ULONG depth), REG(d3, ULONG flags), REG(a0, struct BitMap *friend), REG(a6, struct GfxBase *g))
 {
     struct BitMap *fr = friend;
+    /* 0.19.1: with tags, BMATags_Displayable and BMATags_Clear say so, the
+     * flags only giving their defaults */
+    ULONG displayable = (flags & BMF_DISPLAYABLE) != 0, clear = (flags & BMF_CLEAR) != 0;
     if (BITMAPFLAGS_ARE_EXTENDED(flags)) {
         /* OS 3.2's intuition asks for a screen's bitmap with tags: its
          * ModeID says whether it is an OpenRTG screen */
@@ -1859,6 +1897,8 @@ static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, UL
             if (o) ortg_free(o);
         }
         fr = (struct BitMap *)GetTagData(BMATags_Friend, 0, tags);
+        displayable = GetTagData(BMATags_Displayable, displayable, tags) != 0;
+        clear = GetTagData(BMATags_Clear, clear, tags) != 0;
     }
     /* a bitmap like an OpenRTG one (layers' backing store, double buffers,
      * a program's off-screen picture) is one, in fast RAM */
@@ -1873,9 +1913,9 @@ static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, UL
              * and textures ask so, and OpenGPU's GPU then draws in them
              * (amigachrome's Design-OpenGPU-2D-On-The-GPU 5.4 B). Every other
              * friend stays in fast RAM, as before. */
-            int n = (flags & BMF_DISPLAYABLE) && f->monitor && displayable_room(f->monitor, (UWORD)w, (UWORD)h, f->bpp)
+            int n = displayable && f->monitor && displayable_room(f->monitor, (UWORD)w, (UWORD)h, f->bpp)
                     ? f->monitor : 0;
-            struct ortg_bitmap *o = ortg_alloc(n, (UWORD)w, (UWORD)h, (flags & BMF_CLEAR) != 0, f->format);
+            struct ortg_bitmap *o = ortg_alloc(n, (UWORD)w, (UWORD)h, clear, f->format);
             if (o) {
                 o->pal_index = f->pal_index;
                 if (o->monitor) vram_mark_displayable(o->monitor, o->vram_block);
@@ -1900,7 +1940,10 @@ static ULONG bmattr_patch(REG(a0, struct BitMap *bm), REG(d1, ULONG a), REG(a6, 
         case BMA_HEIGHT: return o->height;
         case BMA_DEPTH: return o->bpp == 4 ? 24 : o->bpp == 2 ? 16 : 8;
         case BMA_WIDTH: return o->stride / o->bpp;
-        case BMA_FLAGS: return 0;               /* not standard: no planar planes */
+        /* not standard: no planar planes. 0.19.1: displayable when in a
+         * board's video RAM, a screen's own bitmap or a displayable friend,
+         * as GetBitMapAttr says of a bitmap that can be shown */
+        case BMA_FLAGS: return o->monitor ? BMF_DISPLAYABLE : 0;
         default: return 0;
         }
     }
