@@ -12,7 +12,7 @@
  
    This software is provided 'as-is', without any express or implied
    warranty.  In no event will the authors be held liable for any damages
-@@ -17,181 +22,674 @@
+@@ -17,181 +22,707 @@
    2. Altered source versions must be plainly marked as such, and must not be
       misrepresented as being the original software.
    3. This notice may not be removed or altered from any source distribution.
@@ -20,7 +20,11 @@
 +  How it draws
 +  ------------
 +  Textures and the target are surfaces in memory, described to OpenGPU as
-+  slots. SDL's commands become one OpenGPU batch per RunCommandQueue:
++  slots. On a 32-bit OpenRTG screen, the window's surface and ARGB8888 and
++  RGB888 textures are in the board's video RAM where it has room
++  (SDL_os3vram.h), so OpenGPU's GPU draws from them and in them; the rest,
++  and everything elsewhere, are in Fast RAM. SDL's commands become one
++  OpenGPU batch per RunCommandQueue:
 +
 +    clear, opaque fills           FILL
 +    fills in any blend mode       FILL_BLEND (v1.2)
@@ -77,6 +81,7 @@
 +
 +#include <proto/exec.h>
 +#include "../../video/amigaos3/SDL_os3gpu.h"
++#include "../../video/amigaos3/SDL_os3vram.h"
 +
 +#if defined(__has_include)
 +#if __has_include(<opengpu/build3d.h>)
@@ -162,6 +167,7 @@
 +    SDL_bool clip_dirty;
 +
 +    Uint32 ops_gpu, ops_cpu; /* SDL_OPENGPU_STATS=1 logs them at the end */
++    Uint32 tex_vram, tex_fast; /* textures made in video RAM, in Fast RAM (the same) */
 +} OGPUR_RenderData;
 +
 +/* ---- OpenGPU ----------------------------------------------------------------- */
@@ -509,6 +515,25 @@
 +#endif
  }
  
++/* A texture's surface in the video RAM of the board that shows the window,
++   where it can be (SDL_os3vram.h): OpenGPU's GPU then draws from it and in
++   it. NULL leaves it to SDL's own, in Fast RAM. */
++static SDL_Surface *OGPUR_VRAMSurface(SDL_Renderer *renderer, int w, int h, Uint32 format)
++{
++    OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
++    SDL_Surface *s = NULL;
++
++    if (OGPUR_Format(format) == OGPU_FMT_ARGB32) {
++        s = SDL_OS3_VRAM_CreateSurface(renderer->window, w, h, format);
++    }
++    if (s) {
++        data->tex_vram++;
++    } else {
++        data->tex_fast++;
++    }
++    return s;
++}
++
 -static int SW_CreateTexture(SDL_Renderer *renderer, SDL_Texture *texture)
 +static int OGPUR_CreateTexture(SDL_Renderer *renderer, SDL_Texture *texture)
  {
@@ -517,14 +542,18 @@
  
 +#if OGPUR_V12 && SDL_HAVE_YUV
 +    if (OGPUR_YUVLayout(texture->format)) {
-+        /* Drawn from an XRGB surface OpenGPU fills from the planes. */
-+        SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, texture->w, texture->h, 32, SDL_PIXELFORMAT_RGB888);
++        /* Drawn from an XRGB surface OpenGPU fills from the planes, in
++           video RAM where it can be. */
++        SDL_Surface *s = OGPUR_VRAMSurface(renderer, texture->w, texture->h, SDL_PIXELFORMAT_RGB888);
++        if (!s) {
++            s = SDL_CreateRGBSurfaceWithFormat(0, texture->w, texture->h, 32, SDL_PIXELFORMAT_RGB888);
++        }
 +        if (!s) {
 +            return -1;
 +        }
 +        s->userdata = OGPUR_YUVCreate(texture->format, texture->w, texture->h);
 +        if (!s->userdata) {
-+            SDL_FreeSurface(s);
++            SDL_OS3_VRAM_FreeSurface(s);
 +            return SDL_OutOfMemory();
 +        }
 +        texture->driverdata = s;
@@ -552,7 +581,11 @@
 -        SDL_SetSurfaceRLE(texture->driverdata, 1);
 -    }
 -
-+    texture->driverdata = SDL_CreateRGBSurface(0, texture->w, texture->h, bpp, Rmask, Gmask, Bmask, Amask);
++    /* in video RAM where it can be, else SDL's own in Fast RAM */
++    texture->driverdata = OGPUR_VRAMSurface(renderer, texture->w, texture->h, texture->format);
++    if (!texture->driverdata) {
++        texture->driverdata = SDL_CreateRGBSurface(0, texture->w, texture->h, bpp, Rmask, Gmask, Bmask, Amask);
++    }
      if (!texture->driverdata) {
          return -1;
      }
@@ -697,7 +730,7 @@
 +            surface->userdata = NULL;
 +        }
 +#endif
-+        SDL_FreeSurface(surface);
++        SDL_OS3_VRAM_FreeSurface(surface); /* and its bitmap, when in video RAM */
      }
 +}
 +
@@ -771,7 +804,7 @@
  {
      SDL_Point *verts = (SDL_Point *)SDL_AllocateRenderVertices(renderer, count * sizeof(SDL_Point), 0, &cmd->data.draw.first);
      int i;
-@@ -199,18 +697,15 @@
+@@ -199,18 +730,15 @@
      if (!verts) {
          return -1;
      }
@@ -791,7 +824,7 @@
  {
      SDL_Rect *verts = (SDL_Rect *)SDL_AllocateRenderVertices(renderer, count * sizeof(SDL_Rect), 0, &cmd->data.draw.first);
      int i;
-@@ -218,45 +713,39 @@
+@@ -218,45 +746,39 @@
      if (!verts) {
          return -1;
      }
@@ -841,7 +874,7 @@
      double angle;
      SDL_FPoint center;
      SDL_RendererFlip flip;
-@@ -264,38 +753,96 @@
+@@ -264,38 +786,96 @@
      float scale_y;
  } CopyExData;
  
@@ -945,7 +978,7 @@
      if (scale_x != 1.0f || scale_y != 1.0f) {
          SDL_Rect r;
          r.x = (int)((float)dstrect->x * scale_x);
-@@ -309,9 +856,10 @@
+@@ -309,9 +889,10 @@
      return retval;
  }
  
@@ -959,7 +992,7 @@
  {
      SDL_Surface *src = (SDL_Surface *)texture->driverdata;
      SDL_Rect tmp_rect;
-@@ -327,66 +875,38 @@
+@@ -327,66 +908,38 @@
      if (!surface) {
          return -1;
      }
@@ -1026,7 +1059,7 @@
      if (blendmode == SDL_BLENDMODE_NONE && !isOpaque) {
          mask = SDL_CreateRGBSurface(0, final_rect->w, final_rect->h, 32,
                                      0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000);
-@@ -396,10 +916,6 @@
+@@ -396,10 +949,6 @@
              SDL_SetSurfaceBlendMode(mask, SDL_BLENDMODE_MOD);
          }
      }
@@ -1037,7 +1070,7 @@
      if (!retval && (blitRequired || applyModulation)) {
          SDL_Rect scale_rect = tmp_rect;
          src_scaled = SDL_CreateRGBSurface(0, final_rect->w, final_rect->h, 32,
-@@ -414,8 +930,6 @@
+@@ -414,8 +963,6 @@
              src_scaled = NULL;
          }
      }
@@ -1046,7 +1079,7 @@
      SDL_SetSurfaceBlendMode(src_clone, blendmode);
  
      if (!retval) {
-@@ -431,57 +945,32 @@
+@@ -431,57 +978,32 @@
              retval = -1;
          }
          if (!retval && mask) {
@@ -1105,7 +1138,7 @@
                          SDL_Surface *src_rotated_rgb;
                          src_rotated_rgb = SDL_CreateRGBSurfaceFrom(src_rotated->pixels, src_rotated->w, src_rotated->h,
                                                                     src_rotated->format->BitsPerPixel, src_rotated->pitch,
-@@ -491,7 +980,6 @@
+@@ -491,7 +1013,6 @@
                              retval = -1;
                          } else {
                              SDL_SetSurfaceBlendMode(src_rotated_rgb, SDL_BLENDMODE_ADD);
@@ -1113,7 +1146,7 @@
                              retval = Blit_to_Screen(src_rotated_rgb, NULL, surface, &tmp_rect, scale_x, scale_y, texture->scaleMode);
                              SDL_FreeSurface(src_rotated_rgb);
                          }
-@@ -504,10 +992,6 @@
+@@ -504,10 +1025,6 @@
              }
          }
      }
@@ -1124,7 +1157,7 @@
      if (mask) {
          SDL_FreeSurface(mask);
      }
-@@ -516,103 +1000,6 @@
+@@ -516,103 +1033,6 @@
      }
      return retval;
  }
@@ -1228,7 +1261,7 @@
  static void PrepTextureForCopy(const SDL_RenderCommand *cmd)
  {
      const Uint8 r = cmd->data.draw.r;
-@@ -622,26 +1009,18 @@
+@@ -622,26 +1042,18 @@
      const SDL_BlendMode blend = cmd->data.draw.blend;
      SDL_Texture *texture = cmd->data.draw.texture;
      SDL_Surface *surface = (SDL_Surface *)texture->driverdata;
@@ -1257,7 +1290,7 @@
  
          if (cliprect) {
              SDL_Rect clip_rect;
-@@ -658,10 +1037,249 @@
+@@ -658,10 +1070,249 @@
      }
  }
  
@@ -1510,7 +1543,7 @@
  
      if (!surface) {
          return -1;
-@@ -671,418 +1289,519 @@
+@@ -671,418 +1322,521 @@
      drawstate.cliprect = NULL;
      drawstate.surface_cliprect_dirty = SDL_TRUE;
  
@@ -2138,6 +2171,8 @@
 +        if (SDL_GetHintBoolean("SDL_OPENGPU_STATS", SDL_FALSE)) {
 +            SDL_Log("opengpu renderer: %lu commands drawn by OpenGPU, %lu on the CPU",
 +                    (unsigned long)data->ops_gpu, (unsigned long)data->ops_cpu);
++            SDL_Log("opengpu renderer: %lu textures made in video RAM, %lu in Fast RAM",
++                    (unsigned long)data->tex_vram, (unsigned long)data->tex_fast);
 +        }
 +        SDL_free(data->buf[0].stream);
 +        SDL_free(data->buf[1].stream);

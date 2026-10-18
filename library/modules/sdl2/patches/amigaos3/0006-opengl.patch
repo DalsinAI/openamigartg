@@ -1,14 +1,14 @@
 --- a/src/video/amigaos3/SDL_os3video.c
 +++ b/src/video/amigaos3/SDL_os3video.c
-@@ -26,6 +26,7 @@
- #include "SDL_os3events.h"
+@@ -27,6 +27,7 @@
  #include "SDL_os3mouse.h"
  #include "SDL_os3clipboard.h"
+ #include "SDL_os3vram.h"
 +#include "SDL_os3gl.h"
  #include "../SDL_sysvideo.h"
  #include "../../events/SDL_events_c.h"
  
-@@ -113,6 +114,19 @@
+@@ -120,6 +121,19 @@
      device->GetClipboardText = OS3_GetClipboardText;
      device->HasClipboardText = OS3_HasClipboardText;
  
