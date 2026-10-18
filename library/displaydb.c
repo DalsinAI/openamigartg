@@ -22,8 +22,10 @@
 #include <graphics/monitor.h>
 #include <graphics/modeid.h>
 #include <graphics/gfxbase.h>
+#include "../include/oa_protos_begin.h"   /* the protos' unused varargs wrappers dropped */
 #include <proto/exec.h>
 #include <proto/graphics.h>
+#include "../include/oa_protos_end.h"
 
 #include "modes.h"
 #include "displaydb.h"
