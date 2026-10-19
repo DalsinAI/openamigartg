@@ -333,8 +333,9 @@ static int virgl_transport(struct gla_virgl_transport *t, char *why, int whylen)
 static int run_scenes(struct gla_display *d, unsigned long *got, unsigned char (*keep)[W * H * 3], const char *dir, const char *tag,
                       long (*direct)(void *, const struct gla_virgl_frame *))
 {
-    struct gla_present hook = { present, NULL, direct };
+    struct gla_present hook = { present, NULL };
     int i, fails = 0;
+    gla_present_set_virgl(present, direct);     /* NULL: no direct present */
     printf("gla: %s gives GL %d (compat), %d (core), GLES %d\n", gla_display_driver(d),
            gla_display_version(d, GLA_COMPAT), gla_display_version(d, GLA_CORE),
            gla_display_version(d, GLA_ES2));
