@@ -174,8 +174,8 @@ static long present_virgl(void *user, const struct gla_virgl_frame *f)
 void gla_os3_present_init(struct gla_present *p, struct gla_os3_target *t)
 {
     p->present = present;
-    p->present_virgl = present_virgl;
     p->user = t;
+    gla_present_set_virgl(present, present_virgl);
 }
 
 void gla_os3_present_close(void)

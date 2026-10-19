@@ -256,7 +256,7 @@ static int near(const unsigned char *a, const unsigned char *b)
 int main(int argc, char **argv)
 {
     struct gla_config cfg = { GLA_COMPAT, 0, 0, 1, 0, 0, 0 };
-    struct gla_present hook = { present, NULL, NULL };
+    struct gla_present hook = { present, NULL };
     struct gla_display *d = NULL;
     struct gla_context *c = NULL;
     struct gla_buffer *b = NULL;
