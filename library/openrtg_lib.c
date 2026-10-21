@@ -14,6 +14,10 @@
  * 0.19: a friend bitmap asked for as displayable (BMF_DISPLAYABLE) goes in
  * its friend's board's video RAM while such friends take at most half of it
  * (screens.c), so OpenGPU's GPU draws in SDL's window and textures.
+ *
+ * 0.19.1: a $VER string, so C:Version finds the library, and a version above
+ * 0.19 so OpenUp's update brings it to machines that have 0.19. The library's
+ * lib_Version and lib_Revision stay 0 and 19: nothing else changed.
  */
 #include <exec/types.h>
 #include "ortg_state.h"
@@ -83,9 +87,9 @@ struct OpenRTGBase {
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.19.0 (17.10.2026) OpenRTG, AmigaChrome Team\r\n";
+static const char lib_id[] = "openrtg.library 0.19.1 (21.10.2026) OpenRTG, AmigaChrome Team\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.19 (17.10.2026) OpenRTG, AmigaChrome Team";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.19.1 (21.10.2026) OpenRTG, AmigaChrome Team";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));
