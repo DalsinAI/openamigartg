@@ -84,6 +84,8 @@ int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
 static const char lib_id[] = "openrtg.library 0.19.0 (17.10.2026) OpenRTG, AmigaChrome Team\r\n";
+/* For C:Version, which looks for "$VER:" in the file. */
+static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.19 (17.10.2026) OpenRTG, AmigaChrome Team";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));
