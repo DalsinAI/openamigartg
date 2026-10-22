@@ -1,0 +1,102 @@
+--- a/src/render/opengpu/SDL_render_opengpu.c
++++ b/src/render/opengpu/SDL_render_opengpu.c
+@@ -74,6 +74,7 @@
+ #include "../software/SDL_triangle.h"
+ 
+ #include <proto/exec.h>
++#include <proto/graphics.h>
+ #include "../../video/amigaos3/SDL_os3gpu.h"
+ #include "../../video/amigaos3/SDL_os3vram.h"
+ 
+@@ -1683,18 +1684,83 @@ static int OGPUR_RenderReadPixels(SDL_Renderer *renderer, const SDL_Rect *rect,
+                              format, pixels, pitch);
+ }
+ 
++/* Show the frame. The copy of the window's surface to the screen goes at
++   the end of the frame's last batch, so a frame is one submit and one
++   wait (Open, 22 Oct 2026): before, the frame was sent and waited for,
++   then the copy was sent and waited for again. With PRESENTVSYNC the copy
++   waits for the vertical blank. */
+ static int OGPUR_RenderPresent(SDL_Renderer *renderer)
+ {
+     OGPUR_RenderData *data = (OGPUR_RenderData *)renderer->driverdata;
+     SDL_Window *window = renderer->window;
++    SDL_bool vsync = (renderer->info.flags & SDL_RENDERER_PRESENTVSYNC) ? SDL_TRUE : SDL_FALSE;
++    SDL_OS3_GPUPresent p;
++    SDL_Rect all;
++    OGPUR_Buffer *b;
++    ULONG fence = 0;
++    SDL_bool waited = SDL_FALSE;
++    int r;
+ 
+     if (!window) {
+         return -1;
+     }
++    if (data->window && data->surface == data->window && window->surface == data->window) {
++        all.x = 0;
++        all.y = 0;
++        all.w = data->window->w;
++        all.h = data->window->h;
++        SDL_zero(p);
++        if (vsync) {
++            /* the drawing goes now; only the copy waits for the blank,
++               before the layer and bitmap are locked */
++            OGPUR_Flush(data);
++            WaitTOF();
++            waited = SDL_TRUE;
++        }
++        OGPUR_Begin(data);
++        r = SDL_OS3_GPU_PresentAppend(window, data->window, &data->batch, OGPUR_SLOT_TARGET,
++                                      OGPUR_SLOT_FIRST, &all, 1, &p);
++        if (r == SDL_OS3_GPU_NOROOM) {
++            OGPUR_Flush(data);
++            OGPUR_Begin(data);
++            r = SDL_OS3_GPU_PresentAppend(window, data->window, &data->batch, OGPUR_SLOT_TARGET,
++                                          OGPUR_SLOT_FIRST, &all, 1, &p);
++        }
++        if (r == 1) {
++            b = &data->buf[data->cur];
++            if (!data->batch.overflow && OGPU_Submit(b->stream, (ULONG)data->batch.words, &fence) == OGPU_OK) {
++                /* fences are kept in order, so both buffers are done too */
++                OGPU_Wait(fence);
++                data->buf[0].fence = 0;
++                data->buf[1].fence = 0;
++                data->cur ^= 1;
++                data->started = SDL_FALSE;
++                SDL_OS3_GPU_PresentEnd(&p);
++                return 0;
++            }
++            /* Not sent (OpenGPU refused it): the window is shown on the
++               CPU from what the earlier batches drew. */
++            SDL_OS3_GPU_PresentEnd(&p);
++            data->started = SDL_FALSE;
++        }
++    }
+     OGPUR_Sync(data);
++    if (vsync && !waited) {
++        WaitTOF();
++    }
+     return SDL_UpdateWindowSurface(window);
+ }
+ 
++static int OGPUR_SetVSync(SDL_Renderer *renderer, const int vsync)
++{
++    if (vsync) {
++        renderer->info.flags |= SDL_RENDERER_PRESENTVSYNC;
++    } else {
++        renderer->info.flags &= ~SDL_RENDERER_PRESENTVSYNC;
++    }
++    return 0;
++}
++
+ static void OGPUR_DestroyRenderer(SDL_Renderer *renderer)
+ {
+     SDL_Window *window = renderer->window;
+@@ -1794,6 +1860,7 @@ static int OGPUR_CreateRenderer(SDL_Renderer *renderer, SDL_Window *window, Uint
+     renderer->RunCommandQueue = OGPUR_RunCommandQueue;
+     renderer->RenderReadPixels = OGPUR_RenderReadPixels;
+     renderer->RenderPresent = OGPUR_RenderPresent;
++    renderer->SetVSync = OGPUR_SetVSync;
+     renderer->DestroyTexture = OGPUR_DestroyTexture;
+     renderer->DestroyRenderer = OGPUR_DestroyRenderer;
+     renderer->info = OPENGPU_RenderDriver.info;

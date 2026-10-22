@@ -46,6 +46,31 @@ int SDL_OS3_GPU_FormatOfPixfmt(unsigned long pixfmt)
         return OGPU_FMT_ARGB32;
     case PIXFMT_RGB16:
         return OGPU_FMT_RGB565;
+    case PIXFMT_RGB16PC:
+        return OGPU_FMT_RGB565PC;
+    case PIXFMT_RGB15:
+        return OGPU_FMT_RGB555;
+    case PIXFMT_RGB15PC:
+        return OGPU_FMT_RGB555PC;
+    case PIXFMT_BGRA32:
+        return OGPU_FMT_BGRA32;
+    default:
+        return 0;
+    }
+}
+
+int SDL_OS3_GPU_FormatOfSDL(Uint32 format)
+{
+    switch (format) {
+    case SDL_PIXELFORMAT_ARGB8888:
+    case SDL_PIXELFORMAT_RGB888: /* XRGB: the byte order is ARGB32's */
+        return OGPU_FMT_ARGB32;
+    case SDL_PIXELFORMAT_RGB565:
+        return OGPU_FMT_RGB565;
+    case SDL_PIXELFORMAT_RGB555:
+        return OGPU_FMT_RGB555;
+    case SDL_PIXELFORMAT_BGRA8888:
+        return OGPU_FMT_BGRA32;
     default:
         return 0;
     }
