@@ -571,6 +571,55 @@ static void test_yuv(void) {
     CHECK(px(T0, bpr, OGPU_FMT_ARGB32, 0, 0) == 0xFF000000UL && px(T0, bpr, OGPU_FMT_ARGB32, 0, 2) == 0xFFFFFFFFUL, "black and white");
 }
 
+/* v1.5: YUV_SCALED. At 1:1 the same pixels as YUV; at twice the size each
+ * source pixel is a 2x2 block; a part starts where it says; halved, every
+ * other pixel. I420, NV12 and YUY2 alike. */
+static void test_yuv_scaled(void) {
+    long bpr = W * 4;
+    int x, y, k, ok = 1;
+    ogpu_u8 *yp = arena + D0, *up = yp + 0x1000, *vp = yp + 0x2000, *uv = yp + 0x3000, *pk = yp + 0x4000;
+    for (y = 0; y < 4; y++) for (x = 0; x < 8; x++) yp[y * 8 + x] = (ogpu_u8)(16 + x * 25 + y * 3);
+    for (y = 0; y < 2; y++) for (x = 0; x < 4; x++) { up[y * 4 + x] = (ogpu_u8)(64 + x * 40); vp[y * 4 + x] = (ogpu_u8)(200 - y * 90 - x * 10); }
+    for (y = 0; y < 2; y++) for (x = 0; x < 4; x++) { uv[y * 8 + x * 2] = up[y * 4 + x]; uv[y * 8 + x * 2 + 1] = vp[y * 4 + x]; }
+    for (y = 0; y < 4; y++) for (x = 0; x < 4; x++) {
+        ogpu_u8 *q = pk + y * 16 + x * 4;
+        q[0] = yp[y * 8 + x * 2]; q[1] = up[(y / 2) * 4 + x]; q[2] = yp[y * 8 + x * 2 + 1]; q[3] = vp[(y / 2) * 4 + x];
+    }
+    for (k = 0; k < 3; k++) {
+        unsigned long ya = k == 2 ? D0 + 0x4000 : D0, ybpr = k == 2 ? 16 : 8;
+        unsigned long ua = k == 0 ? D0 + 0x1000 : k == 1 ? D0 + 0x3000 : 0, ubpr = k == 0 ? 4 : k == 1 ? 8 : 0;
+        unsigned long va = k == 0 ? D0 + 0x2000 : 0, vbpr = k == 0 ? 4 : 0;
+        unsigned long f = OGPU_YUV_FORMAT(k == 0 ? OGPU_YUV_I420 : k == 1 ? OGPU_YUV_NV12 : OGPU_YUV_YUY2, OGPU_YUV_BT601);
+        memset(arena + T0, 0, (size_t)(bpr * H));
+        begin();
+        ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+        ogpu_target(&B, 0);
+        ogpu_yuv(&B, ya, ybpr, ua, ubpr, va, vbpr, 8, 4, 0, 0, f);                      /* the reference, at 0,0 */
+        ogpu_yuv_scaled(&B, ya, ybpr, ua, ubpr, va, vbpr, 8, 4, f, 0, 0, 8, 4, 10, 0, 8, 4);   /* 1:1 */
+        ogpu_yuv_scaled(&B, ya, ybpr, ua, ubpr, va, vbpr, 8, 4, f, 0, 0, 8, 4, 0, 8, 16, 8);   /* twice */
+        ogpu_yuv_scaled(&B, ya, ybpr, ua, ubpr, va, vbpr, 8, 4, f, 2, 2, 4, 2, 20, 0, 4, 2);   /* a part */
+        ogpu_yuv_scaled(&B, ya, ybpr, ua, ubpr, va, vbpr, 8, 4, f, 0, 0, 8, 4, 30, 0, 4, 2);   /* halved */
+        run();
+        ok &= C.last_error == OGPU_OK;
+        for (y = 0; y < 4; y++) for (x = 0; x < 8; x++) {
+            unsigned long ref = px(T0, bpr, OGPU_FMT_ARGB32, x, y);
+            ok &= px(T0, bpr, OGPU_FMT_ARGB32, 10 + x, y) == ref;
+            ok &= px(T0, bpr, OGPU_FMT_ARGB32, 2 * x, 8 + 2 * y) == ref && px(T0, bpr, OGPU_FMT_ARGB32, 2 * x + 1, 9 + 2 * y) == ref;
+        }
+        for (y = 0; y < 2; y++) for (x = 0; x < 4; x++) {
+            ok &= px(T0, bpr, OGPU_FMT_ARGB32, 20 + x, y) == px(T0, bpr, OGPU_FMT_ARGB32, 2 + x, 2 + y);
+            ok &= px(T0, bpr, OGPU_FMT_ARGB32, 30 + x, y) == px(T0, bpr, OGPU_FMT_ARGB32, 2 * x + 1, 2 * y + 1);
+        }
+    }
+    CHECK(ok, "YUV_SCALED: 1:1 as YUV, doubled, a part and halved, in I420, NV12 and YUY2");
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_yuv_scaled(&B, D0, 8, D0 + 0x1000, 4, D0 + 0x2000, 4, 8, 4, OGPU_YUV_FORMAT(OGPU_YUV_I420, OGPU_YUV_BT601), 4, 0, 8, 4, 0, 0, 8, 4);
+    run();
+    CHECK(C.last_error == OGPU_ERR_UNSUPPORTED, "YUV_SCALED: a part outside the picture is refused");
+}
+
 /* The v1.2 formats: each drawn the same as RGB565 or ARGB32, in its own bytes. */
 static void test_formats_v12(void) {
     static const int fmts[4] = { OGPU_FMT_RGB565PC, OGPU_FMT_RGB555, OGPU_FMT_RGB555PC, OGPU_FMT_BGRA32 };
@@ -936,6 +985,7 @@ int main(int argc, char **argv) {
     test_lines_points();
     test_affine();
     test_yuv();
+    test_yuv_scaled();
     test_formats_v12();
     test_xrgb32();
     test_errors();
