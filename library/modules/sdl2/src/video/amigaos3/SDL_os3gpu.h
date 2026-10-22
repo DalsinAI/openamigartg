@@ -13,6 +13,10 @@
 
 #if SDL_VIDEO_RENDER_OPENGPU
 
+#include "SDL_video.h"
+#include "SDL_surface.h"
+#include "SDL_rect.h"
+#include "SDL_pixels.h"
 #include <exec/libraries.h>
 #include <opengpu/opengpu.h>
 #include <opengpu/build.h>
