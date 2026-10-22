@@ -1,0 +1,204 @@
+SDL 3.4.14 (Zlib): AmigaOS 3.x (68k) as a platform, for SDL3.module.
+AmigaChrome Team, 2026. SDL_PLATFORM_AMIGAOS3, its build configuration
+(include/SDL_build_config_amigaos3.h), its back ends in SDL's driver lists,
+SDL3_68k's window property, the 68k's 16-bit alignment, and SDL's dynamic
+API on inside the module (SDL_OPEN_LIBRARY_BUILD), where it hands its
+table to the link stub.
+
+diff --git a/include/SDL3/SDL_platform_defines.h b/include/SDL3/SDL_platform_defines.h
+index 7963149..22ebf28 100644
+--- a/include/SDL3/SDL_platform_defines.h
++++ b/include/SDL3/SDL_platform_defines.h
+@@ -473,6 +473,14 @@
+ #define SDL_PLATFORM_3DS 1
+ #endif
+ 
++#if defined(__AMIGAOS3__) || (defined(__amiga__) && !defined(__amigaos4__) && !defined(__MORPHOS__))
++/**
++ * A preprocessor macro that is only defined if compiling for AmigaOS 3.x
++ * on the 68k (AmigaChrome Team, 2026).
++ */
++#define SDL_PLATFORM_AMIGAOS3 1
++#endif
++
+ #ifdef __NGAGE__
+ 
+ /**
+diff --git a/include/SDL3/SDL_stdinc.h b/include/SDL3/SDL_stdinc.h
+index b6403be..7d5bb45 100644
+--- a/include/SDL3/SDL_stdinc.h
++++ b/include/SDL3/SDL_stdinc.h
+@@ -1184,7 +1184,12 @@ typedef struct SDL_alignment_test
+     Uint8 a;
+     void *b;
+ } SDL_alignment_test;
++#ifdef SDL_PLATFORM_AMIGAOS3
++/* The 68k aligns pointers on 2 bytes: { Uint8; void *; } is 6 bytes. */
++SDL_COMPILE_TIME_ASSERT(struct_alignment, sizeof(SDL_alignment_test) == 6);
++#else
+ SDL_COMPILE_TIME_ASSERT(struct_alignment, sizeof(SDL_alignment_test) == (2 * sizeof(void *)));
++#endif
+ SDL_COMPILE_TIME_ASSERT(two_s_complement, SDL_static_cast(int, ~SDL_static_cast(int, 0)) == SDL_static_cast(int, -1));
+ #endif /* DOXYGEN_SHOULD_IGNORE_THIS */
+ /** \endcond */
+diff --git a/include/SDL3/SDL_video.h b/include/SDL3/SDL_video.h
+index 2f06295..93828ad 100644
+--- a/include/SDL3/SDL_video.h
++++ b/include/SDL3/SDL_video.h
+@@ -1435,6 +1435,10 @@ extern SDL_DECLSPEC SDL_Window * SDLCALL SDL_CreateWindowWithProperties(SDL_Prop
+ #define SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER                        "SDL.window.create.width"
+ #define SDL_PROP_WINDOW_CREATE_X_NUMBER                            "SDL.window.create.x"
+ #define SDL_PROP_WINDOW_CREATE_Y_NUMBER                            "SDL.window.create.y"
++/** AmigaOS 3.x: a live struct Window * to borrow for an OpenGL SDL window,
++ * with SDL_PROP_WINDOW_CREATE_OPENGL_BOOLEAN. The application keeps the
++ * native window, its screen and its IDCMP events (SDL3_68k's property). */
++#define SDL_PROP_WINDOW_CREATE_AMIGAOS3_WINDOW_POINTER             "SDL.window.create.amigaos3.window"
+ #define SDL_PROP_WINDOW_CREATE_COCOA_WINDOW_POINTER                "SDL.window.create.cocoa.window"
+ #define SDL_PROP_WINDOW_CREATE_COCOA_VIEW_POINTER                  "SDL.window.create.cocoa.view"
+ #define SDL_PROP_WINDOW_CREATE_WINDOWSCENE_POINTER                 "SDL.window.create.uikit.windowscene"
+diff --git a/include/build_config/SDL_build_config.h b/include/build_config/SDL_build_config.h
+index a1658c2..104e965 100644
+--- a/include/build_config/SDL_build_config.h
++++ b/include/build_config/SDL_build_config.h
+@@ -45,6 +45,8 @@
+ #include "SDL_build_config_ios.h"
+ #elif defined(SDL_PLATFORM_ANDROID)
+ #include "SDL_build_config_android.h"
++#elif defined(SDL_PLATFORM_AMIGAOS3)
++#include "SDL_build_config_amigaos3.h"
+ #else
+ /* This is a minimal configuration just to get SDL running on new platforms. */
+ #include "SDL_build_config_minimal.h"
+diff --git a/src/audio/SDL_audio.c b/src/audio/SDL_audio.c
+index aed406c..2f9f127 100644
+--- a/src/audio/SDL_audio.c
++++ b/src/audio/SDL_audio.c
+@@ -71,6 +71,9 @@ static const AudioBootStrap *const bootstrap[] = {
+ #ifdef SDL_AUDIO_DRIVER_PSP
+     &PSPAUDIO_bootstrap,
+ #endif
++#ifdef SDL_AUDIO_DRIVER_AMIGAOS3
++    &AMIGAOS3AUDIO_bootstrap,
++#endif
+ #ifdef SDL_AUDIO_DRIVER_VITA
+     &VITAAUD_bootstrap,
+ #endif
+diff --git a/src/audio/SDL_sysaudio.h b/src/audio/SDL_sysaudio.h
+index 9104be8..66af935 100644
+--- a/src/audio/SDL_sysaudio.h
++++ b/src/audio/SDL_sysaudio.h
+@@ -390,5 +390,6 @@ extern AudioBootStrap N3DSAUDIO_bootstrap;
+ extern AudioBootStrap NGAGEAUDIO_bootstrap;
+ extern AudioBootStrap EMSCRIPTENAUDIO_bootstrap;
+ extern AudioBootStrap QSAAUDIO_bootstrap;
++extern AudioBootStrap AMIGAOS3AUDIO_bootstrap;
+ 
+ #endif // SDL_sysaudio_h_
+diff --git a/src/dynapi/SDL_dynapi.c b/src/dynapi/SDL_dynapi.c
+index 495a8e5..28d4adb 100644
+--- a/src/dynapi/SDL_dynapi.c
++++ b/src/dynapi/SDL_dynapi.c
+@@ -478,6 +478,16 @@ static SDL_INLINE void *get_sdlapi_entry(const char *fname, const char *sym)
+     return result;
+ }
+ 
++#elif defined(SDL_PLATFORM_AMIGAOS3)
++// Open (2026): SDL 3 lives inside one shared module, which hands its table
++// out through SDL_DYNAPI_entry; there is no other SDL to load over it.
++static SDL_INLINE void *get_sdlapi_entry(const char *fname, const char *sym)
++{
++    (void)fname;
++    (void)sym;
++    return NULL;
++}
++
+ #else
+ #error Please define your platform.
+ #endif
+@@ -514,6 +524,8 @@ static void SDL_InitDynamicAPILocked(void)
+     char envbuf[512];  // overflows will just report as environment variable being unset, but LoadLibraryA has a MAX_PATH of 260 anyhow, apparently.
+     const DWORD rc = GetEnvironmentVariableA(SDL_DYNAMIC_API_ENVVAR, envbuf, (DWORD) sizeof (envbuf));
+     char *libname = ((rc != 0) && (rc < sizeof (envbuf))) ? envbuf : NULL;
++#elif defined(SDL_PLATFORM_AMIGAOS3)
++    char *libname = NULL;
+ #else
+     char *libname = getenv(SDL_DYNAMIC_API_ENVVAR); // This should NOT be SDL_getenv()
+ #endif
+diff --git a/src/dynapi/SDL_dynapi.h b/src/dynapi/SDL_dynapi.h
+index 786d86e..b76cb50 100644
+--- a/src/dynapi/SDL_dynapi.h
++++ b/src/dynapi/SDL_dynapi.h
+@@ -65,6 +65,8 @@
+ #define SDL_DYNAMIC_API 0 // devkitARM doesn't support dynamic linking
+ #elif defined(SDL_PLATFORM_NGAGE)
+ #define SDL_DYNAMIC_API 0
++#elif defined(SDL_PLATFORM_AMIGAOS3) && !defined(SDL_OPEN_LIBRARY_BUILD)
++#define SDL_DYNAMIC_API 0 // AmigaOS 3.x static link library: no dlopen()
+ #elif defined(DYNAPI_NEEDS_DLOPEN) && !defined(HAVE_DLOPEN)
+ #define SDL_DYNAMIC_API 0 // we need dlopen(), but don't have it....
+ #endif
+diff --git a/src/joystick/SDL_joystick.c b/src/joystick/SDL_joystick.c
+index 77539c9..5ed6729 100644
+--- a/src/joystick/SDL_joystick.c
++++ b/src/joystick/SDL_joystick.c
+@@ -97,6 +97,9 @@ static SDL_JoystickDriver *SDL_joystick_drivers[] = {
+ #ifdef SDL_JOYSTICK_PSP
+     &SDL_PSP_JoystickDriver,
+ #endif
++#ifdef SDL_JOYSTICK_AMIGAOS3
++    &SDL_AMIGAOS3_JoystickDriver,
++#endif
+ #ifdef SDL_JOYSTICK_VIRTUAL
+     &SDL_VIRTUAL_JoystickDriver,
+ #endif
+diff --git a/src/joystick/SDL_sysjoystick.h b/src/joystick/SDL_sysjoystick.h
+index 47ce42c..68301c6 100644
+--- a/src/joystick/SDL_sysjoystick.h
++++ b/src/joystick/SDL_sysjoystick.h
+@@ -260,6 +260,7 @@ extern SDL_JoystickDriver SDL_WINDOWS_JoystickDriver;
+ extern SDL_JoystickDriver SDL_WINMM_JoystickDriver;
+ extern SDL_JoystickDriver SDL_PS2_JoystickDriver;
+ extern SDL_JoystickDriver SDL_PSP_JoystickDriver;
++extern SDL_JoystickDriver SDL_AMIGAOS3_JoystickDriver;
+ extern SDL_JoystickDriver SDL_VITA_JoystickDriver;
+ extern SDL_JoystickDriver SDL_N3DS_JoystickDriver;
+ extern SDL_JoystickDriver SDL_GAMEINPUT_JoystickDriver;
+diff --git a/src/thread/SDL_thread_c.h b/src/thread/SDL_thread_c.h
+index 3659b85..34b69a1 100644
+--- a/src/thread/SDL_thread_c.h
++++ b/src/thread/SDL_thread_c.h
+@@ -34,6 +34,8 @@
+ #include "ps2/SDL_systhread_c.h"
+ #elif defined(SDL_THREAD_PSP)
+ #include "psp/SDL_systhread_c.h"
++#elif defined(SDL_THREAD_AMIGAOS3)
++#include "amigaos3/SDL_systhread_c.h"
+ #elif defined(SDL_THREAD_VITA)
+ #include "vita/SDL_systhread_c.h"
+ #elif defined(SDL_THREAD_N3DS)
+diff --git a/src/video/SDL_sysvideo.h b/src/video/SDL_sysvideo.h
+index 1fdc5bf..3ba49e0 100644
+--- a/src/video/SDL_sysvideo.h
++++ b/src/video/SDL_sysvideo.h
+@@ -531,6 +531,7 @@ extern VideoBootStrap UIKIT_bootstrap;
+ extern VideoBootStrap Android_bootstrap;
+ extern VideoBootStrap PS2_bootstrap;
+ extern VideoBootStrap PSP_bootstrap;
++extern VideoBootStrap AMIGAOS3_bootstrap;
+ extern VideoBootStrap VITA_bootstrap;
+ extern VideoBootStrap RISCOS_bootstrap;
+ extern VideoBootStrap N3DS_bootstrap;
+diff --git a/src/video/SDL_video.c b/src/video/SDL_video.c
+index ce942bf..0e353a8 100644
+--- a/src/video/SDL_video.c
++++ b/src/video/SDL_video.c
+@@ -122,6 +122,9 @@ static VideoBootStrap *bootstrap[] = {
+ #ifdef SDL_VIDEO_DRIVER_PSP
+     &PSP_bootstrap,
+ #endif
++#ifdef SDL_VIDEO_DRIVER_AMIGAOS3
++    &AMIGAOS3_bootstrap,
++#endif
+ #ifdef SDL_VIDEO_DRIVER_VITA
+     &VITA_bootstrap,
+ #endif
