@@ -28,9 +28,12 @@ static ogpu_u8 arena[ARENA];
 #define GRAD  0x0C0000UL      /* a gradient */
 #define DASH  0x0C8000UL      /* dashes */
 #define WORK  0x100000UL      /* work memory, up to 3 MB */
+#define HUGE  0x80000000UL    /* a 16384 x 8192 A8 target, never drawn on (huge) */
+static ogpu_u8 *huge;
 
 static ogpu_u8 *map(void *user, ogpu_u32 address, ogpu_u32 length) {
     (void)user;
+    if (address == HUGE && huge && length <= 16384UL * 8192) return huge;
     if (address >= (ogpu_u32)ARENA || length > (ogpu_u32)ARENA - address) return 0;
     return arena + address;
 }
@@ -329,6 +332,48 @@ static void test_fills(void) {
     do_fill(W, H, OGPU_FMT_A8, OGPU_PD_SRC, 0xFF000000UL, ID, 1 << 20);
     reference(W, H, 0, 0);
     cmp_cov("a triangle from far outside", W, H, 1, 3, 0.05);
+
+    /* a path that doesn't start with MOVE starts at (0, 0): its box too */
+    fresh(W, H, OGPU_FMT_A8);
+    p_start(); p_line(60.5, 20.25); p_line(40.75, 62.5); p_close(); p_end();
+    do_fill(W, H, OGPU_FMT_A8, OGPU_PD_OVER, 0xFF000000UL, ID, 1 << 20);
+    reference(W, H, 0, 0);
+    cmp_cov("a path from (0, 0) without MOVE", W, H, 1, 3, 0.05);
+
+    /* 66001 triangles on one another: one cell takes 66001 lines' area
+     * (past 2^31). Non-zero: full wherever the triangle is; even-odd (an
+     * odd count): the triangle's inside full, outside empty. */
+    for (i = 0; i < 2; i++) {
+        struct OGPUBatch Q;
+        long k;
+        W = H = 16;
+        fresh(W, H, OGPU_FMT_A8);
+        ogpu_batch_init(&Q, arena + WORK + 0x10000, 600000);
+        ogpu_path_move(&Q, fx(10.996), fx(2));
+        for (k = 0; k < 66001; k++) { ogpu_path_line(&Q, fx(10.996), fx(14)); ogpu_path_line(&Q, fx(3), fx(14)); ogpu_path_line(&Q, fx(10.996), fx(2)); }
+        ogpu_surface(&B, 0, TGT, (unsigned long)W, W, H, OGPU_FMT_A8);
+        ogpu_target(&B, 0);
+        ogpu_path_fill(&B, OGPU_PD_SRC | (i ? OGPU_PATH_EVENODD : 0), 0xFF000000UL, 0, 0, 0, 0, 0, WORK + 0x10000, (unsigned long)Q.words,
+                       ID, WORK, 16 * 32 * 16);
+        check(run() == OGPU_OK && arena[TGT + 10 * W + 9] == 255 && arena[TGT + 8 * W + 12] == 0 && arena[TGT + 8 * W + 2] == 0
+              && (i || arena[TGT + 8 * W + 10] == 255),
+              i ? "66001 triangles on one another, even-odd" : "66001 triangles on one another, non-zero");
+    }
+    W = H = 64;
+
+    /* a 16384 x 8192 target: its 32 bytes a pixel are 2^32, so the work
+     * memory is counted in rows, not shrunk to nothing (no rows a band,
+     * for ever); here 8 MB of it, past the arena: refused */
+    huge = malloc(16384UL * 8192);
+    if (huge) {
+        begin();
+        ogpu_path_move(&P, 0, 0); ogpu_path_line(&P, fx(100), 0); ogpu_path_line(&P, 0, fx(100));
+        ogpu_surface(&B, 0, HUGE, 16384, 16384, 8192, OGPU_FMT_A8);
+        ogpu_target(&B, 0);
+        ogpu_path_fill(&B, OGPU_PD_SRC, 0xFF000000UL, 0, 0, 0, 0, 0, PATH, (unsigned long)P.words, ID, WORK, 8UL << 20);
+        check(run() == OGPU_ERR_NOMAP, "a 16384 x 8192 target: the work memory isn't shrunk to nothing");
+        free(huge); huge = 0;
+    }
 }
 
 /* ---- operators, masks, the clip, paint from a slot ---------------------------------- */
@@ -655,6 +700,21 @@ static void test_strokes(void) {
         reference(W, H, 0, 1);
         cmp_cov("dashes 12, 6 from -3, round caps", W, H, 1, 24, 0.2);
     }
+    /* a closed dashed rectangle (214 round) on at its start and its end:
+     * dashes 20, 10 from 5 end 9 into a dash, so the 15 left of the first
+     * and those 9 are one dash over the corner, joined there (mitred), not
+     * two butt caps. As the open path from (20.5, 32.5), in a gap: 5 off,
+     * the 24 over the corner, then 10 off and 20 on six times, 5 off. */
+    {
+        static const double d3[2] = { 20.0, 10.0 };
+        static const double dq[16] = { 0, 5, 24, 10, 20, 10, 20, 10, 20, 10, 20, 10, 20, 10, 20, 5 };
+        static const double qx[6] = { 20.5, 20.5, 75.25, 75.25, 20.5, 20.5 }, qy[6] = { 32.5, 18.5, 18.5, 70.75, 70.75, 32.5 };
+        npc = 0;
+        stroke(W, H, 4, rx, ry, 1, 9.0, OGPU_CAP_BUTT | OGPU_JOIN_MITER, 10.0, 2, d3, 5.0);
+        ref_dashes(6, qx, qy, 4.5, OGPU_CAP_BUTT, OGPU_JOIN_MITER, 10.0, 16, dq, 0);
+        reference(W, H, 0, 1);
+        cmp_cov("closed dashed rectangle, a dash over its start joined", W, H, 1, 6, 0.05);
+    }
     /* a stroked circle of cubics against its ring (inner and outer circles) */
     {
         memset(arena + TGT, 0, (size_t)(W * H));
@@ -782,6 +842,12 @@ static void test_gradients(void) {
         test_gradient("radial gradient, a cone between circles apart", OGPU_GRAD_RADIAL, OGPU_SPREAD_PAD, out, id, s3, 3, 2);
     }
     /* conic: the angle within 0.0003 of a turn (3) */
+    /* scaled to 1/50 and moved 660 pixels: the inverse's move (some 2^31 in
+     * 16.16) kept in 64 bits */
+    {
+        double sm[6] = { 0.02, 0, 660, 0, 0.02, 0 }, sl[6] = { -32000, 0, -29000, 0, 0, 0 };
+        test_gradient("linear gradient, scaled to 1/50 and moved 660", OGPU_GRAD_LINEAR, OGPU_SPREAD_PAD, sl, sm, s3, 3, 2);
+    }
     test_gradient("conic gradient", OGPU_GRAD_CONIC, OGPU_SPREAD_PAD, con, id, s4, 4, 3);
     test_gradient("conic gradient, transformed", OGPU_GRAD_CONIC, OGPU_SPREAD_PAD, con, rot, s3, 3, 3);
     {

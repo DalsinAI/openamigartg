@@ -1547,16 +1547,25 @@ OP_FN op_composite_pd(struct ogpu_core *c, const ogpu_u8 *a) {
 #define OGPU_SUBROWS 4
 struct rast {
     int *cover, *area;      /* the band's cells, w x h x OGPU_SUBROWS */
-    int w, h;
+    int w, h, eo;           /* eo: the even-odd rule */
     long ox, oy;            /* the band's corner on the target, 24.8 */
 };
+
+/* A cell's sum, past 32 bits only when some 65536 lines meet in one cell:
+ * even-odd needs only its low bits, so it wraps; non-zero stops at the
+ * largest, keeping its sign (its pixel is then full, or nearly). */
+static int cell_add(int v, int d, int eo) {
+    if (eo) return (int)((unsigned)v + (unsigned)d);
+    if (d > 0 ? v > 0x7FFFFFFF - d : v < -0x7FFFFFFF - d) return d > 0 ? 0x7FFFFFFF : -0x7FFFFFFF;
+    return v + d;
+}
 
 static void cell(struct rast *r, long i, int j, int dy, long fx0, long fx1) {
     long at;
     if (i >= r->w || !dy) return;   /* right of the band: covers nothing */
     at = (long)j * r->w + i;
-    r->cover[at] += dy;
-    r->area[at] += dy * (int)(fx0 + fx1);
+    r->cover[at] = cell_add(r->cover[at], dy, r->eo);
+    r->area[at] = cell_add(r->area[at], dy * (int)(fx0 + fx1), r->eo);
 }
 
 /* the part of a line within row j, from xa to xb (0 .. w * 256), climbing dy */
@@ -1647,6 +1656,12 @@ struct pctx {
     struct seg s0, sp;          /* its first and last segments */
     long ls[4], lf[4], lc[4];   /* the + and - sides (x, y, x, y): the first segment's starts
                                    and ends, and where each side's next edge starts */
+    /* a dashed subpath on at its start: 1 while its first piece goes on, 2
+     * once it has ended with that piece's start left to draw (its start, first
+     * segment, sides): joined to the last piece if the subpath closes on */
+    int fp;
+    long fax, fay, fls[4], flf[4];
+    struct seg fs0;
 };
 
 static long sgn32(ogpu_u32 v) {
@@ -1780,23 +1795,31 @@ static void stk_seg(struct pctx *c, long x, long y, int smooth) {
     c->sp = s; c->px = x; c->py = y; c->sn++;
 }
 
-/* The end of a piece: closed, a join where it began; open, caps. */
+/* Both sides' edges from a to b (x, y, x, y). */
+static void sides(struct pctx *c, const long *a, const long *b) {
+    side(c, 1, a[0], a[1], b[0], b[1]); side(c, -1, a[2], a[3], b[2], b[3]);
+}
+
+/* The end of a piece: closed, a join where it began; open, caps. The first
+ * piece of a dashed subpath on at its start keeps its start for later. */
 static void stk_end(struct pctx *c, int closed) {
     long e[4], st[4];
-    if (!c->sn) return;
+    int k;
+    if (!c->sn) { if (c->fp == 1) c->fp = 0; return; }     /* nothing drawn: no first piece */
     if (closed && c->sn > 1) {
         join(c, c->ax, c->ay, &c->sp, &c->s0, c->join, e, st);
-        side(c, 1, c->lc[0], c->lc[1], e[0], e[1]); side(c, -1, c->lc[2], c->lc[3], e[2], e[3]);
-        side(c, 1, st[0], st[1], c->lf[0], c->lf[1]); side(c, -1, st[2], st[3], c->lf[2], c->lf[3]);
+        sides(c, c->lc, e); sides(c, st, c->lf);
     } else {
         e[0] = c->px + c->sp.nx; e[1] = c->py + c->sp.ny; e[2] = c->px - c->sp.nx; e[3] = c->py - c->sp.ny;
-        if (c->sn == 1) { side(c, 1, c->ls[0], c->ls[1], e[0], e[1]); side(c, -1, c->ls[2], c->ls[3], e[2], e[3]); }
-        else {
-            side(c, 1, c->ls[0], c->ls[1], c->lf[0], c->lf[1]); side(c, -1, c->ls[2], c->ls[3], c->lf[2], c->lf[3]);
-            side(c, 1, c->lc[0], c->lc[1], e[0], e[1]); side(c, -1, c->lc[2], c->lc[3], e[2], e[3]);
-        }
+        if (c->sn > 1) sides(c, c->lc, e);
         cap(c, c->px, c->py, &c->sp, 1);
-        cap(c, c->ax, c->ay, &c->s0, -1);
+        if (c->fp == 1) {
+            c->fp = 2; c->fax = c->ax; c->fay = c->ay; c->fs0 = c->s0;
+            for (k = 0; k < 4; k++) { c->fls[k] = c->ls[k]; c->flf[k] = c->sn == 1 ? e[k] : c->lf[k]; }
+        } else {
+            sides(c, c->ls, c->sn == 1 ? e : c->lf);
+            cap(c, c->ax, c->ay, &c->s0, -1);
+        }
     }
     c->sn = 0;
 }
@@ -1811,7 +1834,7 @@ static long dash_len(const struct pctx *c, int i) {
 static void dash_start(struct pctx *c) {
     ogpu_s64 total = 0, off;
     int i;
-    c->dashing = 0; c->active = 0;
+    c->dashing = 0; c->active = 0; c->fp = 0;
     if (!c->ndash) return;
     for (i = 0; i < c->ndash; i++) total += dash_len(c, i);
     if (c->ndash & 1) total *= 2;
@@ -1821,6 +1844,7 @@ static void dash_start(struct pctx *c) {
     c->dashing = 1; c->di = 0; c->on = 1;
     while (off >= dash_len(c, c->di)) { off -= dash_len(c, c->di); c->di = (c->di + 1) % c->ndash; c->on ^= 1; }
     c->rem = dash_len(c, c->di) - (long)off;
+    c->fp = c->on;
 }
 
 /* A line of the path being stroked, cut into dashes. */
@@ -1860,10 +1884,25 @@ static void sub_begin(struct pctx *c) {
 }
 
 static void sub_end(struct pctx *c, int closed) {
+    long e[4], st[4];
     if (!c->stroke) { edge(c->r, c->cx, c->cy, c->sx, c->sy); return; }    /* a fill closes every subpath */
     if (closed && (c->cx != c->sx || c->cy != c->sy)) path_to(c, c->sx, c->sy, 0);
     if (!c->dashing) stk_end(c, closed);
-    else if (c->active) { stk_end(c, 0); c->active = 0; }
+    else if (c->fp == 1) {                  /* one dash all the way: as undashed */
+        c->fp = 0;
+        if (c->active) stk_end(c, closed);
+    } else {
+        if (c->active && closed && c->fp && c->sn) {
+            /* on at both ends of a closed subpath: the last piece joins the first */
+            join(c, c->fax, c->fay, &c->sp, &c->fs0, c->join, e, st);
+            sides(c, c->sn == 1 ? c->ls : c->lc, e); sides(c, st, c->flf);
+            if (c->sn > 1) sides(c, c->ls, c->lf);
+            cap(c, c->ax, c->ay, &c->s0, -1);
+            c->sn = c->fp = 0;
+        } else if (c->active) stk_end(c, 0);
+        if (c->fp) { sides(c, c->fls, c->flf); cap(c, c->fax, c->fay, &c->fs0, -1); c->fp = 0; }
+    }
+    c->active = 0;
 }
 
 /* A curve from the current point (x[0], y[0]) through np - 1 more, cut
@@ -1939,7 +1978,7 @@ struct paint {
     /* a gradient */
     const ogpu_u8 *stops;
     int n, gk, spread, none;
-    long inv[6];                /* the target to the gradient's space, 16.16 */
+    ogpu_s64 inv[6];            /* the target to the gradient's space, 16.16 (the move may pass 32 bits) */
     long g[6];                  /* its geometry, 16.16 */
     long dx, dy, sh;            /* LINEAR: (x1, y1) - (x0, y0), 24.8 >> sh */
     ogpu_s64 dd, ga;            /* LINEAR: |d|^2; RADIAL: a */
@@ -1966,8 +2005,8 @@ static int set_inv(struct paint *p, const ogpu_u8 *mw) {
     p->inv[1] = clampl(-((ogpu_s64)m[1] * 4294967296LL) / det, 0x3FFFFFFF);
     p->inv[3] = clampl(-((ogpu_s64)m[3] * 4294967296LL) / det, 0x3FFFFFFF);
     p->inv[4] = clampl((ogpu_s64)m[0] * 4294967296LL / det, 0x3FFFFFFF);
-    p->inv[2] = -(long)(((ogpu_s64)p->inv[0] * m[2] + (ogpu_s64)p->inv[1] * m[5]) >> 16);
-    p->inv[5] = -(long)(((ogpu_s64)p->inv[3] * m[2] + (ogpu_s64)p->inv[4] * m[5]) >> 16);
+    p->inv[2] = -((p->inv[0] * m[2] + p->inv[1] * m[5]) >> 16);       /* within 2^45 */
+    p->inv[5] = -((p->inv[3] * m[2] + p->inv[4] * m[5]) >> 16);
     return 1;
 }
 
@@ -2246,7 +2285,9 @@ OP_FN op_path(struct ogpu_core *c, const ogpu_u8 *a, int stroke) {
         pc.tol = sc > 0 ? (long)(((ogpu_s64)16 * 65536) / sc) : 16;
         if (pc.tol < 1) pc.tol = 1;
     }
-    /* the path checked, and its control box */
+    /* the path checked, and its control box: (0, 0) too when it doesn't
+     * start with MOVE, as it starts there */
+    if (pc.words && rd32(pc.path) != OGPU_PATH_MOVE) minx = maxx = miny = maxy = 0;
     for (at = 0; at < pc.words;) {
         ogpu_u32 v = rd32(pc.path + at * 4);
         int np = v == OGPU_PATH_QUAD ? 2 : v == OGPU_PATH_CUBIC ? 3 : v == OGPU_PATH_CLOSE ? 0 : 1;
@@ -2283,11 +2324,11 @@ OP_FN op_path(struct ogpu_core *c, const ogpu_u8 *a, int stroke) {
     if (rx1 <= rx0 || ry1 <= ry0) return OGPU_OK;
     w = rx1 - rx0; h = ry1 - ry0;
     if (wbytes < (ogpu_u32)w * 8 * OGPU_SUBROWS) return OGPU_ERR_UNSUPPORTED;
-    if (wbytes > (ogpu_u32)w * 8 * OGPU_SUBROWS * (ogpu_u32)h) wbytes = (ogpu_u32)w * 8 * OGPU_SUBROWS * (ogpu_u32)h;
-    if (!(work = c->map(c->user, waddr, wbytes))) return OGPU_ERR_NOMAP;
+    wbytes /= (ogpu_u32)w * 8 * OGPU_SUBROWS;      /* the rows it holds (w x 32 x h may pass 32 bits) */
+    bh = wbytes < (ogpu_u32)h ? (int)wbytes : h;
+    if (!(work = c->map(c->user, waddr, (ogpu_u32)bh * w * 8 * OGPU_SUBROWS))) return OGPU_ERR_NOMAP;
     if (!aligned4(work)) return OGPU_ERR_UNSUPPORTED;
-    bh = (int)(wbytes / ((ogpu_u32)w * 8 * OGPU_SUBROWS));
-    rs.cover = (int *)(void *)work; rs.area = rs.cover + (long)w * bh * OGPU_SUBROWS; rs.w = w;
+    rs.cover = (int *)(void *)work; rs.area = rs.cover + (long)w * bh * OGPU_SUBROWS; rs.w = w; rs.eo = evenodd;
     pc.r = &rs;
     for (band = ry0; band < ry1; band += bh) {
         rs.h = ry1 - band < bh ? ry1 - band : bh;
@@ -2312,10 +2353,20 @@ OP_FN op_path(struct ogpu_core *c, const ogpu_u8 *a, int stroke) {
                 for (cov = 0, q = 0; q < OGPU_SUBROWS; q++) {
                     long at = (long)q * w + i;
                     acc[q] += cv[at];
-                    sub = acc[q] * 256 - ar[at] / 2;
-                    if (sub < 0) sub = -sub;
-                    if (evenodd) { sub &= 0x7FFF; if (sub > 0x4000) sub = 0x8000 - sub; }
-                    else if (sub > 0x4000) sub = 0x4000;
+                    /* in 32 bits: even-odd wants it modulo 0x8000 (so its
+                     * cells may wrap); non-zero past 0x4000 is full, and is
+                     * taken as full from acc * 256 = 2^30 (a winding of some
+                     * 65536; area / 2 is under 2^30, and near it only with
+                     * some 65536 lines in one cell) */
+                    if (evenodd) {
+                        sub = (long)((((unsigned long)acc[q] << 8) - (unsigned long)(ar[at] / 2)) & 0x7FFF);
+                        if (sub > 0x4000) sub = 0x8000 - sub;
+                    } else if (acc[q] >= 0x400000L || acc[q] <= -0x400000L) sub = 0x4000;
+                    else {
+                        sub = acc[q] * 256 - ar[at] / 2;
+                        if (sub < 0) sub = -sub;
+                        if (sub > 0x4000) sub = 0x4000;
+                    }
                     cov += sub;
                 }
                 al = (unsigned)((cov * 255 + 0x8000) >> 16);

@@ -227,7 +227,8 @@
  * target's, with no picture drawn larger and scaled down.
  *   The path is words in memory (path address, path words): each element a
  *   verb, then its points, each an x and a y word in 24.8 (signed):
- *   MOVE 1 point, LINE 1, QUAD 2 (control, end), CUBIC 3, CLOSE none.
+ *   MOVE 1 point, LINE 1, QUAD 2 (control, end), CUBIC 3, CLOSE none; a
+ *   path that doesn't start with MOVE starts at (0, 0).
  *   A point (x, y) is drawn at x' = m00 x + m01 y + m02, y' = m10 x + m11 y
  *   + m12 (the matrix 16.16, as COMPOSITE_AFFINE's), y down.
  *   PATH_FILL closes each subpath and fills it, non-zero unless EVENODD.
@@ -240,7 +241,8 @@
  *   count 16.16 lengths at dash address (on, off, on, ...; an odd count is
  *   used twice, as canvas does; 0 or a zero total: solid), started dash
  *   offset into the pattern at each subpath. A dashed subpath's pieces each
- *   have caps; an undashed closed one has joins all round.
+ *   have caps, but a closed one on at its start and its end has one piece
+ *   there, joined where it starts; an undashed closed one has joins all round.
  *   The paint, for each pixel's centre: a premultiplied ARGB32 colour (the
  *   paint word), a slot (PATH_SLOT: the slot's pixel (x - px, y - py) for
  *   paint xy px, py; outside it 0, or tiled with PATH_REPEAT), or a gradient
