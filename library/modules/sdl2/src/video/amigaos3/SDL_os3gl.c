@@ -18,7 +18,8 @@
   - The display (virgl on the PC's graphics chip, or softpipe) is opened by
     SDL_GL_LoadLibrary, which SDL_CreateWindow calls for an
     SDL_WINDOW_OPENGL window, and closed by SDL_GL_UnloadLibrary.
-  - Swap intervals are kept but not waited for: frames show when swapped.
+  - A swap interval other than 0 waits for the vertical blank (WaitTOF)
+    before the frame is shown; 0 shows it when swapped.
 */
 #include "../../SDL_internal.h"
 
@@ -28,6 +29,7 @@
 #include "SDL_os3video.h"
 #include "SDL_os3gl.h"
 #include "sdl2_module.h"
+#include <proto/graphics.h>
 
 #if defined(SDL_OPEN_LIBRARY_BUILD)
 #include "module_rt.h"
@@ -251,6 +253,9 @@ int OS3_GL_SwapWindow(_THIS, SDL_Window *window)
     OS3_GL_Aim(window, w);
     if (!w->target.rp) {
         return 0;   /* the window is between screens (SDL_SetWindowFullscreen) */
+    }
+    if (_this->gl_data && _this->gl_data->swap_interval != 0) {
+        WaitTOF();
     }
     OS3_GLCALL(OS3_gl->swap, c->gla, w->buffer, &w->target);
     return 0;

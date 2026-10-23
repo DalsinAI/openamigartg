@@ -1,0 +1,556 @@
+--- a/src/video/amigaos3/SDL_os3framebuffer.c
++++ b/src/video/amigaos3/SDL_os3framebuffer.c
+@@ -13,10 +13,12 @@
+ #include "../../SDL_internal.h"
+ #include "SDL_os3video.h"
+ #include "SDL_os3aga.h"
++#include "SDL_hints.h"
+ 
+ #ifdef WARPUP
+ #pragma pack(push,2)
+ #endif
++#include <proto/exec.h>
+ #include <proto/graphics.h>
+ #include <proto/dos.h>
+ 
+@@ -138,6 +140,27 @@ static void sdl2_prof_dump(void)
+ /* Bytes per pixel for ARGB8888 */
+ #define OS3_BPP 4
+ 
++#define OS3_PIXELS_KEY "OS3_Pixels"
++#define OS3_PALVER_KEY "OS3_PalVer"
++
++#ifndef RECTFMT_LUT8
++#define RECTFMT_LUT8 3UL
++#endif
++#ifndef RECTFMT_RAW
++#define RECTFMT_RAW 5UL  /* the bitmap's own format (CyberGraphX 4, Picasso96) */
++#endif
++
++/* WritePixelArray's format for a window surface: ARGB, pens, or (16-bit,
++   only made on a screen of that very format) the screen's own pixels. */
++static ULONG OS3_RectFmt(const SDL_Surface *surface)
++{
++    switch (surface->format->BytesPerPixel) {
++    case 4: return RECTFMT_ARGB;
++    case 1: return RECTFMT_LUT8;
++    default: return RECTFMT_RAW;
++    }
++}
++
+ #if SDL_VIDEO_RENDER_OPENGPU
+ #include "SDL_os3gpu.h"
+ #include "SDL_os3vram.h"
+@@ -146,9 +169,12 @@ static void sdl2_prof_dump(void)
+ 
+ /* Open (2026): a window is shown by OpenGPU, which copies the frame into
+    video RAM (on the Cradle, the PC does it), through each visible part of
+-   the window's layer. A window with a covered part, a screen OpenGPU has no
+-   format for, or no opengpu.library: WritePixelArray, as before. */
+-#define OS3_GPU_KEY "OS3_GPU"
++   the window's layer. The parts behind other windows go into the layer's
++   backing store with the CPU (SDL's windows are smart refresh), so a
++   partly covered window stays on OpenGPU. A screen OpenGPU has no format
++   for, or no opengpu.library: WritePixelArray, as before. */
++#define OS3_GPU_KEY  "OS3_GPU"
++#define OS3_VRAM_KEY "OS3_VRAM"
+ #define OS3_GPU_WORDS 2048
+ 
+ typedef struct OS3_GPUPresent {
+@@ -156,28 +182,85 @@ typedef struct OS3_GPUPresent {
+     Uint32 stream[OS3_GPU_WORDS];
+ } OS3_GPUPresent;
+ 
+-static int OS3_GPU_Present(SDL_Window *window, OS3_WindowData *data, SDL_Surface *surface,
+-                           const SDL_Rect *rects, int numrects)
++/* The video RAM bitmap of a window whose surface is in it (below). */
++static struct BitMap *OS3_VRAM_BitMapOf(SDL_Window *window);
++
++static void OS3_InnerSize(const struct Window *iwin, int *w, int *h);
++
++/* The rects inside the surface, joined into their bounding box when there
++   are more than SDL_OS3_GPU_MAXRECTS. */
++static int OS3_GPU_Rects(const SDL_Rect *rects, int numrects, int w, int h, SDL_Rect *out)
++{
++    SDL_Rect all, r;
++    int i, n = 0;
++
++    all.x = 0;
++    all.y = 0;
++    all.w = w;
++    all.h = h;
++    for (i = 0; i < numrects; i++) {
++        if (!SDL_IntersectRect(&rects[i], &all, &r)) {
++            continue;
++        }
++        if (n < SDL_OS3_GPU_MAXRECTS) {
++            out[n++] = r;
++        } else {
++            SDL_UnionRect(&out[0], &r, &out[0]);
++        }
++    }
++    if (n == SDL_OS3_GPU_MAXRECTS && numrects > SDL_OS3_GPU_MAXRECTS) {
++        for (i = 1; i < n; i++) {
++            SDL_UnionRect(&out[0], &out[i], &out[0]);
++        }
++        n = 1;
++    }
++    return n;
++}
++
++/* The window's OpenGPU state, made on its first frame. */
++static OS3_GPUPresent *OS3_GPU_State(SDL_Window *window)
+ {
+     OS3_GPUPresent *gp = (OS3_GPUPresent *)SDL_GetWindowData(window, OS3_GPU_KEY);
+-    struct Window *win = data->window;
+-    struct Layer *layer = win->RPort->Layer;
+-    struct BitMap *bm = win->RPort->BitMap;
+-    struct ClipRect *cr;
+-    struct OGPUBatch b;
+-    ULONG base = 0, bpr = 0, pixfmt = 0, bw, bh, iscgx, fence = 0;
+-    APTR lock;
+-    int fmt, i, ok = 0;
+ 
+     if (!gp) {
+         gp = (OS3_GPUPresent *)SDL_calloc(1, sizeof(*gp));
+         if (!gp) {
+-            return 0;
++            return NULL;
+         }
+         gp->usable = SDL_OS3_GPU_Open();
+         SDL_SetWindowData(window, OS3_GPU_KEY, gp);
+     }
+-    if (!gp->usable || !layer) {
++    return gp;
++}
++
++int SDL_OS3_GPU_PresentAppend(SDL_Window *window, SDL_Surface *surface, struct OGPUBatch *b,
++                              int dst_slot, int src_slot, const SDL_Rect *rects, int numrects,
++                              SDL_OS3_GPUPresent *p)
++{
++    OS3_WindowData *data = (OS3_WindowData *)window->driverdata;
++    OS3_GPUPresent *gp = OS3_GPU_State(window);
++    struct Window *win;
++    struct Layer *layer;
++    struct BitMap *bm;
++    struct ClipRect *cr;
++    ULONG base = 0, bpr = 0, pixfmt = 0, bw, bh, iscgx;
++    APTR lock;
++    int fmt, sfmt, i, win_w, win_h, visible = 0;
++    long need;
++
++    if (!data || !data->window || !surface || !CyberGfxBase || !gp) {
++        return 0;
++    }
++    win = data->window;
++    layer = win->RPort->Layer;
++    bm = win->RPort->BitMap;
++    sfmt = SDL_OS3_GPU_FormatOfSDL(surface->format->format);
++    if (!gp->usable || !layer || !sfmt) {
++        return 0;
++    }
++    /* a window larger than its surface is scaled, not copied */
++    OS3_InnerSize(win, &win_w, &win_h);
++    if (win_w > surface->w || win_h > surface->h) {
+         return 0;
+     }
+     /* Each value asked on its own: bebbo gcc's inlines must not nest. */
+@@ -188,48 +271,132 @@ static int OS3_GPU_Present(SDL_Window *window, OS3_WindowData *data, SDL_Surface
+     bw = GetCyberMapAttr(bm, CYBRMATTR_WIDTH);
+     bh = GetCyberMapAttr(bm, CYBRMATTR_HEIGHT);
+ 
++    p->window = window;
++    p->layer = layer;
++    p->surface = surface;
++    p->numrects = OS3_GPU_Rects(rects, numrects, surface->w, surface->h, p->rects);
++    p->covered = SDL_FALSE;
++
+     LockLayer(0, layer);
+     for (cr = layer->ClipRect; cr; cr = cr->Next) {
+         if (cr->obscured) {
+-            UnlockLayer(layer);
+-            return 0;
++            p->covered = SDL_TRUE;
++        } else {
++            visible++;
+         }
+     }
++    /* surfaces, target, then a clip and a copy (COMPOSITE is the larger) a
++       rect for each visible part */
++    need = 6 + 6 + 2 + (long)visible * (3 + 8L * p->numrects) + 4;
++    if (b->cap - b->words < need) {
++        UnlockLayer(layer);
++        return SDL_OS3_GPU_NOROOM;
++    }
+     lock = LockBitMapTags(bm, LBMI_BASEADDRESS, (ULONG)&base, LBMI_BYTESPERROW, (ULONG)&bpr,
+                           LBMI_PIXFMT, (ULONG)&pixfmt, TAG_DONE);
+     fmt = SDL_OS3_GPU_FormatOfPixfmt(pixfmt);
+-    if (lock && base && fmt) {
+-        ogpu_batch_init(&b, gp->stream, OS3_GPU_WORDS);
+-        ogpu_surface(&b, 0, base, bpr, (int)bw, (int)bh, fmt);
+-        ogpu_target(&b, 0);
+-        ogpu_surface(&b, 1, (unsigned long)surface->pixels, (unsigned long)surface->pitch,
+-                     surface->w, surface->h, OGPU_FMT_ARGB32);
++    if (!lock || !base || !fmt) {
++        if (lock) {
++            UnLockBitMap(lock);
++        }
++        UnlockLayer(layer);
++        return 0;
++    }
++    p->bmlock = lock;
++    ogpu_surface(b, dst_slot, base, bpr, (int)bw, (int)bh, fmt);
++    ogpu_target(b, dst_slot);
++    ogpu_surface(b, src_slot, (unsigned long)surface->pixels, (unsigned long)surface->pitch,
++                 surface->w, surface->h, sfmt);
++    for (cr = layer->ClipRect; cr; cr = cr->Next) {
++        if (cr->obscured) {
++            continue;
++        }
++        ogpu_clip(b, cr->bounds.MinX, cr->bounds.MinY,
++                  cr->bounds.MaxX - cr->bounds.MinX + 1, cr->bounds.MaxY - cr->bounds.MinY + 1);
++        for (i = 0; i < p->numrects; i++) {
++            const SDL_Rect *r = &p->rects[i];
++            int dx = layer->bounds.MinX + r->x, dy = layer->bounds.MinY + r->y;
++            if (fmt == sfmt) {
++                ogpu_copy(b, src_slot, r->x, r->y, dx, dy, r->w, r->h);
++            } else {
++                ogpu_composite(b, src_slot, r->x, r->y, r->w, r->h, dx, dy, r->w, r->h, 255, 0);
++            }
++        }
++    }
++    return 1;
++}
++
++void SDL_OS3_GPU_PresentEnd(SDL_OS3_GPUPresent *p)
++{
++    struct Layer *layer = p->layer;
++    struct RastPort *rp;
++    struct ClipRect *cr;
++    struct BitMap *vbm;
++    SDL_Surface *surface = p->surface;
++    OS3_WindowData *data = (OS3_WindowData *)p->window->driverdata;
++    int i;
++
++    UnLockBitMap(p->bmlock);
++    p->bmlock = NULL;
++    /* The covered parts: drawn through the window's own RastPort, inside a
++       covered ClipRect only, so layers.library puts them in its backing
++       store and they show when the window comes to the front. */
++    if (p->covered && data && data->window) {
++        rp = data->window->RPort;
++        vbm = OS3_VRAM_BitMapOf(p->window);
+         for (cr = layer->ClipRect; cr; cr = cr->Next) {
+-            ogpu_clip(&b, cr->bounds.MinX, cr->bounds.MinY,
+-                      cr->bounds.MaxX - cr->bounds.MinX + 1, cr->bounds.MaxY - cr->bounds.MinY + 1);
+-            for (i = 0; i < numrects; i++) {
+-                const SDL_Rect *r = &rects[i];
+-                int dx = layer->bounds.MinX + r->x, dy = layer->bounds.MinY + r->y;
+-                if (r->w <= 0 || r->h <= 0) {
++            SDL_Rect part, r;
++            if (!cr->obscured || !cr->BitMap) {
++                continue; /* visible, or simple refresh: Intuition asks for it */
++            }
++            part.x = cr->bounds.MinX - layer->bounds.MinX;
++            part.y = cr->bounds.MinY - layer->bounds.MinY;
++            part.w = cr->bounds.MaxX - cr->bounds.MinX + 1;
++            part.h = cr->bounds.MaxY - cr->bounds.MinY + 1;
++            for (i = 0; i < p->numrects; i++) {
++                if (!SDL_IntersectRect(&p->rects[i], &part, &r)) {
+                     continue;
+                 }
+-                if (fmt == OGPU_FMT_ARGB32) {
+-                    ogpu_copy(&b, 1, r->x, r->y, dx, dy, r->w, r->h);
++                if (vbm) {
++                    BltBitMapRastPort(vbm, r.x, r.y, rp, r.x, r.y, r.w, r.h, 0xC0);
+                 } else {
+-                    ogpu_composite(&b, 1, r->x, r->y, r->w, r->h, dx, dy, r->w, r->h, 255, 0);
++                    WritePixelArray((APTR)surface->pixels, (UWORD)r.x, (UWORD)r.y, (UWORD)surface->pitch, rp,
++                                    (UWORD)r.x, (UWORD)r.y, (UWORD)r.w, (UWORD)r.h,
++                                    OS3_RectFmt(surface));
+                 }
+             }
+         }
+-        if (!b.overflow && OGPU_Submit(gp->stream, (ULONG)b.words, &fence) == OGPU_OK) {
+-            OGPU_Wait(fence); /* done before the bitmap and layer are let go */
+-            ok = 1;
+-        }
+-    }
+-    if (lock) {
+-        UnLockBitMap(lock);
+     }
+     UnlockLayer(layer);
+-    return ok;
++}
++
++static int OS3_GPU_Present(SDL_Window *window, OS3_WindowData *data, SDL_Surface *surface,
++                           const SDL_Rect *rects, int numrects)
++{
++    OS3_GPUPresent *gp;
++    SDL_OS3_GPUPresent p;
++    struct OGPUBatch b;
++    ULONG fence = 0;
++
++    (void)data;
++    SDL_zero(p);
++    gp = OS3_GPU_State(window);
++    if (!gp || !gp->usable) {
++        return 0;
++    }
++    ogpu_batch_init(&b, gp->stream, OS3_GPU_WORDS);
++    if (SDL_OS3_GPU_PresentAppend(window, surface, &b, 0, 1, rects, numrects, &p) != 1) {
++        return 0;
++    }
++    if (!b.overflow && OGPU_Submit(gp->stream, (ULONG)b.words, &fence) == OGPU_OK) {
++        OGPU_Wait(fence); /* done before the bitmap and layer are let go */
++        SDL_OS3_GPU_PresentEnd(&p);
++        return 1;
++    }
++    /* not sent: the CPU draws the whole window */
++    UnLockBitMap(p.bmlock);
++    UnlockLayer(p.layer);
++    return 0;
+ }
+ #endif /* SDL_VIDEO_RENDER_OPENGPU */
+ 
+@@ -285,11 +452,77 @@ static void OS3_InnerSize(const struct Window *iwin, int *w, int *h)
+     }
+ }
+ 
++/* The window surface's format (Open, 22 Oct 2026): RGB565 or RGB555 on a
++ * 16-bit screen of that byte order, pens on a screen of our own with 8 bits
++ * (its palette is the surface's), ARGB8888 anywhere else. SDL_OS3_SCREENFORMAT=0
++ * keeps ARGB8888 everywhere, for programs that write the surface's pixels
++ * without looking at its format. */
++static Uint32 OS3_SurfaceFormat(OS3_WindowData *data)
++{
++    struct BitMap *bm;
++    ULONG iscgx, pixfmt;
++
++    if (!data || !data->window || !SDL_GetHintBoolean("SDL_OS3_SCREENFORMAT", SDL_TRUE)) {
++        return SDL_PIXELFORMAT_ARGB8888;
++    }
++    bm = data->window->RPort->BitMap;
++    iscgx = GetCyberMapAttr(bm, CYBRMATTR_ISCYBERGFX);
++    if (!iscgx) {
++        return SDL_PIXELFORMAT_ARGB8888;
++    }
++    pixfmt = GetCyberMapAttr(bm, CYBRMATTR_PIXFMT);
++    switch (pixfmt) {
++    case PIXFMT_RGB16:
++        return SDL_PIXELFORMAT_RGB565;
++    case PIXFMT_RGB15:
++        return SDL_PIXELFORMAT_RGB555;
++    case PIXFMT_LUT8:
++        if (data->screen) {
++            return SDL_PIXELFORMAT_INDEX8;
++        }
++        break;
++    default:
++        break;
++    }
++    return SDL_PIXELFORMAT_ARGB8888;
++}
++
++/* The window surface's pixels in Fast RAM (any RAM on a machine without),
++ * the first row on 16 bytes and, when round is set, each row a multiple of
++ * 16 bytes long, so a row starts on a 68040 cache line. SDL's own
++ * allocation when that fails. */
++static SDL_Surface *OS3_AllocSurface(SDL_Window *window, int w, int h, Uint32 fmt, SDL_bool round)
++{
++    SDL_Surface *surface;
++    int bpp = SDL_BYTESPERPIXEL(fmt);
++    int pitch = w * bpp;
++    UBYTE *mem;
++
++    if (round) {
++        pitch = (pitch + 15) & ~15;
++    }
++    mem = (UBYTE *)AllocVec((ULONG)pitch * h + 15, MEMF_FAST | MEMF_CLEAR);
++    if (!mem) {
++        mem = (UBYTE *)AllocVec((ULONG)pitch * h + 15, MEMF_ANY | MEMF_CLEAR);
++    }
++    if (mem) {
++        void *pixels = (void *)(((ULONG)mem + 15) & ~15UL);
++        surface = SDL_CreateRGBSurfaceWithFormatFrom(pixels, w, h, SDL_BITSPERPIXEL(fmt), pitch, fmt);
++        if (surface) {
++            SDL_SetWindowData(window, OS3_PIXELS_KEY, mem);
++            return surface;
++        }
++        FreeVec(mem);
++    }
++    return SDL_CreateRGBSurfaceWithFormat(0, w, h, SDL_BITSPERPIXEL(fmt), fmt);
++}
++
+ int OS3_CreateWindowFramebuffer(_THIS, SDL_Window *window,
+                                 Uint32 *format, void **pixels,
+                                 int *pitch)
+ {
+     SDL_Surface *surface;
++    Uint32 fmt;
+     int w, h;
+ 
+     if (!window) {
+@@ -303,9 +536,9 @@ int OS3_CreateWindowFramebuffer(_THIS, SDL_Window *window,
+ 
+     if (!CyberGfxBase) {
+         /* AGA path: 8-bit paletted surface.
+-         * Games blitting 8-bit surfaces get a fast memcpy. */
+-        surface = SDL_CreateRGBSurfaceWithFormat(0, w, h, 8,
+-                                                SDL_PIXELFORMAT_INDEX8);
++         * Games blitting 8-bit surfaces get a fast memcpy. Rows exactly
++         * the width: the c2p reads them back to back. */
++        surface = OS3_AllocSurface(window, w, h, SDL_PIXELFORMAT_INDEX8, SDL_FALSE);
+         if (!surface) {
+             return -1;
+         }
+@@ -316,13 +549,14 @@ int OS3_CreateWindowFramebuffer(_THIS, SDL_Window *window,
+         return 0;
+     }
+ 
+-    /* RTG path: 32-bit ARGB surface */
+-    surface = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32,
+-                                            SDL_PIXELFORMAT_ARGB8888);
++    /* RTG path: the screen's own format where it is 16 or 8 bits (so the
++     * copy to the screen moves half or a quarter of the bytes, and needs no
++     * conversion), 32-bit ARGB otherwise */
++    fmt = OS3_SurfaceFormat((OS3_WindowData *)window->driverdata);
++    surface = OS3_AllocSurface(window, w, h, fmt, SDL_TRUE);
+     if (!surface) {
+         return -1;
+     }
+-
+     SDL_SetWindowData(window, OS3_SURFACE_KEY, surface);
+ 
+     /* Pre-allocate scaling resources if window > surface */
+@@ -355,7 +589,7 @@ int OS3_CreateWindowFramebuffer(_THIS, SDL_Window *window,
+         }
+     }
+ 
+-    *format = SDL_PIXELFORMAT_ARGB8888;
++    *format = fmt;
+     *pixels = surface->pixels;
+     *pitch  = surface->pitch;
+ 
+@@ -430,9 +664,21 @@ int OS3_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
+     {
+         int win_w, win_h;
+         int need_scale;
++        int bpp = surface->format->BytesPerPixel;
+         OS3_InnerSize(data->window, &win_w, &win_h);
+         need_scale = (win_w > surface->w || win_h > surface->h);
+ 
++        /* Pens on an 8-bit screen of our own: its palette is the surface's,
++         * loaded when SDL's copy of it has changed */
++        if (bpp == 1 && data->screen && window->surface && window->surface->format->palette) {
++            SDL_Palette *pal = window->surface->format->palette;
++            Uint32 seen = (Uint32)(uintptr_t)SDL_GetWindowData(window, OS3_PALVER_KEY);
++            if (seen != pal->version + 1) {
++                OS3_AGA_SetPalette(data->screen, pal);
++                SDL_SetWindowData(window, OS3_PALVER_KEY, (void *)(uintptr_t)(pal->version + 1));
++            }
++        }
++
+ #ifdef SDL_OS3_PROFILE
+         /* PRE-SPLIT: increment call_count AND dump regardless of which branch
+          * is taken. Earlier we put call_count++ inside the no-scale branch
+@@ -475,7 +721,7 @@ int OS3_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
+                     0, 0,
+                     (UWORD)surface->w,
+                     (UWORD)surface->h,
+-                    RECTFMT_ARGB
++                    OS3_RectFmt(surface)
+                 );
+ 
+                 SDL_memset(&bsa, 0, sizeof(bsa));
+@@ -503,7 +749,7 @@ int OS3_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
+                     0, 0,
+                     (UWORD)surface->w,
+                     (UWORD)surface->h,
+-                    RECTFMT_ARGB
++                    OS3_RectFmt(surface)
+                 );
+             }
+         } else {
+@@ -552,7 +798,28 @@ int OS3_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
+                 sdl2_prof.bm_bppix = bm_bppix;
+ #endif
+ 
+-                if (lock && bm_base && bm_bppix == OS3_BPP) {
++                if (lock && bm_base && bpp != OS3_BPP && bm_bppix == (ULONG)bpp) {
++                    /* a 16-bit or 8-bit surface made in the screen's own
++                     * format: rows copied as they are */
++                    for (i = 0; i < numrects; i++) {
++                        const SDL_Rect *r = &rects[i];
++                        const Uint8 *src_row;
++                        Uint8 *dst_row;
++                        int row;
++
++                        if (r->w <= 0 || r->h <= 0) {
++                            continue;
++                        }
++                        src_row = (const Uint8 *)surface->pixels + r->y * surface->pitch + r->x * bpp;
++                        dst_row = (Uint8 *)bm_base + r->y * bm_pitch + r->x * bpp;
++                        for (row = 0; row < r->h; row++) {
++                            SDL_memcpy(dst_row, src_row, r->w * bpp);
++                            src_row += surface->pitch;
++                            dst_row += bm_pitch;
++                        }
++                    }
++                    used_lock = 1;
++                } else if (lock && bm_base && bpp == OS3_BPP && bm_bppix == OS3_BPP) {
+                     UBYTE *fb = (UBYTE *)bm_base;
+                     int needs_swap = (bm_pixfmt != 11); /* 11 = PIXFMT_ARGB32 */
+ #ifdef SDL_OS3_PROFILE
+@@ -642,7 +909,7 @@ int OS3_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
+ 
+                     src = (UBYTE *)surface->pixels
+                           + (r->y * surface->pitch)
+-                          + (r->x * OS3_BPP);
++                          + (r->x * bpp);
+ 
+                     WritePixelArray(
+                         (APTR)src,
+@@ -653,7 +920,7 @@ int OS3_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
+                         (UWORD)r->y,
+                         (UWORD)r->w,
+                         (UWORD)r->h,
+-                        RECTFMT_ARGB
++                        OS3_RectFmt(surface)
+                     );
+                 }
+ #ifdef SDL_OS3_PROFILE
+@@ -684,6 +951,12 @@ void OS3_DestroyWindowFramebuffer(_THIS, SDL_Window *window)
+     if (surface) {
+         SDL_FreeSurface(surface);
+     }
++    {
++        APTR mem = SDL_SetWindowData(window, OS3_PIXELS_KEY, NULL);
++        if (mem) {
++            FreeVec(mem);
++        }
++    }
+ 
+     scale_rp = (struct RastPort *)SDL_SetWindowData(window, OS3_SCALERP_KEY, NULL);
+     if (scale_rp) {
+@@ -715,14 +988,18 @@ void OS3_DestroyWindowFramebuffer(_THIS, SDL_Window *window)
+  * and shows it from there. Any other window, or one whose bitmap OpenRTG
+  * can only give in Fast RAM, keeps the framebuffer above, as before. These
+  * go round the back end's own functions (SDL_OS3_VRAM_HookFramebuffer). */
+-#define OS3_VRAM_KEY "OS3_VRAM"
+-
+ typedef struct OS3_VRAMWindow {
+     struct BitMap *bm;
+     void *pixels;
+     int pitch, w, h;
+ } OS3_VRAMWindow;
+ 
++static struct BitMap *OS3_VRAM_BitMapOf(SDL_Window *window)
++{
++    OS3_VRAMWindow *vw = (OS3_VRAMWindow *)SDL_GetWindowData(window, OS3_VRAM_KEY);
++    return vw ? vw->bm : NULL;
++}
++
+ static SDL_VideoDevice *os3_vram_device = NULL;
+ static int (*os3_create_fb)(_THIS, SDL_Window *window, Uint32 *format, void **pixels, int *pitch);
+ static int (*os3_update_fb)(_THIS, SDL_Window *window, const SDL_Rect *rects, int numrects);
