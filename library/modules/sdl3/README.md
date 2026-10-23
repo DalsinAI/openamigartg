@@ -21,6 +21,7 @@ third-party is committed; the Team's work is in:
 | `patches/amigaos3/0001-shared-module.patch` | SDL's threads start with the A4 of the program's copy of SDL. |
 | `patches/amigaos3/0002-build.patch` | What the back ends need to build on SDL 3.4.14 as released. |
 | `patches/amigaos3/0003-opengpu-present.patch` | The window framebuffer shown through OpenGPU where it can be, WritePixelArray otherwise. |
+| `patches/amigaos3/0004-timer-signal.patch` | timer.device opened without a reply port, and closed when the program ends: before, each SDL program left a signal behind in its Shell, and after about a dozen runs that Shell could open no windows. |
 | `src/video/amigaos3/SDL_os3gpu.c`, `.h` | opengpu.library for SDL: opening it, the pixel formats, and a window's present (one copy into the screen's bitmap through the window's visible parts). |
 | `src/SDL_os3callout.h` | The callouts (as SDL2.module's). |
 | `include/SDL_build_config_amigaos3.h` | SDL's configuration for the Amiga. |
