@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * OpenGPU's core: carries out an OGPU stream v1.2 (include/opengpu/stream.h).
+ * OpenGPU's core: carries out an OGPU stream v1.7 (include/opengpu/stream.h).
  * Plain C with no C library and no floating point, so the same file builds
  * for the 68k (the CPU back end), for the Cradle's runtime and for the
  * PiStorm's spare ARM core. */
@@ -19,6 +19,7 @@ struct ogpu_surface {
     long      bpr;          /* bytes a row */
     int       w, h;
     int       format;       /* OGPU_FMT_ */
+    const ogpu_u8 *table;   /* v1.7: an INDEX8 slot's PALETTE (256 ARGB32 words), or 0 */
 };
 
 struct ogpu3d;                      /* ogpu_3d.h: 3D state for one batch */

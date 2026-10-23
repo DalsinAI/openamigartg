@@ -230,6 +230,12 @@ void ogpu_blur(struct OGPUBatch *b, int x, int y, int w, int h, int rx, int ry, 
     cmd(b, OGPU_OP_BLUR, 5, a);
 }
 
+void ogpu_palette(struct OGPUBatch *b, int slot, unsigned long table) {
+    unsigned long a[2];
+    a[0] = (unsigned long)slot; a[1] = table;
+    cmd(b, OGPU_OP_PALETTE, 2, a);
+}
+
 static void path_el(struct OGPUBatch *p, int verb, int n, const long *xy) {
     unsigned long w[7];
     int i;

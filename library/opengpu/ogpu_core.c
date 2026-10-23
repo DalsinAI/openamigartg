@@ -5,10 +5,11 @@
  * The 68k runs it as the CPU back end, the Cradle's runtime runs it behind
  * ACRTG.gpu, and a PiStorm's spare ARM core runs it behind PiStorm.gpu;
  * tests/test_opengpu.c checks it against simple per-pixel references and
- * keeps golden checksums every build must match. Stream v1.6: the 2D
+ * keeps golden checksums every build must match. Stream v1.7: the 2D
  * commands here (v1.6's paths, gradients, blur and blend modes in their
- * own section below, tested by tests/test_vector.c); the 3D range (0x0030-0x003F) goes to ogpu_3d.c when the
- * build links it (OGPU_WITH_3D).
+ * own section below, tested by tests/test_vector.c; v1.7's SDL 3 additions
+ * through the commands, tested by tests/test_sdl3.c); the 3D range
+ * (0x0030-0x003F) goes to ogpu_3d.c when the build links it (OGPU_WITH_3D).
  *
  * Integers only, no C library, pixels read and written byte by byte in the
  * Amiga's order, so the result is the same on a big- or little-endian CPU.
@@ -90,8 +91,8 @@ static void bytes_of(ogpu_u32 v, ogpu_u8 *b) {
 
 /* Format tables. (A switch over grouped formats becomes GCC's "1 << format,
  * then AND" bit test: a shift by a register, slow on the AC090's JIT.) */
-static const unsigned char fmt_bpp[OGPU_FMT_COUNT] = { 0, 1, 2, 4, 1, 1, 2, 2, 2, 4, 4 };
-static const unsigned char fmt_colour[OGPU_FMT_COUNT] = { 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1 };
+static const unsigned char fmt_bpp[OGPU_FMT_COUNT] = { 0, 1, 2, 4, 1, 1, 2, 2, 2, 4, 4, 4, 4 };
+static const unsigned char fmt_colour[OGPU_FMT_COUNT] = { 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 };
 
 static int bytes_per_pixel(int format) {
     return format > 0 && format < OGPU_FMT_COUNT ? fmt_bpp[format] : 0;
@@ -116,6 +117,8 @@ PX_FN void ld(const ogpu_u8 *p, int f, struct ch *o) {
     case OGPU_FMT_ARGB32: o->a = p[0]; o->r = p[1]; o->g = p[2]; o->b = p[3]; return;
     case OGPU_FMT_BGRA32: o->b = p[0]; o->g = p[1]; o->r = p[2]; o->a = p[3]; return;
     case OGPU_FMT_XRGB32: o->a = 255; o->r = p[1]; o->g = p[2]; o->b = p[3]; return;
+    case OGPU_FMT_RGBA32: o->r = p[0]; o->g = p[1]; o->b = p[2]; o->a = p[3]; return;
+    case OGPU_FMT_ABGR32: o->a = p[0]; o->b = p[1]; o->g = p[2]; o->r = p[3]; return;
     case OGPU_FMT_RGB565: hi = p[0]; lo = p[1]; goto c565;
     case OGPU_FMT_RGB565PC: lo = p[0]; hi = p[1];
     c565:
@@ -138,6 +141,8 @@ PX_FN void st(ogpu_u8 *p, int f, unsigned a, unsigned r, unsigned g, unsigned b)
     case OGPU_FMT_ARGB32: p[0] = (ogpu_u8)a; p[1] = (ogpu_u8)r; p[2] = (ogpu_u8)g; p[3] = (ogpu_u8)b; return;
     case OGPU_FMT_BGRA32: p[0] = (ogpu_u8)b; p[1] = (ogpu_u8)g; p[2] = (ogpu_u8)r; p[3] = (ogpu_u8)a; return;
     case OGPU_FMT_XRGB32: p[0] = 0; p[1] = (ogpu_u8)r; p[2] = (ogpu_u8)g; p[3] = (ogpu_u8)b; return;
+    case OGPU_FMT_RGBA32: p[0] = (ogpu_u8)r; p[1] = (ogpu_u8)g; p[2] = (ogpu_u8)b; p[3] = (ogpu_u8)a; return;
+    case OGPU_FMT_ABGR32: p[0] = (ogpu_u8)a; p[1] = (ogpu_u8)b; p[2] = (ogpu_u8)g; p[3] = (ogpu_u8)r; return;
     case OGPU_FMT_RGB565:
         p[0] = (ogpu_u8)((r & 0xF8) | (g >> 5)); p[1] = (ogpu_u8)(((g & 0x1C) << 3) | (b >> 3)); return;
     case OGPU_FMT_RGB565PC:
@@ -174,8 +179,8 @@ static void raw_bytes(ogpu_u32 v, int f, ogpu_u8 *b) {
  * colour (not the alpha) of a 32-bit one. */
 static void flip_bytes(int f, ogpu_u8 *b) {
     b[0] = b[1] = b[2] = b[3] = 0xFF;
-    if (f == OGPU_FMT_ARGB32 || f == OGPU_FMT_XRGB32) b[0] = 0;
-    if (f == OGPU_FMT_BGRA32) b[3] = 0;
+    if (f == OGPU_FMT_ARGB32 || f == OGPU_FMT_XRGB32 || f == OGPU_FMT_ABGR32) b[0] = 0;
+    if (f == OGPU_FMT_BGRA32 || f == OGPU_FMT_RGBA32) b[3] = 0;
 }
 
 /* x * y / 255, rounded, for x and y in 0..255. */
@@ -418,6 +423,17 @@ PX_FN void blend12(ogpu_u8 *dp, int f, const struct ch *s, unsigned sa, int mode
         b = mul255(s->b, d.b) + mul255(d.b, ia);
         oa = d.a;
         break;
+    case OGPU_BLEND_BLEND_PREMUL:       /* v1.7: s's colour is premultiplied (not times sa) */
+        if (sa == 255) { st(dp, f, 255, s->r, s->g, s->b); return; }
+        ld(dp, f, &d);
+        ia = 255 - sa;
+        r = s->r + mul255(d.r, ia); g = s->g + mul255(d.g, ia); b = s->b + mul255(d.b, ia);
+        oa = sa + mul255(d.a, ia);
+        break;
+    case OGPU_BLEND_ADD_PREMUL:         /* v1.7 */
+        ld(dp, f, &d);
+        r = d.r + s->r; g = d.g + s->g; b = d.b + s->b; oa = d.a;
+        break;
     default:            /* OGPU_BLEND_BLEND */
         if (sa == 255) { st(dp, f, 255, s->r, s->g, s->b); return; }
         if (!sa) return;
@@ -454,13 +470,28 @@ OP_FN op_surface(struct ogpu_core *c, const ogpu_u8 *a) {
     if (slot >= OGPU_MAX_SLOTS) return OGPU_ERR_NOSURFACE;
     s = &c->slot[slot];
     s->pixels = 0;
-    if (!bpp || format == OGPU_FMT_INDEX8 || !w || !h || w > OGPU_MAX_SIZE || h > OGPU_MAX_SIZE
+    s->table = 0;                                   /* v1.7: a SURFACE forgets the slot's PALETTE */
+    if (!bpp || !w || !h || w > OGPU_MAX_SIZE || h > OGPU_MAX_SIZE
         || bpr < (ogpu_u32)w * bpp || bpr > 0x01000000UL || !span_len(bpr, h, (ogpu_u32)w * bpp, &len))
         return OGPU_ERR_UNSUPPORTED;
     mem = c->map(c->user, address, len);
     if (!mem) return OGPU_ERR_NOMAP;
     s->pixels = mem; s->bpr = (long)bpr; s->w = w; s->h = h; s->format = (int)format;
     if (c->target == (int)slot) { c->cx0 = c->cy0 = c->cx1 = c->cy1 = 0; }
+    return OGPU_OK;
+}
+
+/* PALETTE (v1.7): an INDEX8 slot's colours, 256 ARGB32 words, read
+ * whenever the slot is drawn from; table 0 forgets them. */
+OP_FN op_palette(struct ogpu_core *c, const ogpu_u8 *a) {
+    ogpu_u32 slot = rd32(a), table = rd32(a + 4);
+    struct ogpu_surface *s;
+    if (slot >= OGPU_MAX_SLOTS || !c->slot[slot].pixels) return OGPU_ERR_NOSURFACE;
+    s = &c->slot[slot];
+    s->table = 0;
+    if (s->format != OGPU_FMT_INDEX8) return OGPU_ERR_UNSUPPORTED;
+    if (!table) return OGPU_OK;
+    if (!(s->table = c->map(c->user, table, 1024))) return OGPU_ERR_NOMAP;
     return OGPU_OK;
 }
 
@@ -669,7 +700,7 @@ OP_FN op_pixels(struct ogpu_core *c, const ogpu_u8 *a) {
     if (!sbpp || !w || !h) return sbpp ? OGPU_OK : OGPU_ERR_UNSUPPORTED;
     /* A CLUT8 target takes pens only; true-colour targets take anything
      * but bare pens, which have no colours without a table. */
-    if (t->format == OGPU_FMT_CLUT8) {
+    if (t->format == OGPU_FMT_CLUT8 || t->format == OGPU_FMT_INDEX8) {   /* INDEX8 (v1.7): indexes, as pens */
         if (format != OGPU_FMT_CLUT8 && !(format == OGPU_FMT_INDEX8 && !table)) return OGPU_ERR_UNSUPPORTED;
         raw = 1;
     } else {
@@ -731,12 +762,74 @@ PX_FN ogpu_u8 *row_at(const struct ogpu_surface *s, int y) {
 
 PX_FN long xoff(int x, int bpp) { return bpp == 4 ? (long)x << 2 : bpp == 2 ? (long)x << 1 : (long)x; }
 
-/* A source's pixel (x, y) of a rectangle whose row pointers are known. */
+/* A source's pixel (x, y) of a rectangle whose row pointers are known; an
+ * INDEX8 slot's through its PALETTE (v1.7; callers check it has one). */
 PX_FN void sample_at(const struct ogpu_surface *s, const ogpu_u8 *row, int x, struct ch *o) {
+    if (s->format == OGPU_FMT_INDEX8) {
+        const ogpu_u8 *e = s->table + ((unsigned)row[x] << 2);
+        o->a = e[0]; o->r = e[1]; o->g = e[2]; o->b = e[3];
+        return;
+    }
     ld(row + xoff(x, fmt_bpp[s->format]), s->format, o);
 }
 
-/* Bilinear between rows r0 and r1 at x0..x1 with weights wx, wy (0-255). */
+/* A source a colour command reads: colour, A8 where it says so, or (v1.7)
+ * INDEX8 with a palette. */
+static int colour_source(const struct ogpu_surface *s, int a8) {
+    return is_colour(s->format) || (a8 && s->format == OGPU_FMT_A8) || (s->format == OGPU_FMT_INDEX8 && s->table);
+}
+
+/* PIXELART (v1.7) along one axis: p, the pixel's centre (16.16 texels
+ * from the rectangle's corner); b16, the texels a pixel spans (16.16, 256 to
+ * 65536) and rb = 2^24 / b16. Returns n = floor(p - b / 2), the first of the
+ * texel pair (unclamped), and in *f the weight of n + 1 (0-256):
+ * smoothstep(1 - b, 1, fract(p - b / 2)), worked in 1/4096ths. 32-bit
+ * products, as only PIXELART pays for them. */
+PX_FN int pa_axis(long p, ogpu_u32 b16, ogpu_u32 rb, unsigned *f) {
+    long t = p - (long)(b16 >> 1);
+    long sv = (long)((ogpu_u32)t & 0xFFFFUL) - 65536L + (long)b16;    /* fract(t) - (1 - b) */
+    if (sv <= 0) *f = 0;
+    else if (sv >= (long)b16) *f = 256;
+    else {
+        ogpu_u32 tt = ((ogpu_u32)sv * rb) >> 12;                /* sv < b16: the product is below 2^24 */
+        ogpu_u32 q = (tt * tt) >> 12;
+        *f = (unsigned)((q * (12288UL - (tt << 1))) >> 16);
+    }
+    return (int)(t >> 16);
+}
+
+/* The texels a target pixel spans one way (16.16), as PIXELART's b16 and rb. */
+static void pa_box(ogpu_u32 span, ogpu_u32 *b16, ogpu_u32 *rb) {
+    if (span < 256) span = 256;
+    if (span > 65536UL) span = 65536UL;
+    *b16 = span;
+    *rb = 0x1000000UL / span;
+}
+
+/* PIXELART's pixel centres one way (16.16): exact at every pixel, a
+ * remainder carried, as its steep edges show a truncated 16.16 step's drift
+ * across a wide picture. Centre i of n pixels over size texels is
+ * (2i + 1) * size * 65536 / 2n. Past 32767 pixels, the plain step. */
+struct pa_walk { ogpu_u32 p, e, step, inc, den; };
+
+static void pa_start(struct pa_walk *w, ogpu_u32 size, ogpu_u32 n, ogpu_u32 first) {
+    ogpu_u32 big = size << 16, extra;
+    w->step = big / n;
+    if (n > 32767) { w->p = first * w->step + (w->step >> 1); w->e = 0; w->inc = 0; w->den = 1; return; }
+    w->den = n << 1;
+    w->inc = (big % n) << 1;                            /* below den */
+    extra = big % w->den + first * w->inc;              /* below 2n * n: 32 bits */
+    w->p = big / w->den + first * w->step + extra / w->den;
+    w->e = extra % w->den;
+}
+
+PX_FN void pa_next(struct pa_walk *w) {
+    w->p += w->step;
+    w->e += w->inc;
+    if (w->e >= w->den) { w->e -= w->den; w->p++; }
+}
+
+/* Bilinear between rows r0 and r1 at x0..x1 with weights wx, wy (0-256). */
 PX_FN void sample_bi(const struct ogpu_surface *s, const ogpu_u8 *r0, const ogpu_u8 *r1, int x0, int x1,
                       unsigned wx, unsigned wy, struct ch *o) {
     struct ch p00, p10, p01, p11, t0, t1;
@@ -754,14 +847,19 @@ OP_FN op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
     int sx = hi_s(sxy), sy = lo_s(sxy), sw = hi_u(swh), sh = lo_u(swh);
     int x = hi_s(dxy), y = lo_s(dxy), w = hi_u(dwh), h = lo_u(dwh), ox, oy, i, j, dbpp, mx = 0, my = 0;
     int mode = flags & OGPU_COMP_BLENDMODE ? OGPU_COMP_MODE_OF(flags) : -1, fast, srcalpha;
+    int pixelart = (flags & OGPU_COMP_PIXELART) != 0, premul = mode == OGPU_BLEND_BLEND_PREMUL || mode == OGPU_BLEND_ADD_PREMUL;
+    ogpu_u32 pbx = 0, prx = 0, pby = 0, pry = 0;
     ogpu_u32 stepx, stepy;
+    struct pa_walk wx0 = { 0, 0, 0, 0, 1 }, wxr = wx0, wyr = wx0;
+    int dw = w, dh = h;
     ogpu_u8 *drow;
     if (slot >= OGPU_MAX_SLOTS || !c->slot[slot].pixels) return OGPU_ERR_NOSURFACE;
     s = &c->slot[slot];
     if (!is_colour(t->format) && t->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
-    if (!is_colour(s->format) && s->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
+    if (!colour_source(s, 1)) return OGPU_ERR_UNSUPPORTED;
     if ((flags & OGPU_COMP_ADD) && (flags & OGPU_COMP_IN)) return OGPU_ERR_UNSUPPORTED;
-    if (mode > OGPU_BLEND_MUL) return OGPU_ERR_UNSUPPORTED;
+    if (pixelart && (flags & OGPU_COMP_BILINEAR)) return OGPU_ERR_UNSUPPORTED;
+    if (mode > OGPU_BLEND_LAST) return OGPU_ERR_UNSUPPORTED;
     if (flags & OGPU_COMP_MASK) {
         ogpu_u32 mslot = rd32(a + 28), mxy = rd32(a + 32);
         if (mslot >= OGPU_MAX_SLOTS || !c->slot[mslot].pixels) return OGPU_ERR_NOSURFACE;
@@ -774,10 +872,12 @@ OP_FN op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
     if (sx < 0 || sy < 0 || sx + sw > s->w || sy + sh > s->h) return OGPU_ERR_UNSUPPORTED;
     stepx = ((ogpu_u32)sw << 16) / (ogpu_u32)w;         /* once a command */
     stepy = ((ogpu_u32)sh << 16) / (ogpu_u32)h;
+    if (pixelart) { pa_box(stepx, &pbx, &prx); pa_box(stepy, &pby, &pry); }
     dbpp = bytes_per_pixel(t->format);
     if (!clip_rect(c, &x, &y, &w, &h, &ox, &oy)) return OGPU_OK;
+    if (pixelart) { pa_start(&wx0, (ogpu_u32)sw, (ogpu_u32)dw, (ogpu_u32)ox); pa_start(&wyr, (ogpu_u32)sh, (ogpu_u32)dh, (ogpu_u32)oy); }
     fast = s->format == OGPU_FMT_ARGB32 && (t->format == OGPU_FMT_ARGB32 || t->format == OGPU_FMT_RGB565)
-           && mode < 0 && !m && !(flags & (OGPU_COMP_ADD | OGPU_COMP_IN | OGPU_COMP_BILINEAR));
+           && mode < 0 && !m && !(flags & (OGPU_COMP_ADD | OGPU_COMP_IN | OGPU_COMP_BILINEAR | OGPU_COMP_PIXELART));
     srcalpha = (flags & OGPU_COMP_SRCALPHA) != 0;
     drow = px_at(t, x, y);
     for (j = 0; j < h; j++, drow += t->bpr) {
@@ -794,13 +894,22 @@ OP_FN op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
             y0 = (int)(fy >> 16); wy = (unsigned)(fy >> 8) & 255;
             if (y0 >= sh - 1) { y0 = sh - 1; wy = 0; }
             y1 = y0 + 1 < sh ? y0 + 1 : y0;
+        } else if (pixelart) {
+            y0 = pa_axis((long)wyr.p, pby, pry, &wy);
+            pa_next(&wyr);
+            wxr = wx0;
+            y1 = y0 + 1;
+            if (y0 < 0) y0 = 0;
+            if (y0 > sh - 1) y0 = sh - 1;
+            if (y1 < 0) y1 = 0;
+            if (y1 > sh - 1) y1 = sh - 1;
         } else {
             y0 = (int)(py >> 16);
             if (y0 >= sh) y0 = sh - 1;
             y1 = y0;
         }
         r0 = px_at(s, 0, sy + y0);                      /* once a row */
-        r1 = y1 == y0 ? r0 : r0 + s->bpr;
+        r1 = y1 == y0 ? r0 : px_at(s, 0, sy + y1);
         if (fast) {
             /* ARGB32 over ARGB32 or RGB565, nearest, OVER: the common case, without the
              * general reads and writes. */
@@ -849,13 +958,25 @@ OP_FN op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
                 if (x0 >= sw - 1) { x0 = sw - 1; wx = 0; }
                 x1 = x0 + 1 < sw ? x0 + 1 : x0;
                 sample_bi(s, r0, r1, sx + x0, sx + x1, wx, wy, &sp);
+            } else if (pixelart) {
+                unsigned wx;
+                int x0 = pa_axis((long)wxr.p, pbx, prx, &wx), x1 = x0 + 1;
+                pa_next(&wxr);
+                if (x0 < 0) x0 = 0;
+                if (x0 > sw - 1) x0 = sw - 1;
+                if (x1 < 0) x1 = 0;
+                if (x1 > sw - 1) x1 = sw - 1;
+                sample_bi(s, r0, r1, sx + x0, sx + x1, wx, wy, &sp);
             } else {
                 int nx = (int)(px >> 16);
                 if (nx >= sw) nx = sw - 1;
                 sample_at(s, r0, sx + nx, &sp);
             }
             ea = mul255((flags & OGPU_COMP_SRCALPHA) ? sp.a : 255, alpha);
-            if (mp) ea = mul255(ea, mp[i]);
+            if (mp) {
+                ea = mul255(ea, mp[i]);
+                if (premul) { sp.r = mul255(sp.r, mp[i]); sp.g = mul255(sp.g, mp[i]); sp.b = mul255(sp.b, mp[i]); }
+            }
             if (mode >= 0) blend12(dp, t->format, &sp, ea, mode);
             else blend11(dp, t->format, &sp, ea, flags);
         }
@@ -873,7 +994,7 @@ OP_FN op_mask(struct ogpu_core *c, const ogpu_u8 *a) {
     const ogpu_u8 *src;
     ogpu_u8 *drow;
     struct ch col;
-    if (t->format == OGPU_FMT_CLUT8) return OGPU_ERR_UNSUPPORTED;
+    if (t->format == OGPU_FMT_CLUT8 || t->format == OGPU_FMT_INDEX8) return OGPU_ERR_UNSUPPORTED;
     if (!w || !h) return OGPU_OK;
     if (bpr < (ogpu_u32)w || bpr > 0x01000000UL || !span_len(bpr, h, (ogpu_u32)w, &len)) return OGPU_ERR_UNSUPPORTED;
     src = c->map(c->user, address, len);
@@ -900,7 +1021,7 @@ OP_FN op_fill_blend(struct ogpu_core *c, const ogpu_u8 *a) {
     int x = hi_s(xy), y = lo_s(xy), w = hi_u(wh), h = lo_u(wh), ox, oy, i, j, bpp = bytes_per_pixel(t->format);
     struct ch col;
     ogpu_u8 *drow;
-    if (!is_colour(t->format) || mode > OGPU_BLEND_MUL) return OGPU_ERR_UNSUPPORTED;
+    if (!is_colour(t->format) || mode > OGPU_BLEND_LAST) return OGPU_ERR_UNSUPPORTED;
     if (!clip_rect(c, &x, &y, &w, &h, &ox, &oy)) return OGPU_OK;
     ch_of(colour, &col);
     drow = px_at(t, x, y);
@@ -925,7 +1046,7 @@ OP_FN op_lines_blend(struct ogpu_core *c, const ogpu_u8 *a) {
     ogpu_u32 i, step = flags & OGPU_LINES_STRIP ? 1 : 2;
     b.format = c->slot[c->target].format;
     b.mode = (int)(flags & OGPU_BLEND_MASK);
-    if (!is_colour(b.format) || b.mode > OGPU_BLEND_MUL) return OGPU_ERR_UNSUPPORTED;
+    if (!is_colour(b.format) || b.mode > OGPU_BLEND_LAST) return OGPU_ERR_UNSUPPORTED;
     if (count < 2) return OGPU_OK;
     if (count > 0x00FFFFFFUL) return OGPU_ERR_UNSUPPORTED;
     if (!(pts = c->map(c->user, address, count * 4))) return OGPU_ERR_NOMAP;
@@ -946,7 +1067,7 @@ OP_FN op_points_blend(struct ogpu_core *c, const ogpu_u8 *a) {
     struct ch col;
     int x0, y0, x1, y1;
     ogpu_u32 i;
-    if (!is_colour(t->format) || mode > OGPU_BLEND_MUL) return OGPU_ERR_UNSUPPORTED;
+    if (!is_colour(t->format) || mode > OGPU_BLEND_LAST) return OGPU_ERR_UNSUPPORTED;
     if (!count) return OGPU_OK;
     if (count > 0x00FFFFFFUL) return OGPU_ERR_UNSUPPORTED;
     if (!(pts = c->map(c->user, address, count * 4))) return OGPU_ERR_NOMAP;
@@ -975,9 +1096,11 @@ OP_FN op_composite_affine(struct ogpu_core *c, const ogpu_u8 *a) {
     long minx = 0x7FFFFFFFL, miny = 0x7FFFFFFFL, maxx = -0x7FFFFFFFL, maxy = -0x7FFFFFFFL;
     long usz, vsz;
     struct ch col;
+    ogpu_u32 pbu = 0, pru = 0, pbv = 0, prv = 0;
     if (slot >= OGPU_MAX_SLOTS || !c->slot[slot].pixels) return OGPU_ERR_NOSURFACE;
     s = &c->slot[slot];
-    if (!is_colour(t->format) || !is_colour(s->format) || mode > OGPU_BLEND_MUL) return OGPU_ERR_UNSUPPORTED;
+    if (!is_colour(t->format) || !colour_source(s, 0) || mode > OGPU_BLEND_LAST) return OGPU_ERR_UNSUPPORTED;
+    if ((flags & OGPU_AFF_PIXELART) && (flags & OGPU_AFF_BILINEAR)) return OGPU_ERR_UNSUPPORTED;
     /* 32-bit words as signed, on any host */
     if (m00 > 0x7FFFFFFFL) m00 -= 0x100000000LL;
     if (m01 > 0x7FFFFFFFL) m01 -= 0x100000000LL;
@@ -1016,7 +1139,14 @@ OP_FN op_composite_affine(struct ogpu_core *c, const ogpu_u8 *a) {
     if (bx1 <= bx0 || by1 <= by0) return OGPU_OK;
     ch_of(colour, &col);
     sbpp = bytes_per_pixel(s->format);
+    (void)sbpp;
     usz = (long)sw << 16; vsz = (long)sh << 16;
+    if (flags & OGPU_AFF_PIXELART) {
+        /* the texels one target pixel spans each way, as SDL's fwidth(): |du/dx| + |du/dy| */
+        ogpu_s64 su = (i00 < 0 ? -i00 : i00) + (i01 < 0 ? -i01 : i01), sv = (i10 < 0 ? -i10 : i10) + (i11 < 0 ? -i11 : i11);
+        pa_box(su > 0x7FFFFFFFLL ? 0x7FFFFFFFUL : (ogpu_u32)su, &pbu, &pru);
+        pa_box(sv > 0x7FFFFFFFLL ? 0x7FFFFFFFUL : (ogpu_u32)sv, &pbv, &prv);
+    }
     for (y = by0; y < by1; y++) {
         /* The first pixel's centre, in source offsets, exactly; then steps. */
         ogpu_s64 dx = ((ogpu_s64)bx0 << 16) + 0x8000 - m02, dy = ((ogpu_s64)y << 16) + 0x8000 - m12;
@@ -1042,9 +1172,20 @@ OP_FN op_composite_affine(struct ogpu_core *c, const ogpu_u8 *a) {
                 y1 = y0 + 1 < sh ? y0 + 1 : y0;
                 r0 = row_at(s, sy + y0);
                 sample_bi(s, r0, y1 == y0 ? r0 : r0 + s->bpr, sx + x0, sx + x1, wx, wy, &sp);
+            } else if (flags & OGPU_AFF_PIXELART) {
+                unsigned wx, wy;
+                int x0 = pa_axis(u, pbu, pru, &wx), y0 = pa_axis(v, pbv, prv, &wy), x1 = x0 + 1, y1 = y0 + 1;
+                if (x0 < 0) x0 = 0;
+                if (x0 > sw - 1) x0 = sw - 1;
+                if (x1 > sw - 1) x1 = sw - 1;
+                if (x1 < 0) x1 = 0;
+                if (y0 < 0) y0 = 0;
+                if (y0 > sh - 1) y0 = sh - 1;
+                if (y1 > sh - 1) y1 = sh - 1;
+                if (y1 < 0) y1 = 0;
+                sample_bi(s, row_at(s, sy + y0), row_at(s, sy + y1), sx + x0, sx + x1, wx, wy, &sp);
             } else {
-                const ogpu_u8 *r0 = row_at(s, sy + (int)(v >> 16));
-                ld(r0 + xoff(sx + (int)(u >> 16), sbpp), s->format, &sp);
+                sample_at(s, row_at(s, sy + (int)(v >> 16)), sx + (int)(u >> 16), &sp);
             }
             sa = (flags & OGPU_AFF_SRCALPHA) ? mul255(sp.a, col.a) : col.a;
             if (col.r != 255) sp.r = mul255(sp.r, col.r);
@@ -1058,8 +1199,29 @@ OP_FN op_composite_affine(struct ogpu_core *c, const ogpu_u8 *a) {
 
 static unsigned clamp255(int v) { return v < 0 ? 0 : v > 255 ? 255 : (unsigned)v; }
 
+/* A colour space's coefficients, 8.8: Y's scale, V into R, U and V out of
+ * G, U into B, and Y's offset. BT.601, BT.709 and BT.2020, video range
+ * (16-235) or full; JPEG is BT.601's full range. */
+static void yuv_space(int space, int *ky, int *kr, int *kgu, int *kgv, int *kb, int *yoff) {
+    static const short k[6][6] = {
+        { 298, 409, 100, 208, 516, 16 },        /* BT601 */
+        { 298, 459, 55, 136, 541, 16 },         /* BT709 */
+        { 256, 359, 88, 183, 454, 0 },          /* JPEG */
+        { 256, 403, 48, 120, 475, 0 },          /* BT709_FULL (v1.7) */
+        { 298, 430, 48, 167, 548, 16 },         /* BT2020 (v1.7) */
+        { 256, 377, 42, 146, 482, 0 },          /* BT2020_FULL (v1.7) */
+    };
+    const short *q = k[space >= 0 && space <= OGPU_YUV_BT2020_FULL ? space : 0];
+    *ky = q[0]; *kr = q[1]; *kgu = q[2]; *kgv = q[3]; *kb = q[4]; *yoff = q[5];
+}
+
+/* P010's sample (a big-endian word, the value in its top 10 bits) as 8 bits, rounded. */
+PX_FN int p010(const ogpu_u8 *q) { int v = q[0] + (q[1] >> 7); return v > 255 ? 255 : v; }
+
 /* YUV: a picture in one of the video layouts, converted 1:1 into the
- * target. Integer BT.601, BT.709 or full-range (JPEG) coefficients, 8.8. */
+ * target. Integer coefficients, 8.8 (yuv_space): BT.601, BT.709 or BT.2020,
+ * video or full range; P010 (v1.7) is NV12's arithmetic on its samples'
+ * top 8 bits, rounded. */
 OP_FN op_yuv(struct ogpu_core *c, const ogpu_u8 *a) {
     ogpu_u32 ya = rd32(a), ybpr = rd32(a + 4), ua = rd32(a + 8), ubpr = rd32(a + 12), va = rd32(a + 16), vbpr = rd32(a + 20);
     ogpu_u32 wh = rd32(a + 24), xy = rd32(a + 28), fmt = rd32(a + 32);
@@ -1071,23 +1233,21 @@ OP_FN op_yuv(struct ogpu_core *c, const ogpu_u8 *a) {
     ogpu_u32 len;
     ogpu_u8 *drow;
     int packed = layout >= OGPU_YUV_YUY2 && layout <= OGPU_YUV_YVYU, semi = layout == OGPU_YUV_NV12 || layout == OGPU_YUV_NV21;
-    if (!is_colour(t->format) || layout < OGPU_YUV_I420 || layout > OGPU_YUV_YVYU || space > OGPU_YUV_JPEG)
+    int wide = layout == OGPU_YUV_P010, sb = wide ? 2 : 1;     /* v1.7: P010's 16-bit samples */
+    if (!is_colour(t->format) || layout < OGPU_YUV_I420 || layout > OGPU_YUV_P010 || space > OGPU_YUV_BT2020_FULL)
         return OGPU_ERR_UNSUPPORTED;
+    if (wide) semi = 1;
     if (!w || !h) return OGPU_OK;
     if ((w | h) & 1) return OGPU_ERR_UNSUPPORTED;
-    switch (space) {
-    case OGPU_YUV_BT709: ky = 298; kr = 459; kgu = 55; kgv = 136; kb = 541; yoff = 16; break;
-    case OGPU_YUV_JPEG: ky = 256; kr = 359; kgu = 88; kgv = 183; kb = 454; yoff = 0; break;
-    default: ky = 298; kr = 409; kgu = 100; kgv = 208; kb = 516; yoff = 16; break;
-    }
+    yuv_space(space, &ky, &kr, &kgu, &kgv, &kb, &yoff);
     if (packed) {
         if (ybpr < (ogpu_u32)w * 2 || ybpr > 0x01000000UL || !span_len(ybpr, h, (ogpu_u32)w * 2, &len)) return OGPU_ERR_UNSUPPORTED;
         if (!(yp = c->map(c->user, ya, len))) return OGPU_ERR_NOMAP;
     } else {
-        if (ybpr < (ogpu_u32)w || ybpr > 0x01000000UL || !span_len(ybpr, h, (ogpu_u32)w, &len)) return OGPU_ERR_UNSUPPORTED;
+        if (ybpr < (ogpu_u32)w * sb || ybpr > 0x01000000UL || !span_len(ybpr, h, (ogpu_u32)w * sb, &len)) return OGPU_ERR_UNSUPPORTED;
         if (!(yp = c->map(c->user, ya, len))) return OGPU_ERR_NOMAP;
         if (semi) {
-            if (ubpr < (ogpu_u32)w || ubpr > 0x01000000UL || !span_len(ubpr, h / 2, (ogpu_u32)w, &len)) return OGPU_ERR_UNSUPPORTED;
+            if (ubpr < (ogpu_u32)w * sb || ubpr > 0x01000000UL || !span_len(ubpr, h / 2, (ogpu_u32)w * sb, &len)) return OGPU_ERR_UNSUPPORTED;
             if (!(up = c->map(c->user, ua, len))) return OGPU_ERR_NOMAP;
         } else {
             if (ubpr < (ogpu_u32)w / 2 || ubpr > 0x01000000UL || !span_len(ubpr, h / 2, (ogpu_u32)w / 2, &len)) return OGPU_ERR_UNSUPPORTED;
@@ -1112,6 +1272,9 @@ OP_FN op_yuv(struct ogpu_core *c, const ogpu_u8 *a) {
                 case OGPU_YUV_UYVY: Y = q[1 + ((sx & 1) << 1)]; U = q[0]; V = q[2]; break;
                 default: Y = q[(sx & 1) << 1]; V = q[1]; U = q[3]; break;      /* YVYU */
                 }
+            } else if (wide) {
+                const ogpu_u8 *q = ur + ((sx >> 1) << 2);
+                Y = p010(yr + (sx << 1)); U = p010(q); V = p010(q + 2);
             } else {
                 Y = yr[sx];
                 if (semi) {
@@ -1148,24 +1311,22 @@ OP_FN op_yuv_scaled(struct ogpu_core *c, const ogpu_u8 *a) {
     ogpu_u32 len, stepx, stepy, fx0, fy;
     ogpu_u8 *drow;
     int packed = layout >= OGPU_YUV_YUY2 && layout <= OGPU_YUV_YVYU, semi = layout == OGPU_YUV_NV12 || layout == OGPU_YUV_NV21;
-    if (c->target < 0 || !is_colour(t->format) || layout < OGPU_YUV_I420 || layout > OGPU_YUV_YVYU || space > OGPU_YUV_JPEG)
+    int wide = layout == OGPU_YUV_P010, sb = wide ? 2 : 1;     /* v1.7: P010's 16-bit samples */
+    if (c->target < 0 || !is_colour(t->format) || layout < OGPU_YUV_I420 || layout > OGPU_YUV_P010 || space > OGPU_YUV_BT2020_FULL)
         return OGPU_ERR_UNSUPPORTED;
+    if (wide) semi = 1;
     if (!pw || !ph || !sw || !sh || !w || !h) return OGPU_OK;
     if ((pw | ph) & 1) return OGPU_ERR_UNSUPPORTED;
     if (sx < 0 || sy < 0 || sx + sw > pw || sy + sh > ph) return OGPU_ERR_UNSUPPORTED;
-    switch (space) {
-    case OGPU_YUV_BT709: ky = 298; kr = 459; kgu = 55; kgv = 136; kb = 541; yoff = 16; break;
-    case OGPU_YUV_JPEG: ky = 256; kr = 359; kgu = 88; kgv = 183; kb = 454; yoff = 0; break;
-    default: ky = 298; kr = 409; kgu = 100; kgv = 208; kb = 516; yoff = 16; break;
-    }
+    yuv_space(space, &ky, &kr, &kgu, &kgv, &kb, &yoff);
     if (packed) {
         if (ybpr < (ogpu_u32)pw * 2 || ybpr > 0x01000000UL || !span_len(ybpr, ph, (ogpu_u32)pw * 2, &len)) return OGPU_ERR_UNSUPPORTED;
         if (!(yp = c->map(c->user, ya, len))) return OGPU_ERR_NOMAP;
     } else {
-        if (ybpr < (ogpu_u32)pw || ybpr > 0x01000000UL || !span_len(ybpr, ph, (ogpu_u32)pw, &len)) return OGPU_ERR_UNSUPPORTED;
+        if (ybpr < (ogpu_u32)pw * sb || ybpr > 0x01000000UL || !span_len(ybpr, ph, (ogpu_u32)pw * sb, &len)) return OGPU_ERR_UNSUPPORTED;
         if (!(yp = c->map(c->user, ya, len))) return OGPU_ERR_NOMAP;
         if (semi) {
-            if (ubpr < (ogpu_u32)pw || ubpr > 0x01000000UL || !span_len(ubpr, ph / 2, (ogpu_u32)pw, &len)) return OGPU_ERR_UNSUPPORTED;
+            if (ubpr < (ogpu_u32)pw * sb || ubpr > 0x01000000UL || !span_len(ubpr, ph / 2, (ogpu_u32)pw * sb, &len)) return OGPU_ERR_UNSUPPORTED;
             if (!(up = c->map(c->user, ua, len))) return OGPU_ERR_NOMAP;
         } else {
             if (ubpr < (ogpu_u32)pw / 2 || ubpr > 0x01000000UL || !span_len(ubpr, ph / 2, (ogpu_u32)pw / 2, &len)) return OGPU_ERR_UNSUPPORTED;
@@ -1197,6 +1358,9 @@ OP_FN op_yuv_scaled(struct ogpu_core *c, const ogpu_u8 *a) {
                 case OGPU_YUV_UYVY: Y = q[1 + ((px & 1) << 1)]; U = q[0]; V = q[2]; break;
                 default: Y = q[(px & 1) << 1]; V = q[1]; U = q[3]; break;      /* YVYU */
                 }
+            } else if (wide) {
+                const ogpu_u8 *q = ur + ((px >> 1) << 2);
+                Y = p010(yr + (px << 1)); U = p010(q); V = p010(q + 2);
             } else {
                 Y = yr[px];
                 if (semi) {
@@ -2460,7 +2624,7 @@ OP_FN op_blur(struct ogpu_core *c, const ogpu_u8 *a) {
 
 void ogpu_core_init(struct ogpu_core *c) {
     int i;
-    for (i = 0; i < OGPU_MAX_SLOTS; i++) c->slot[i].pixels = 0;
+    for (i = 0; i < OGPU_MAX_SLOTS; i++) { c->slot[i].pixels = 0; c->slot[i].table = 0; }
     c->target = -1;
     c->cx0 = c->cy0 = c->cx1 = c->cy1 = 0;
     c->last_error = OGPU_OK;
@@ -2493,6 +2657,7 @@ static int args_for(int op) {
     case OGPU_OP_PATH_FILL: return 15;
     case OGPU_OP_PATH_STROKE: return 21;
     case OGPU_OP_BLUR: return 5;
+    case OGPU_OP_PALETTE: return 2;
     case OGPU_OP_FENCE: return 1;
     }
 #ifdef OGPU_WITH_3D
@@ -2525,7 +2690,7 @@ long ogpu_core_run(struct ogpu_core *c, const ogpu_u8 *stream, long words) {
         else if (need == -2)
             r = c->d3 ? ogpu_3d_run(c, op, stream + at * 4, len) : OGPU_ERR_BADOP;
 #endif
-        else if (op >= OGPU_OP_FILL && op < OGPU_OP_FENCE && (c->target < 0 || !c->slot[c->target].pixels))
+        else if (op >= OGPU_OP_FILL && op < OGPU_OP_FENCE && op != OGPU_OP_PALETTE && (c->target < 0 || !c->slot[c->target].pixels))
             r = OGPU_ERR_NOSURFACE;
         else switch (op) {
         case OGPU_OP_SURFACE: r = op_surface(c, a); break;
@@ -2562,6 +2727,7 @@ long ogpu_core_run(struct ogpu_core *c, const ogpu_u8 *stream, long words) {
         case OGPU_OP_PATH_FILL: r = op_path(c, a, 0); break;
         case OGPU_OP_PATH_STROKE: r = op_path(c, a, 1); break;
         case OGPU_OP_BLUR: r = op_blur(c, a); break;
+        case OGPU_OP_PALETTE: r = op_palette(c, a); break;
         case OGPU_OP_FENCE: if (c->fence) c->fence(c->user, rd32(a)); break;
         }
         if (r != OGPU_OK && c->last_error == OGPU_OK) { c->last_error = r; c->error_word = at; }
@@ -2576,11 +2742,13 @@ int ogpu_core_supports(int op, int format) {
 #ifdef OGPU_WITH_3D
     if (op >= 0x0030 && op <= 0x003F) return ogpu3d_supports(op, format);
 #endif
+    if (format == OGPU_FMT_INDEX8)      /* v1.7: an INDEX8 slot takes indexes, as CLUT8 takes pens */
+        return ogpu_core_supports(op, OGPU_FMT_CLUT8);
     if (!colour && format != OGPU_FMT_CLUT8 && format != OGPU_FMT_A8) return OGPU_NONE;
     switch (op) {
     case OGPU_OP_NOP: case OGPU_OP_SURFACE: case OGPU_OP_TARGET: case OGPU_OP_CLIP: case OGPU_OP_FENCE:
     case OGPU_OP_FILL: case OGPU_OP_INVERT: case OGPU_OP_COPY: case OGPU_OP_TEMPLATE:
-    case OGPU_OP_PATTERN: case OGPU_OP_LINE:
+    case OGPU_OP_PATTERN: case OGPU_OP_LINE: case OGPU_OP_PALETTE:
         return OGPU_FULL;
     case OGPU_OP_PIXELS:    /* pens only on CLUT8, coverage only on A8 */
         return format == OGPU_FMT_CLUT8 || format == OGPU_FMT_A8 ? OGPU_PARTIAL : OGPU_FULL;

@@ -345,6 +345,31 @@ The `glA...` forms (`glASwapBuffers()` and the rest) pass the program's
     (canvas `shadowBlur`, CSS `box-shadow`), on A8 or 32-bit pixels.
   - The paths and the blur need work memory from the program (its address
     and size in the command; `stream.h` says how much).
+- **SDL 3's renderer (stream v1.7, opengpu.library 0.19).** Ask
+  `OGPU_Query(OGPU_OP_PALETTE, format)` first; a back end that answers it
+  takes all of v1.7:
+  - Blend modes `OGPU_BLEND_BLEND_PREMUL` and `OGPU_BLEND_ADD_PREMUL` (and
+    `OGPU_TRI_BLEND_PREMUL`, `_ADD_PREMUL` for TRIANGLES), for SDL 3's
+    `SDL_BLENDMODE_BLEND_PREMULTIPLIED` and `_ADD_PREMULTIPLIED`: the
+    source's colour is premultiplied; the colour modulation scales its R, G
+    and B and the alpha only its A, as in SDL 3.
+  - `OGPU_COMP_PIXELART`, `OGPU_AFF_PIXELART`, `OGPU_TRI_PIXELART`:
+    `SDL_SCALEMODE_PIXELART`, sharp texel edges with one anti-aliased pixel
+    when enlarged.
+  - `OGPU_TRI_CLAMP_U`, `OGPU_TRI_CLAMP_V`: clamp one axis, repeat the other
+    (`SDL_SetRenderTextureAddressMode`).
+  - Palette textures: a SURFACE of `OGPU_FMT_INDEX8`, then `PALETTE`
+    (`ogpu_palette`) with 256 ARGB32 words. COMPOSITE, COMPOSITE_AFFINE and
+    TRIANGLES read it through the table each time, filters included. Drawn
+    into, an INDEX8 slot takes indexes as CLUT8 takes pens (FILL, COPY,
+    PIXELS of pens); the blending commands refuse it.
+  - `OGPU_FMT_RGBA32` and `OGPU_FMT_ABGR32`: R, G, B, A and A, B, G, R bytes
+    (`SDL_PIXELFORMAT_RGBA32` and `SDL_PIXELFORMAT_ABGR8888` on the Amiga).
+  - YUV: `OGPU_YUV_P010`, and `OGPU_YUV_BT709_FULL`, `OGPU_YUV_BT2020`,
+    `OGPU_YUV_BT2020_FULL`.
+  - TRIANGLES' SDL form also draws into XRGB32, BGRA32, RGBA32 and ABGR32,
+    and both forms read a slot texture in any format. `_ADD_PREMUL` keeps
+    the target's alpha, as SDL 3 does.
 - **SFD files** (`sfd/`) for opengpu.library, openrtg.library and
   Warp3D.library, for other compilers' stubs and pragmas.
 

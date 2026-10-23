@@ -348,6 +348,50 @@ int main(int argc, char **argv) {
         ogpu3d_rec_stats(rec, &st);
         CHECK(st.tex_uploads == 2, "the changed texture went up again (%lu uploads)", st.tex_uploads);
     }
+    {
+        /* v1.7's SDL form (SDL 3): the premultiplied blends, clamping one way and an
+         * INDEX8 texture with its PALETTE drawn by the shader as by the core, byte for
+         * byte; PIXELART and a 32-bit target other than ARGB32 left to the core */
+        static const unsigned long fl[8] = {
+            OGPU_TRI_BLEND_PREMUL | OGPU_TRI_BILINEAR, OGPU_TRI_BLEND_ADD_PREMUL, OGPU_TRI_BLEND_BLEND | OGPU_TRI_CLAMP_U,
+            OGPU_TRI_BLEND_PREMUL | OGPU_TRI_CLAMP_V | OGPU_TRI_BILINEAR, OGPU_TRI_PIXELART | OGPU_TRI_CLAMP,
+            OGPU_TRI_BLEND_BLEND | OGPU_TRI_BILINEAR, OGPU_TRI_BLEND_BLEND, OGPU_TRI_BLEND_PREMUL };
+        static ogpu_u8 sb[4096];
+        int k2;
+        unsigned long seed = 77;
+        for (k2 = 0; k2 < 8; k2++) {
+            struct OGPUBatch b;
+            unsigned long declined;
+            int i, tfmt = k2 == 6 ? OGPU_FMT_XRGB32 : k2 == 7 ? OGPU_FMT_RGB565 : OGPU_FMT_ARGB32, index8 = k2 == 5;
+            char name[64];
+            double X[6] = { 2, 60, 60, 2, 60, 2 }, Y[6] = { 3, 3, 58, 3, 58, 58 }, U[6] = { -0.5, 1.5, 1.5, -0.5, 1.5, -0.5 }, V[6] = { -0.5, -0.5, 1.5, -0.5, 1.5, 1.5 };
+            make_rec("gpu", 8 << 20, 8 << 20, 8 << 20);
+            fresh();
+            for (i = 0; i < 0x8000; i++) { seed = (seed * 1103515245UL + 12345UL) & 0xFFFFFFFFUL; vram_ref[i] = vram_gpu[i] = fast_ref[i] = fast_gpu[i] = (ogpu_u8)(seed >> 16); }
+            for (i = 0; i < 6; i++) {
+                ogpu_u8 *v[2] = { fast_ref + 0x6000 + i * 20, fast_gpu + 0x6000 + i * 20 };
+                unsigned long w[5];
+                int j, q;
+                w[0] = (unsigned long)(long)(X[i] * 65536) & 0xFFFFFFFFUL; w[1] = (unsigned long)(long)(Y[i] * 65536) & 0xFFFFFFFFUL;
+                w[2] = i & 1 ? 0xC0FF8040UL : 0xFF80C0FFUL;
+                w[3] = (unsigned long)(long)(U[i] * 65536) & 0xFFFFFFFFUL; w[4] = (unsigned long)(long)(V[i] * 65536) & 0xFFFFFFFFUL;
+                for (q = 0; q < 2; q++) for (j = 0; j < 5; j++) { v[q][j * 4] = (ogpu_u8)(w[j] >> 24); v[q][j * 4 + 1] = (ogpu_u8)(w[j] >> 16); v[q][j * 4 + 2] = (ogpu_u8)(w[j] >> 8); v[q][j * 4 + 3] = (ogpu_u8)w[j]; }
+            }
+            ogpu_batch_init(&b, sb, (long)sizeof sb / 4);
+            ogpu_surface(&b, 0, VBASE, 256, 64, 64, tfmt);
+            if (index8) { ogpu_surface(&b, 1, FBASE + 0x1000, 16, 16, 16, OGPU_FMT_INDEX8); ogpu_palette(&b, 1, FBASE + 0x3000); }
+            else ogpu_surface(&b, 1, FBASE + 0x1000, 64, 16, 16, OGPU_FMT_ARGB32);
+            ogpu_target(&b, 0);
+            ogpu_triangles(&b, FBASE + 0x6000, 6, 20, 0, 0, 1, 1, fl[k2]);
+            ogpu3d_rec_stats(rec, &st);
+            declined = st.declined;
+            sprintf(name, "v1.7 SDL form, case %d", k2);
+            both(sb, sb, b.words, name);
+            ogpu3d_rec_stats(rec, &st);
+            CHECK((st.declined > declined) == (k2 == 4 || k2 == 6), "%s: %s by the GPU path", name, st.declined > declined ? "declined" : "taken");
+        }
+        printf("ogpu3d emulated: stream v1.7's SDL form: as the core\n");
+    }
     if (failures) { printf("ogpu3d emulated: %d FAILED\n", failures); return 1; }
     printf("ogpu3d emulated: all tests passed\n");
     return 0;

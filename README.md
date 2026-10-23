@@ -177,6 +177,13 @@ only what is in memory) and does what the monitor driver does.
   operator or W3C blend mode and an A8 clip mask; BLUR for shadows; and
   the blend modes in `COMPOSITE_PD`. The rasteriser is OpenFont's
   `of_raster_a8`, moved here with even-odd added.
+- **opengpu.library 0.19 is ready for SDL 3** (stream v1.7): SDL 3's
+  premultiplied blend modes, its PIXELART scaling, clamping or repeating
+  each texture axis on its own, palette textures (INDEX8 with a `PALETTE`,
+  so palette cycling needs no upload), the RGBA32 and ABGR32 byte orders,
+  P010 video and the BT.709 full-range and BT.2020 colour spaces, and
+  `SDL_RenderGeometry` straight onto 32-bit OpenRTG screens. A driver gets
+  only the batches it draws right; the rest run on the 68k.
 
 ## Contributors
 

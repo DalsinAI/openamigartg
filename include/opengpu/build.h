@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * Building an OGPU stream v1.6 (stream.h) in memory. Link library code: the
+ * Building an OGPU stream v1.7 (stream.h) in memory. Link library code: the
  * calls write words into the caller's buffer and never call opengpu.library,
  * so building a batch costs no library calls; OGPU_Submit sends it.
  * A batch that runs out of room sets `overflow` and stops growing. */
@@ -95,5 +95,10 @@ void ogpu_gradient_stop(struct OGPUBatch *g, long offset, unsigned long argb);
  * its rectangle, the matrix (16.16) and an alpha. */
 void ogpu_image_paint(struct OGPUBatch *g, int slot, unsigned long flags, int sx, int sy, int sw, int sh,
                       const long m[6], int alpha);
+/* v1.7: an INDEX8 slot's palette, 256 ARGB32 words at table (0 forgets it).
+ * Ask OGPU_Query(OGPU_OP_PALETTE) first: a back end that answers it takes
+ * all of v1.7 (SDL 3's blend modes, PIXELART, clamping one way, the RGBA32
+ * and ABGR32 orders, P010 and the new YUV colour spaces). */
+void ogpu_palette(struct OGPUBatch *b, int slot, unsigned long table);
 
 #endif

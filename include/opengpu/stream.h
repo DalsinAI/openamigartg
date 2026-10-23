@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * OGPU stream v1.5: the bytes every OpenGPU back end receives (DESIGN.md
+ * OGPU stream v1.7: the bytes every OpenGPU back end receives (DESIGN.md
  * section 5). v1.1 added A8 coverage masks for anti-aliased text and clip
  * paths (OpenGfx): the A8 format, MASK, and COMPOSITE's MASK, ADD and IN
  * flags. v1.2 (8 October 2026) adds what SDL 2's renderer and Warp3D need:
@@ -29,6 +29,17 @@
  * (shadows), and the W3C blend modes (multiply to luminosity) as operators of
  * COMPOSITE_PD and of the paths. A back end that answers PATH_FILL in
  * OGPU_Query takes all of v1.6.
+ * v1.7 (23 October 2026) adds what SDL 3.4's renderer asks for beyond SDL 2:
+ * its premultiplied blend modes (BLEND_PREMUL, ADD_PREMUL) wherever v1.2's
+ * blend modes are taken; the PIXELART filter (SDL_SCALEMODE_PIXELART) for
+ * COMPOSITE, COMPOSITE_AFFINE and TRIANGLES; TRIANGLES' clamp or repeat on
+ * each axis (SDL_SetRenderTextureAddressMode); palette textures (INDEX8
+ * surfaces with a PALETTE, read as sources by COMPOSITE, COMPOSITE_AFFINE
+ * and TRIANGLES); the byte orders RGBA32 and ABGR32; and for YUV and
+ * YUV_SCALED the P010 layout and the BT.709 full range and BT.2020 colour
+ * spaces. A back end that answers PALETTE in OGPU_Query takes all of v1.7;
+ * one that doesn't refuses each of these as UNSUPPORTED, or, for an opcode
+ * it doesn't know, BADOP.
  *
  * A stream is 32-bit words, big-endian (the Amiga's order) wherever it is
  * read. Each command starts with a header word: the opcode in the top 16
@@ -50,7 +61,7 @@
 #define OPENGPU_STREAM_H
 
 #define OGPU_STREAM_VERSION 1
-#define OGPU_STREAM_MINOR   6
+#define OGPU_STREAM_MINOR   7
 
 #define OGPU_HDR(op, words)     (((unsigned long)(op) << 16) | ((unsigned long)(words) & 0xFFFFUL))
 #define OGPU_HDR_OP(w)          ((unsigned)((w) >> 16))
@@ -61,7 +72,9 @@
 #define OGPU_FMT_CLUT8          1   /* 1 byte: a pen */
 #define OGPU_FMT_RGB565         2   /* 2 bytes, high byte first */
 #define OGPU_FMT_ARGB32         3   /* 4 bytes: A, R, G, B */
-#define OGPU_FMT_INDEX8         4   /* PIXELS sources only: 1 byte, looked up in a 256-entry ARGB table */
+#define OGPU_FMT_INDEX8         4   /* 1 byte, looked up in a 256-entry ARGB32 table: PIXELS' table, or
+                                       from v1.7 a surface's PALETTE (drawn into, it takes indexes
+                                       as CLUT8 takes pens: PALETTE below) */
 #define OGPU_FMT_A8             5   /* v1.1: 1 byte: coverage (alpha) 0-255, no colour */
 /* v1.2: the screens of real cards and of a PiStorm's Picasso96, as targets
  * and sources; ACRTG needs only RGB565 and ARGB32. */
@@ -74,7 +87,13 @@
  * XRGB32 target copies the colour and forces the top byte to 0 (an XRGB32
  * source's X is cleared too). COPY, which moves raw pixels, keeps them. */
 #define OGPU_FMT_XRGB32         10  /* 4 bytes: X (0), R, G, B */
-#define OGPU_FMT_COUNT          11
+/* v1.7: the byte orders SDL 3 programs often pick (SDL_PIXELFORMAT_RGBA32,
+ * SDL_PIXELFORMAT_ABGR8888 on the Amiga), as sources and targets wherever
+ * ARGB32 is, so a streaming texture is drawn as it is, not converted on the
+ * 68k first. */
+#define OGPU_FMT_RGBA32         11  /* 4 bytes: R, G, B, A */
+#define OGPU_FMT_ABGR32         12  /* 4 bytes: A, B, G, R */
+#define OGPU_FMT_COUNT          13
 /* 16-18 (Z16, Z32, S8: depth and stencil) are stream3d.h's. */
 
 /* Draw modes, as graphics.library's (JAM1, JAM2, COMPLEMENT, INVERSVID). */
@@ -125,6 +144,8 @@
                                            (cap, join), miter limit, dash address,
                                            dash count, dash offset                      22 */
 #define OGPU_OP_BLUR            0x0027  /* v1.6: xy, wh, radii, work address, work bytes 6  */
+#define OGPU_OP_PALETTE         0x0028  /* v1.7: slot, table address (256 ARGB32 words):
+                                           an INDEX8 slot's colours; 0 forgets them      3  */
 /* 0x0030-0x003F: 3D (TRIANGLES, RENDER3D, TEXENV, TEXTURE, DEPTH, CLEAR3D):
  * include/opengpu/stream3d.h. */
 #define OGPU_OP_FENCE           0x00F0  /* id: reported when everything before is done   2  */
@@ -144,6 +165,9 @@
 #define OGPU_COMP_MASK          4   /* an A8 surface's coverage, read 1:1 against the destination rect */
 #define OGPU_COMP_ADD           8   /* dst + src * coverage, each channel saturating at 255 */
 #define OGPU_COMP_IN            16  /* dst * coverage: clips what is already there */
+/* v1.7: SDL 3's pixel-art scaling (SDL_SCALEMODE_PIXELART), instead of
+ * nearest or BILINEAR: see OGPU_AFF_PIXELART. */
+#define OGPU_COMP_PIXELART      32
 /* v1.2: one of the blend modes below, in bits 8-10, instead of OVER, ADD or IN. */
 #define OGPU_COMP_BLENDMODE     128
 #define OGPU_COMP_MODE(m)       ((unsigned long)(m) << 8)
@@ -160,6 +184,14 @@
 #define OGPU_BLEND_ADD          2   /* dstRGB = dstRGB + srcRGB * srcA, saturating; dstA kept */
 #define OGPU_BLEND_MOD          3   /* dstRGB = srcRGB * dstRGB; dstA kept */
 #define OGPU_BLEND_MUL          4   /* dstRGB = srcRGB * dstRGB + dstRGB * (1 - srcA), saturating; dstA kept */
+/* v1.7: SDL 3's premultiplied modes. The source's colour is taken as
+ * premultiplied: it is times the colour (and the mask) as in the modes
+ * above, but not times the alpha, which only scales what of the destination
+ * shows through (as SDL 3's software renderer and its GPU renderers do: an
+ * alpha modulation alone doesn't fade a premultiplied picture). */
+#define OGPU_BLEND_BLEND_PREMUL 5   /* dstRGBA = srcRGBA + dstRGBA * (1 - srcA), saturating */
+#define OGPU_BLEND_ADD_PREMUL   6   /* dstRGB = srcRGB + dstRGB, saturating; dstA kept */
+#define OGPU_BLEND_LAST         6   /* the highest a stream may carry (7 is UNSUPPORTED) */
 #define OGPU_BLEND_MASK         7
 
 /* v1.4: COMPOSITE_PD. Colours are premultiplied (ARGB32's R, G and B are
@@ -346,6 +378,23 @@
  * alike: premultiplied ARGB32); work bytes at least 2 x 4 x the larger of w
  * and h. */
 
+/* v1.7: PALETTE. SURFACE takes INDEX8 from v1.7. Drawn into, an INDEX8 slot
+ * takes indexes as a CLUT8 slot takes pens, and OGPU_Query answers for it
+ * as for CLUT8: FILL, INVERT, TEMPLATE, PATTERN and LINE write indexes,
+ * COPY moves them from another INDEX8 slot, and PIXELS takes pens (CLUT8)
+ * or indexes (INDEX8 with no table); a command that writes colours or
+ * blends (COMPOSITE, MASK, the _BLEND commands, COMPOSITE_PD, the paths,
+ * YUV, TRIANGLES, PIXELS of colours) says UNSUPPORTED. Its pixels are indexes into
+ * the slot's palette, 256 ARGB32 words at the table address (as PIXELS'
+ * table; colours not premultiplied, unless the blend mode says they are),
+ * read whenever the slot is drawn from, so a program that changes the table
+ * between batches (palette cycling) changes the picture with no upload.
+ * A SURFACE forgets the slot's palette; an INDEX8 slot read with none says
+ * UNSUPPORTED. COMPOSITE, COMPOSITE_AFFINE and TRIANGLES (as a texture slot)
+ * read it as the ARGB32 picture the table makes, filters included (bilinear
+ * mixes the colours, not the indexes); COPY moves its indexes to another
+ * INDEX8 slot. */
+
 /* v1.2: LINES_BLEND's flags, above its blend mode. */
 #define OGPU_LINES_STRIP        8   /* each point joins the next (else pairs: 0-1, 2-3, ...) */
 #define OGPU_LINES_LAST         16  /* draw each line's last point (else it is left out, so
@@ -362,6 +411,14 @@
  * OGPU_COMP_BILINEAR (16 here). */
 #define OGPU_AFF_SRCALPHA       8
 #define OGPU_AFF_BILINEAR       16
+/* v1.7: PIXELART, SDL 3's pixel-art scaling: each pixel's centre, at source
+ * position u (texels, centres at +0.5), is drawn from texels n and n + 1
+ * mixed by smoothstep(1 - b, 1, fract(t)), where t = u - b / 2, n = floor(t)
+ * and b is how many texels one target pixel spans that way (at most 1):
+ * sharp edges with one anti-aliased pixel at each texel's border when a
+ * picture is enlarged, like bilinear when it is shrunk. The same each way
+ * (v). BILINEAR and PIXELART together are UNSUPPORTED. */
+#define OGPU_AFF_PIXELART       32
 
 /* v1.2: YUV's format word: the layout in bits 0-7, the colour space in bits
  * 8-15. Planar layouts give the Y, U and V planes' addresses (YV12 is I420
@@ -377,9 +434,17 @@
 #define OGPU_YUV_YUY2           5
 #define OGPU_YUV_UYVY           6
 #define OGPU_YUV_YVYU           7
+/* v1.7: P010, NV12 with 16-bit samples (big-endian words, the value in the
+ * top 10 bits, as SDL_PIXELFORMAT_P010 on the Amiga): Y and the interleaved
+ * UV planes, each row's bytes per row at least twice NV12's. */
+#define OGPU_YUV_P010           8
 #define OGPU_YUV_BT601          0   /* video range, 16-235 */
-#define OGPU_YUV_BT709          1
-#define OGPU_YUV_JPEG           2   /* full range */
+#define OGPU_YUV_BT709          1   /* video range */
+#define OGPU_YUV_JPEG           2   /* full range (BT.601's colours) */
+/* v1.7: SDL 3's other YUV colour spaces. */
+#define OGPU_YUV_BT709_FULL     3   /* full range */
+#define OGPU_YUV_BT2020         4   /* video range */
+#define OGPU_YUV_BT2020_FULL    5   /* full range */
 #define OGPU_YUV_FORMAT(layout, space) ((unsigned long)(layout) | ((unsigned long)(space) << 8))
 
 #define OGPU_MAX_SLOTS          16

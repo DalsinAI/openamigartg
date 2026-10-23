@@ -25,6 +25,10 @@
 #include "../../include/opengpu/stream3d.h"
 
 #define OGPU3D_FOGTAB 1024              /* fog factors for w = 0 .. 1 */
+/* A slot texture's filter (min, mag) for SDL's PIXELART (v1.7). Warp3D's
+ * are 1-6 and TEXTURE keeps its filter word's low byte, so this is beyond
+ * any it can give: a v1.2 stream's filter 7 draws as it always did. */
+#define OGPU3D_PIXELART 0x100
 
 struct ogpu3d_tex {
     const ogpu_u8 *level[OGPU_TEX_LEVELS];  /* mapped; level[0] == 0: no texture */
@@ -89,6 +93,14 @@ struct o3_tri {
     int persp, bilinear, lfrac;         /* lfrac: blend with the next level, 0..255 */
     int level;                          /* L0's level of the texture (L1 is the next) */
     struct o3_level L0, L1;
+    /* v1.7, SDL's PIXELART: the texels a pixel spans each way (16.16, 256-65536)
+     * and 2^24 over them (stream.h's OGPU_AFF_PIXELART); and U and V ([0], [1])
+     * exactly, as 16.16 texels and a remainder over pden (the triangle's area):
+     * at column rx of the row drawn, and their steps across and down */
+    int pixelart;
+    unsigned int pbu, pru, pbv, prv;
+    int paq[2], pxq[2], pyq[2];
+    unsigned int par[2], pxr[2], pyr[2], pden;
 };
 
 /* TRIANGLES hands its work to a sink instead of drawing (struct ogpu3d's
