@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * Building OGPU stream v1 batches (include/opengpu/build.h). Words are
+ * Building OGPU stream v1 batches (and v1.6's paths and gradients) (include/opengpu/build.h). Words are
  * written byte by byte, high byte first, so a batch built on any CPU is the
  * same bytes. */
 #include "../../include/opengpu/build.h"
@@ -183,4 +183,94 @@ void ogpu_yuv_scaled(struct OGPUBatch *b, unsigned long y_address, unsigned long
     a[6] = OGPU_XY(w, h); a[7] = format; a[8] = OGPU_XY(sx, sy); a[9] = OGPU_XY(sw, sh);
     a[10] = OGPU_XY(x, y); a[11] = OGPU_XY(dw, dh);
     cmd(b, OGPU_OP_YUV_SCALED, 12, a);
+}
+
+/* v1.6: paths, gradients and blur. Each command and record is plain words,
+ * so cmd() writes them all; a path or a gradient record is written with
+ * cmd()'s words and no header. */
+static void words(struct OGPUBatch *b, int n, const unsigned long *w) {
+    int i;
+    if (b->overflow || b->words + n > b->cap) { b->overflow = 1; return; }
+    for (i = 0; i < n; i++) put(b->buf + (b->words + i) * 4, w[i]);
+    b->words += n;
+}
+
+static void path_args(unsigned long *a, unsigned long flags, unsigned long paint, int px, int py, int mask_slot, int mx, int my,
+                      unsigned long path, unsigned long path_words, const long m[6], unsigned long work, unsigned long work_bytes) {
+    int i;
+    a[0] = flags; a[1] = paint; a[2] = OGPU_XY(px, py); a[3] = (unsigned long)mask_slot; a[4] = OGPU_XY(mx, my);
+    a[5] = path; a[6] = path_words;
+    for (i = 0; i < 6; i++) a[7 + i] = (unsigned long)m[i] & 0xFFFFFFFFUL;
+    a[13] = work; a[14] = work_bytes;
+}
+
+void ogpu_path_fill(struct OGPUBatch *b, unsigned long flags, unsigned long paint, int px, int py,
+                    int mask_slot, int mx, int my, unsigned long path, unsigned long path_words, const long m[6],
+                    unsigned long work, unsigned long work_bytes) {
+    unsigned long a[15];
+    path_args(a, flags, paint, px, py, mask_slot, mx, my, path, path_words, m, work, work_bytes);
+    cmd(b, OGPU_OP_PATH_FILL, 15, a);
+}
+
+void ogpu_path_stroke(struct OGPUBatch *b, unsigned long flags, unsigned long paint, int px, int py,
+                      int mask_slot, int mx, int my, unsigned long path, unsigned long path_words, const long m[6],
+                      unsigned long work, unsigned long work_bytes, long width, unsigned long style, long miter,
+                      unsigned long dash, unsigned long dash_count, long dash_offset) {
+    unsigned long a[21];
+    path_args(a, flags, paint, px, py, mask_slot, mx, my, path, path_words, m, work, work_bytes);
+    a[15] = (unsigned long)width & 0xFFFFFFFFUL; a[16] = style; a[17] = (unsigned long)miter & 0xFFFFFFFFUL;
+    a[18] = dash; a[19] = dash_count; a[20] = (unsigned long)dash_offset & 0xFFFFFFFFUL;
+    cmd(b, OGPU_OP_PATH_STROKE, 21, a);
+}
+
+void ogpu_blur(struct OGPUBatch *b, int x, int y, int w, int h, int rx, int ry, unsigned long work,
+               unsigned long work_bytes) {
+    unsigned long a[5];
+    a[0] = OGPU_XY(x, y); a[1] = OGPU_XY(w, h); a[2] = OGPU_XY(rx, ry); a[3] = work; a[4] = work_bytes;
+    cmd(b, OGPU_OP_BLUR, 5, a);
+}
+
+static void path_el(struct OGPUBatch *p, int verb, int n, const long *xy) {
+    unsigned long w[7];
+    int i;
+    w[0] = (unsigned long)verb;
+    for (i = 0; i < 2 * n; i++) w[1 + i] = (unsigned long)xy[i] & 0xFFFFFFFFUL;
+    words(p, 1 + 2 * n, w);
+}
+void ogpu_path_move(struct OGPUBatch *p, long x, long y) { long v[2]; v[0] = x; v[1] = y; path_el(p, OGPU_PATH_MOVE, 1, v); }
+void ogpu_path_line(struct OGPUBatch *p, long x, long y) { long v[2]; v[0] = x; v[1] = y; path_el(p, OGPU_PATH_LINE, 1, v); }
+void ogpu_path_quad(struct OGPUBatch *p, long x1, long y1, long x, long y) {
+    long v[4];
+    v[0] = x1; v[1] = y1; v[2] = x; v[3] = y;
+    path_el(p, OGPU_PATH_QUAD, 2, v);
+}
+void ogpu_path_cubic(struct OGPUBatch *p, long x1, long y1, long x2, long y2, long x, long y) {
+    long v[6];
+    v[0] = x1; v[1] = y1; v[2] = x2; v[3] = y2; v[4] = x; v[5] = y;
+    path_el(p, OGPU_PATH_CUBIC, 3, v);
+}
+void ogpu_path_close(struct OGPUBatch *p) { path_el(p, OGPU_PATH_CLOSE, 0, 0); }
+
+void ogpu_gradient(struct OGPUBatch *g, int kind, int spread, int n, const long m[6], const long geometry[6]) {
+    unsigned long w[14];
+    int i;
+    w[0] = (unsigned long)kind | ((unsigned long)spread << 8); w[1] = (unsigned long)n;
+    for (i = 0; i < 6; i++) { w[2 + i] = (unsigned long)m[i] & 0xFFFFFFFFUL; w[8 + i] = (unsigned long)geometry[i] & 0xFFFFFFFFUL; }
+    words(g, 14, w);
+}
+
+void ogpu_gradient_stop(struct OGPUBatch *g, long offset, unsigned long argb) {
+    unsigned long w[2];
+    w[0] = (unsigned long)offset & 0xFFFFFFFFUL; w[1] = argb;
+    words(g, 2, w);
+}
+
+void ogpu_image_paint(struct OGPUBatch *g, int slot, unsigned long flags, int sx, int sy, int sw, int sh,
+                      const long m[6], int alpha) {
+    unsigned long w[OGPU_PATTERN_WORDS];
+    int i;
+    w[0] = (unsigned long)slot; w[1] = flags; w[2] = OGPU_XY(sx, sy); w[3] = OGPU_XY(sw, sh);
+    for (i = 0; i < 6; i++) w[4 + i] = (unsigned long)m[i] & 0xFFFFFFFFUL;
+    w[10] = (unsigned long)alpha & 255;
+    words(g, OGPU_PATTERN_WORDS, w);
 }

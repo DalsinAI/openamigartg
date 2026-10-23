@@ -170,6 +170,13 @@ only what is in memory) and does what the monitor driver does.
   video RAM keep the long-word copy). Stream v1.5 adds `YUV_SCALED`, a part
   of a YUV picture converted straight into a rect of any size (nearest),
   which SDL 2's renderer uses for video frames.
+- **opengpu.library 0.18 draws vectors** (stream v1.6): anti-aliased path
+  fills (non-zero and even-odd) and strokes (caps, joins, miter limit,
+  dashes), straight at device pixels; linear, radial and conic gradients
+  and pictures under a matrix as their paint, with any Porter-Duff
+  operator or W3C blend mode and an A8 clip mask; BLUR for shadows; and
+  the blend modes in `COMPOSITE_PD`. The rasteriser is OpenFont's
+  `of_raster_a8`, moved here with even-odd added.
 
 ## Contributors
 

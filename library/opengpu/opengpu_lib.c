@@ -28,6 +28,10 @@
  * expunge, unloads the ones no program has open, and nothing else does.
  * And the library keeps no writable globals: exec, dos.library and the
  * driver names are in its base, so it can run from ROM.
+ * 0.18: stream v1.6 on the CPU back end: anti-aliased paths (PATH_FILL,
+ * PATH_STROKE), gradients and patterns as their paint, BLUR, and the W3C
+ * blend modes as operators. A driver that doesn't take them leaves its
+ * batch to the CPU, as for any newer command.
  * Built bare by library/build.sh.
  */
 #include <exec/types.h>
@@ -56,7 +60,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 17
+#define LIB_REVISION 18
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -104,9 +108,9 @@ int start(void) { return -1; }
 const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.17 (22.10.2026) OpenGPU, AmigaChrome Team\r\n";
+static const char lib_id[] = "opengpu.library 0.18 (23.10.2026) OpenGPU, AmigaChrome Team\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.17 (22.10.2026) OpenGPU, AmigaChrome Team";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.18 (23.10.2026) OpenGPU, AmigaChrome Team";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";

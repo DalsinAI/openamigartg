@@ -318,6 +318,33 @@ The `glA...` forms (`glASwapBuffers()` and the rest) pass the program's
   asks the look first. From 0.8 OpenGfx patches every graphics.library drawing
   call (22); an RTG system provides them through `struct OGFXProviderAll`. The stream's commands are in `include/opengpu/stream.h`
   and `stream3d.h`; `build.h` and `build3d.h` write them.
+- **Vector drawing (stream v1.6, opengpu.library 0.18).** Ask
+  `OGPU_Query(OGPU_OP_PATH_FILL, format)` first; a back end that answers it
+  takes all of v1.6. `stream.h` describes each command's words; `build.h`
+  writes them:
+  - `PATH_FILL` (`ogpu_path_fill`): an anti-aliased path, non-zero or
+    `OGPU_PATH_EVENODD`, moves, lines, quadratic and cubic curves in 24.8
+    under a 16.16 matrix, drawn at the target's own pixels. Build the path
+    with `ogpu_path_move`, `_line`, `_quad`, `_cubic` and `_close` into an
+    `OGPUBatch` of its own.
+  - `PATH_STROKE` (`ogpu_path_stroke`): its stroke, with width, butt, round
+    or square caps, miter, round or bevel joins, a miter limit, and dashes
+    with an offset.
+  - Paint: a premultiplied colour, a slot (`OGPU_PATH_SLOT`, tiled with
+    `OGPU_PATH_REPEAT`), a gradient (`OGPU_PATH_GRADIENT`; linear, radial
+    with two circles, conic; pad, repeat, reflect; `ogpu_gradient` and
+    `ogpu_gradient_stop`) or a picture under a matrix (`OGPU_PATH_PATTERN`;
+    nearest or bilinear, none, pad, repeat or reflect edges, an alpha;
+    `ogpu_image_paint`): `drawImage` with a transform is a fill of the
+    image's rectangle.
+  - Operators: the 13 Porter-Duff ones and the W3C blend modes
+    (`OGPU_BLEND_MULTIPLY` to `OGPU_BLEND_LUMINOSITY`), here and in
+    `COMPOSITE_PD`. A clip is an A8 mask (`OGPU_PATH_MASK`); draw each
+    clip path into it with `OGPU_PD_IN` to intersect.
+  - `BLUR` (`ogpu_blur`): three box blurs each way, a Gaussian of radius / 2
+    (canvas `shadowBlur`, CSS `box-shadow`), on A8 or 32-bit pixels.
+  - The paths and the blur need work memory from the program (its address
+    and size in the command; `stream.h` says how much).
 - **SFD files** (`sfd/`) for opengpu.library, openrtg.library and
   Warp3D.library, for other compilers' stubs and pragmas.
 

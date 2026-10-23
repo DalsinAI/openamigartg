@@ -22,7 +22,10 @@
  * Stream v1.2's FILL_BLEND, COMPOSITE's blend modes (OGPU_COMP_BLENDMODE),
  * COMPOSITE_AFFINE and YUV are on the GPU path too; LINES_BLEND and
  * POINTS_BLEND stay on the core (one GPU thread walking them waits on every
- * pixel, as LINE does).
+ * pixel, as LINE does). Stream v1.4's COMPOSITE_PD and v1.6's PATH_FILL,
+ * PATH_STROKE and BLUR run on the core too: the GPU path doesn't take
+ * them (gpu_op), so the run waits for the GPU and hands them on, and
+ * ogpu_vk_supports answers as the core does.
  *
  * Routing (docs/design/Design-OpenGPU-2D-On-The-GPU.md 5.2, in amigachrome):
  * a command the GPU path takes is drawn there only where that is faster,
