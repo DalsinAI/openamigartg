@@ -68,6 +68,7 @@ struct ogpu_vk_config {
      * (cost, gpu or core) when it is set. Results are the same every way. */
     int route;
 };
+#define OGPU_VK_COST_KINDS 10       /* ogpu_vk_stats' core_scale */
 #define OGPU_VK_ROUTE_COST 0
 #define OGPU_VK_ROUTE_GPU  1
 #define OGPU_VK_ROUTE_CORE 2
@@ -122,6 +123,12 @@ struct ogpu_vk_stats {
     int shader3d;           /* 1: TRIANGLES can go to the 3D shader (it was set up) */
     double record_ms;       /* the CPU's time on TRIANGLES the GPU drew */
     double wait_ms;         /* time spent waiting for the GPU (every submit) */
+    /* Routing by cost: what each side's work has lately taken over what
+     * was reckoned for it (1: as reckoned; the reckoning is scaled by it),
+     * the core's by kind of work: fills, copies, templates and patterns,
+     * pixels, composites, composites from video RAM, blends, bilinear,
+     * YUV, lines */
+    double gpu_scale, core_scale[OGPU_VK_COST_KINDS];
 };
 void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s);
 

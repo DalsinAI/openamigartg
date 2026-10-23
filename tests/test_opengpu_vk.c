@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "../host/vulkan/ogpu_vk.h"
 #include "../include/opengpu/build.h"
 #include "../include/opengpu/stream3d.h"
@@ -672,6 +673,46 @@ static void test_list(void) {
  * is slower than the core's stretch. One routing everything to the core
  * never touches the GPU. Each in its own video RAM, against the reference
  * core started afresh. */
+static int scales_ok(const struct ogpu_vk_stats *s) {
+    int k, ok = s->gpu_scale >= 1.0 / 16 && s->gpu_scale <= 16;
+    for (k = 0; k < OGPU_VK_COST_KINDS; k++) ok = ok && s->core_scale[k] >= 1.0 / 16 && s->core_scale[k] <= 16;
+    return ok;
+}
+
+/* testsprite2's frame: 100 blended 32x32 sprites from video RAM onto a
+ * 320x200 screen, frame after frame, by cost. Drawn as the core draws them
+ * whichever way they go, and the scales stay within their bounds. Where
+ * the last frames went and the time are printed, not checked: they are the
+ * host's. */
+static void test_route_sprites(struct ogpu_vk *X) {
+    struct ogpu_vk_stats s0, s1;
+    unsigned long seed = 12345;
+    struct timespec a, b;
+    int frame, i, ok = 1;
+    noise_both(1, 0, (long)VSIZE);
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    for (frame = 0; frame < 120 && ok; frame++) {
+        if (frame == 100) ogpu_vk_stats(X, &s0);
+        begin();
+        ogpu_surface(&B, 0, VBASE + 0x10000, 320 * 4, 320, 200, OGPU_FMT_ARGB32);
+        ogpu_surface(&B, 1, VBASE + 0x60000, 32 * 4, 32, 32, OGPU_FMT_ARGB32);
+        ogpu_target(&B, 0);
+        ogpu_fill(&B, 0, 0, 320, 200, 0xFF000000UL);
+        for (i = 0; i < 100; i++) {
+            seed = seed * 1103515245UL + 12345UL;
+            ogpu_composite(&B, 1, 0, 0, 32, 32, (int)((seed >> 8) % 288), (int)((seed >> 20) % 168), 32, 32, 255, OGPU_COMP_SRCALPHA);
+        }
+        ok = run_both("routing: a frame of 100 blended sprites");
+    }
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    ogpu_vk_stats(X, &s1);
+    CHECK(scales_ok(&s1), "sprites: the scales stay within 1/16 and 16");
+    printf("opengpu vulkan: 120 frames of 100 blended sprites by cost in %.1f ms; last 20: %lu on the GPU, %lu on the core;"
+           " the GPU took %.2fx and the core %.2fx (composites from video RAM) what was reckoned\n",
+           ((double)(b.tv_sec - a.tv_sec) * 1e9 + (double)(b.tv_nsec - a.tv_nsec)) / 1e6,
+           s1.gpu - s0.gpu, s1.cpu - s0.cpu, s1.gpu_scale, s1.core_scale[5]);
+}
+
 static void test_route(int rounds) {
     struct ogpu_vk_config cfg;
     struct ogpu_vk *keep = V, *X;
@@ -698,11 +739,12 @@ static void test_route(int rounds) {
         vram_vk = ogpu_vk_vram(X);
         ogpu_core_init(&C);
         C.map = map_ref; C.fence = fence_ref; C.user = 0;
-        test_random(rounds);
-        ogpu_vk_stats(X, &s1);
-        if (route == OGPU_VK_ROUTE_CORE) CHECK(s1.gpu == 0 && s1.routed > 0, "routed to the core: %lu on the GPU", s1.gpu);
-        else {
-            /* a 1x1 fill alone, then a 400x300 bilinear stretch of 64x64 from Fast RAM */
+        if (route == OGPU_VK_ROUTE_COST) {
+            /* Afresh, by the reckoning alone: a 1x1 fill alone, then a
+             * 400x300 bilinear stretch of 64x64 from Fast RAM */
+            ogpu_vk_stats(X, &s1);
+            CHECK(s1.gpu_scale == 1 && s1.core_scale[0] == 1 && s1.core_scale[OGPU_VK_COST_KINDS - 1] == 1,
+                  "afresh, routing goes by the reckoning (scales %.2f, %.2f)", s1.gpu_scale, s1.core_scale[0]);
             noise_both(1, 0, (long)VSIZE);
             begin();
             ogpu_surface(&B, 0, VBASE + 0x10000, 400 * 4, 400, 300, OGPU_FMT_ARGB32);
@@ -717,8 +759,15 @@ static void test_route(int rounds) {
             run_both("routing: a 400x300 bilinear stretch");
             ogpu_vk_stats(X, &s1);
             if (s1.trip_us < 1500) CHECK(s1.gpu == s0.gpu + 1, "a 400x300 bilinear stretch went to the GPU (round trip %lu us)", s1.trip_us);
-            printf("opengpu vulkan: routing by cost, round trip %lu us; %lu commands on the GPU, %lu on the core, %lu of them by cost\n",
-                   s1.trip_us, s1.gpu, s1.cpu, s1.routed);
+            test_route_sprites(X);
+        }
+        test_random(rounds);
+        ogpu_vk_stats(X, &s1);
+        if (route == OGPU_VK_ROUTE_CORE) CHECK(s1.gpu == 0 && s1.routed > 0, "routed to the core: %lu on the GPU", s1.gpu);
+        else {
+            CHECK(scales_ok(&s1), "the scales stay within 1/16 and 16");
+            printf("opengpu vulkan: routing by cost, round trip %lu us; %lu commands on the GPU, %lu on the core, %lu of them by cost;"
+                   " the GPU took %.2fx what was reckoned\n", s1.trip_us, s1.gpu, s1.cpu, s1.routed, s1.gpu_scale);
         }
         ogpu_vk_destroy(X);
     }
