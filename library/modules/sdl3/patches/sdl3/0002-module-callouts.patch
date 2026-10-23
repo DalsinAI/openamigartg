@@ -1,0 +1,253 @@
+SDL 3.4.14 (Zlib): SDL's calls into the program from SDL3.module run with
+the program's A4 (src/SDL_os3callout.h). AmigaChrome Team, 2026.
+
+diff --git a/src/audio/SDL_audio.c b/src/audio/SDL_audio.c
+index 2f9f127..ef5692d 100644
+--- a/src/audio/SDL_audio.c
++++ b/src/audio/SDL_audio.c
+@@ -19,6 +19,7 @@
+   3. This notice may not be removed or altered from any source distribution.
+ */
+ #include "SDL_internal.h"
++#include "../SDL_os3callout.h"
+ 
+ #include "SDL_audio_c.h"
+ #include "SDL_sysaudio.h"
+@@ -1282,7 +1283,7 @@ bool SDL_PlaybackAudioThreadIterate(SDL_AudioDevice *device)
+ 
+                 if (postmix) {
+                     SDL_assert(mix_buffer == device->postmix_buffer);
+-                    postmix(logdev->postmix_userdata, &outspec, mix_buffer, work_buffer_size);
++                    SDL_OS3_CALL4V(postmix, logdev->postmix_userdata, &outspec, mix_buffer, work_buffer_size);
+                     MixFloat32Audio(final_mix_buffer, mix_buffer, work_buffer_size);
+                 }
+             }
+@@ -1397,7 +1398,7 @@ bool SDL_RecordingAudioThreadIterate(SDL_AudioDevice *device)
+                     br = frames * SDL_AUDIO_FRAMESIZE(outspec);
+                     ConvertAudio(frames, device->work_buffer, device->spec.format, outspec.channels, NULL, device->postmix_buffer, SDL_AUDIO_F32, outspec.channels, NULL, NULL, logdev->gain);
+                     if (logdev->postmix) {
+-                        logdev->postmix(logdev->postmix_userdata, &outspec, device->postmix_buffer, br);
++                        SDL_OS3_CALL4V(logdev->postmix, logdev->postmix_userdata, &outspec, device->postmix_buffer, br);
+                     }
+                 }
+ 
+diff --git a/src/audio/SDL_audiocvt.c b/src/audio/SDL_audiocvt.c
+index 1fc517e..34b9c81 100644
+--- a/src/audio/SDL_audiocvt.c
++++ b/src/audio/SDL_audiocvt.c
+@@ -19,6 +19,7 @@
+   3. This notice may not be removed or altered from any source distribution.
+ */
+ #include "SDL_internal.h"
++#include "../SDL_os3callout.h"
+ 
+ #include "SDL_sysaudio.h"
+ 
+@@ -818,7 +819,7 @@ static bool PutAudioStreamBufferInternal(SDL_AudioStream *stream, const SDL_Audi
+     if (retval) {
+         if (stream->put_callback) {
+             const int newavail = SDL_GetAudioStreamAvailable(stream) - prev_available;
+-            stream->put_callback(stream->put_callback_userdata, stream, newavail, newavail);
++            SDL_OS3_CALL4V(stream->put_callback, stream->put_callback_userdata, stream, newavail, newavail);
+         }
+     }
+ 
+@@ -1069,7 +1070,7 @@ bool SDL_PutAudioStreamDataNoCopy(SDL_AudioStream *stream, const void *buf, int
+ 
+     if (len == 0) {
+         if (callback) {
+-            callback(userdata, buf, len);
++            SDL_OS3_CALL3V(callback, userdata, buf, len);
+         }
+         return true; // nothing to do.
+     }
+@@ -1390,7 +1391,7 @@ int SDL_GetAudioStreamDataAdjustGain(SDL_AudioStream *stream, void *voidbuf, int
+ 
+         total_request *= SDL_AUDIO_FRAMESIZE(stream->src_spec);  // convert sample frames to bytes.
+         additional_request *= SDL_AUDIO_FRAMESIZE(stream->src_spec);  // convert sample frames to bytes.
+-        stream->get_callback(stream->get_callback_userdata, stream, (int) SDL_min(additional_request, SDL_INT_MAX), (int) SDL_min(total_request, SDL_INT_MAX));
++        SDL_OS3_CALL4V(stream->get_callback, stream->get_callback_userdata, stream, (int) SDL_min(additional_request, SDL_INT_MAX), (int) SDL_min(total_request, SDL_INT_MAX));
+     }
+ 
+     // Process the data in chunks to avoid allocating too much memory (and potential integer overflows)
+diff --git a/src/audio/SDL_audioqueue.c b/src/audio/SDL_audioqueue.c
+index b59e847..0482866 100644
+--- a/src/audio/SDL_audioqueue.c
++++ b/src/audio/SDL_audioqueue.c
+@@ -19,6 +19,7 @@
+   3. This notice may not be removed or altered from any source distribution.
+ */
+ #include "SDL_internal.h"
++#include "../SDL_os3callout.h"
+ 
+ #include "SDL_audioqueue.h"
+ #include "SDL_sysaudio.h"
+@@ -170,7 +171,7 @@ SDL_AudioQueue *SDL_CreateAudioQueue(size_t chunk_size)
+ 
+ static void DestroyAudioTrack(SDL_AudioQueue *queue, SDL_AudioTrack *track)
+ {
+-    track->callback(track->userdata, track->data, (int)track->capacity);
++    SDL_OS3_CALL3V(track->callback, track->userdata, track->data, (int)track->capacity);
+ 
+     FreeMemoryPoolBlock(&queue->track_pool, track);
+ }
+diff --git a/src/events/SDL_events.c b/src/events/SDL_events.c
+index a8ac576..d0fb853 100644
+--- a/src/events/SDL_events.c
++++ b/src/events/SDL_events.c
+@@ -19,6 +19,7 @@
+   3. This notice may not be removed or altered from any source distribution.
+ */
+ #include "SDL_internal.h"
++#include "../SDL_os3callout.h"
+ 
+ // General event handling code for SDL
+ 
+@@ -1388,7 +1389,7 @@ static void SDL_RunMainThreadCallbacks(void)
+     while (entry) {
+         SDL_MainThreadCallbackEntry *next = entry->next;
+ 
+-        entry->callback(entry->userdata);
++        SDL_OS3_CALL1V(entry->callback, entry->userdata);
+ 
+         if (entry->semaphore) {
+             // Let the waiting thread know this is done
+@@ -1406,7 +1407,7 @@ bool SDL_RunOnMainThread(SDL_MainThreadCallback callback, void *userdata, bool w
+ {
+     if (SDL_IsMainThread() || !SDL_WasInit(SDL_INIT_EVENTS)) {
+         // No need to queue the callback
+-        callback(userdata);
++        SDL_OS3_CALL1V(callback, userdata);
+         return true;
+     }
+ 
+diff --git a/src/events/SDL_eventwatch.c b/src/events/SDL_eventwatch.c
+index 5d0ff35..d09246a 100644
+--- a/src/events/SDL_eventwatch.c
++++ b/src/events/SDL_eventwatch.c
+@@ -19,6 +19,7 @@
+   3. This notice may not be removed or altered from any source distribution.
+ */
+ #include "SDL_internal.h"
++#include "../SDL_os3callout.h"
+ 
+ #include "SDL_eventwatch_c.h"
+ 
+@@ -61,7 +62,7 @@ bool SDL_DispatchEventWatchList(SDL_EventWatchList *list, SDL_Event *event)
+         // Make sure we only dispatch the current watcher list
+         int i, count = list->count;
+ 
+-        if (filter->callback && !filter->callback(filter->userdata, event)) {
++        if (filter->callback && !SDL_OS3_CALL2(bool, filter->callback, filter->userdata, event)) {
+             SDL_UnlockMutex(list->lock);
+             return false;
+         }
+@@ -69,7 +70,7 @@ bool SDL_DispatchEventWatchList(SDL_EventWatchList *list, SDL_Event *event)
+         list->dispatching = true;
+         for (i = 0; i < count; ++i) {
+             if (!list->watchers[i].removed) {
+-                list->watchers[i].callback(list->watchers[i].userdata, event);
++                SDL_OS3_CALL2(bool, list->watchers[i].callback, list->watchers[i].userdata, event);
+             }
+         }
+         list->dispatching = false;
+diff --git a/src/main/SDL_main_callbacks.c b/src/main/SDL_main_callbacks.c
+index 757baef..0a639a2 100644
+--- a/src/main/SDL_main_callbacks.c
++++ b/src/main/SDL_main_callbacks.c
+@@ -20,6 +20,7 @@
+ */
+ 
+ #include "SDL_internal.h"
++#include "../SDL_os3callout.h"
+ #include "SDL_main_callbacks.h"
+ 
+ static SDL_AppEvent_func SDL_main_event_callback;
+@@ -47,7 +48,7 @@ static bool ShouldDispatchImmediately(SDL_Event *event)
+ static void SDL_DispatchMainCallbackEvent(SDL_Event *event)
+ {
+     if (SDL_GetAtomicInt(&apprc) == SDL_APP_CONTINUE) { // if already quitting, don't send the event to the app.
+-        SDL_CompareAndSwapAtomicInt(&apprc, SDL_APP_CONTINUE, SDL_main_event_callback(SDL_main_appstate, event));
++        SDL_CompareAndSwapAtomicInt(&apprc, SDL_APP_CONTINUE, SDL_OS3_CALL2(SDL_AppResult, SDL_main_event_callback, SDL_main_appstate, event));
+     }
+ }
+ 
+@@ -101,7 +102,7 @@ SDL_AppResult SDL_InitMainCallbacks(int argc, char *argv[], SDL_AppInit_func app
+     SDL_main_quit_callback = appquit;
+     SDL_SetAtomicInt(&apprc, SDL_APP_CONTINUE);
+ 
+-    const SDL_AppResult rc = appinit(&SDL_main_appstate, argc, argv);
++    const SDL_AppResult rc = SDL_OS3_CALL3(SDL_AppResult, appinit, &SDL_main_appstate, argc, argv);
+     if (SDL_CompareAndSwapAtomicInt(&apprc, SDL_APP_CONTINUE, rc) && (rc == SDL_APP_CONTINUE)) { // bounce if SDL_AppInit already said abort, otherwise...
+         // make sure we definitely have events initialized, even if the app didn't do it.
+         if (!SDL_InitSubSystem(SDL_INIT_EVENTS)) {
+@@ -127,7 +128,7 @@ SDL_AppResult SDL_IterateMainCallbacks(bool pump_events)
+ 
+     SDL_AppResult rc = (SDL_AppResult)SDL_GetAtomicInt(&apprc);
+     if (rc == SDL_APP_CONTINUE) {
+-        rc = SDL_main_iteration_callback(SDL_main_appstate);
++        rc = SDL_OS3_CALL1(SDL_AppResult, SDL_main_iteration_callback, SDL_main_appstate);
+         if (!SDL_CompareAndSwapAtomicInt(&apprc, SDL_APP_CONTINUE, rc)) {
+             rc = (SDL_AppResult)SDL_GetAtomicInt(&apprc); // something else already set a quit result, keep that.
+         }
+@@ -138,7 +139,7 @@ SDL_AppResult SDL_IterateMainCallbacks(bool pump_events)
+ void SDL_QuitMainCallbacks(SDL_AppResult result)
+ {
+     SDL_RemoveEventWatch(SDL_MainCallbackEventWatcher, NULL);
+-    SDL_main_quit_callback(SDL_main_appstate, result);
++    SDL_OS3_CALL2V(SDL_main_quit_callback, SDL_main_appstate, result);
+     SDL_main_appstate = NULL;  // just in case.
+ 
+     // for symmetry, you should explicitly Quit what you Init, but we might come through here uninitialized and SDL_Quit() will clear everything anyhow.
+@@ -161,5 +162,5 @@ int SDL_CallMainFunction(int argc, char *argv[], SDL_main_func mainFunction)
+ {
+     SDL_CheckDefaultArgcArgv(&argc, &argv);
+     SDL_SetMainReady();
+-    return mainFunction(argc, argv);
++    return SDL_OS3_CALL2(int, mainFunction, argc, argv);
+ }
+diff --git a/src/thread/SDL_thread.c b/src/thread/SDL_thread.c
+index 639090c..84bad2c 100644
+--- a/src/thread/SDL_thread.c
++++ b/src/thread/SDL_thread.c
+@@ -19,6 +19,7 @@
+   3. This notice may not be removed or altered from any source distribution.
+ */
+ #include "SDL_internal.h"
++#include "../SDL_os3callout.h"
+ 
+ // System independent thread management routines for SDL
+ 
+@@ -336,7 +337,7 @@ void SDL_RunThread(SDL_Thread *thread)
+     SDL_SYS_SetupThread(thread->name);
+ 
+     // Run the function
+-    *statusloc = userfunc(userdata);
++    *statusloc = SDL_OS3_CALL1(int, userfunc, userdata);
+ 
+     // Clean up thread-local storage
+     SDL_CleanupTLS();
+diff --git a/src/timer/SDL_timer.c b/src/timer/SDL_timer.c
+index 5fc4573..ee145df 100644
+--- a/src/timer/SDL_timer.c
++++ b/src/timer/SDL_timer.c
+@@ -19,6 +19,7 @@
+   3. This notice may not be removed or altered from any source distribution.
+ */
+ #include "SDL_internal.h"
++#include "../SDL_os3callout.h"
+ 
+ #include "SDL_timer_c.h"
+ #include "../thread/SDL_systhread.h"
+@@ -163,8 +164,10 @@ static int SDLCALL SDL_TimerThread(void *_data)
+                 interval = 0;
+             } else {
+                 if (current->callback_ms) {
+-                    interval = SDL_MS_TO_NS(current->callback_ms(current->userdata, current->timerID, (Uint32)SDL_NS_TO_MS(current->interval)));
++                    interval = SDL_MS_TO_NS(SDL_OS3_CALL3(Uint32, current->callback_ms, current->userdata, current->timerID, (Uint32)SDL_NS_TO_MS(current->interval)));
+                 } else {
++                    // A Uint64 in and out: no callout for it; the program's
++                    // A4 isn't set (SDL_os3callout.h).
+                     interval = current->callback_ns(current->userdata, current->timerID, current->interval);
+                 }
+             }

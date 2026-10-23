@@ -174,3 +174,13 @@ void ogpu_yuv(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr,
     a[6] = OGPU_XY(w, h); a[7] = OGPU_XY(x, y); a[8] = format;
     cmd(b, OGPU_OP_YUV, 9, a);
 }
+
+void ogpu_yuv_scaled(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr, unsigned long u_address,
+                     unsigned long u_bpr, unsigned long v_address, unsigned long v_bpr, int w, int h,
+                     unsigned long format, int sx, int sy, int sw, int sh, int x, int y, int dw, int dh) {
+    unsigned long a[12];
+    a[0] = y_address; a[1] = y_bpr; a[2] = u_address; a[3] = u_bpr; a[4] = v_address; a[5] = v_bpr;
+    a[6] = OGPU_XY(w, h); a[7] = format; a[8] = OGPU_XY(sx, sy); a[9] = OGPU_XY(sw, sh);
+    a[10] = OGPU_XY(x, y); a[11] = OGPU_XY(dw, dh);
+    cmd(b, OGPU_OP_YUV_SCALED, 12, a);
+}

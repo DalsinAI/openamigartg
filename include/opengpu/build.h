@@ -58,5 +58,9 @@ void ogpu_composite_pd(struct OGPUBatch *b, unsigned long op_flags, unsigned lon
                        unsigned long mask, int mx, int my, int x, int y, int w, int h);
 void ogpu_yuv(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr, unsigned long u_address, unsigned long u_bpr,
               unsigned long v_address, unsigned long v_bpr, int w, int h, int x, int y, unsigned long format);
+/* v1.5: the part sx, sy, sw, sh of a w x h YUV picture into x, y, dw, dh. */
+void ogpu_yuv_scaled(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr, unsigned long u_address,
+                     unsigned long u_bpr, unsigned long v_address, unsigned long v_bpr, int w, int h,
+                     unsigned long format, int sx, int sy, int sw, int sh, int x, int y, int dw, int dh);
 
 #endif

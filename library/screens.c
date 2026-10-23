@@ -47,12 +47,14 @@
 #include <devices/inputevent.h>
 #include <exec/interrupts.h>
 #include <exec/io.h>
+#include "../include/oa_protos_begin.h"   /* the protos' unused varargs wrappers dropped */
 #include <proto/exec.h>
 #include <proto/graphics.h>
 #include <proto/intuition.h>
 #include <proto/utility.h>
 #include <proto/opengpu.h>
 #include <proto/dos.h>
+#include "../include/oa_protos_end.h"
 #include <dos/dosextens.h>
 #include <opengpu/build.h>
 #include <opengpu/virgl.h>
@@ -407,7 +409,7 @@ static ULONG vram_need(ULONG w, ULONG h, ULONG bpp)
     return (64 /* ORTG_HEAD */ + ((w * bpp + 63) & ~63UL) * h + 63) & ~63UL;
 }
 
-/* 0.19.1: the video RAM the largest screen this board can open takes: each
+/* 0.19.2: the video RAM the largest screen this board can open takes: each
  * mode it shows, and for Native modes its largest picture at 32 bits. */
 static ULONG largest_screen(int monitor)
 {
@@ -425,7 +427,7 @@ static ULONG largest_screen(int monitor)
 
 /* 0.19: friends asked for as displayable (BMF_DISPLAYABLE) may take at most
  * half of a board's video RAM between them, so screens opened later still
- * find room. 0.19.1: and never so much that the board's largest screen
+ * find room. 0.19.2: and never so much that the board's largest screen
  * wouldn't fit beside them (on a 16 MiB board half was less than a
  * 1920x1200 32-bit screen leaves). 1 when a w x h one of bpp bytes a pixel
  * fits under that. */
@@ -1873,7 +1875,7 @@ static const struct ortg_mode *mode_of(ULONG id, int *monitor)
 static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, ULONG depth), REG(d3, ULONG flags), REG(a0, struct BitMap *friend), REG(a6, struct GfxBase *g))
 {
     struct BitMap *fr = friend;
-    /* 0.19.1: with tags, BMATags_Displayable and BMATags_Clear say so, the
+    /* 0.19.2: with tags, BMATags_Displayable and BMATags_Clear say so, the
      * flags only giving their defaults */
     ULONG displayable = (flags & BMF_DISPLAYABLE) != 0, clear = (flags & BMF_CLEAR) != 0;
     if (BITMAPFLAGS_ARE_EXTENDED(flags)) {
@@ -1940,7 +1942,7 @@ static ULONG bmattr_patch(REG(a0, struct BitMap *bm), REG(d1, ULONG a), REG(a6, 
         case BMA_HEIGHT: return o->height;
         case BMA_DEPTH: return o->bpp == 4 ? 24 : o->bpp == 2 ? 16 : 8;
         case BMA_WIDTH: return o->stride / o->bpp;
-        /* not standard: no planar planes. 0.19.1: displayable when in a
+        /* not standard: no planar planes. 0.19.2: displayable when in a
          * board's video RAM, a screen's own bitmap or a displayable friend,
          * as GetBitMapAttr says of a bitmap that can be shown */
         case BMA_FLAGS: return o->monitor ? BMF_DISPLAYABLE : 0;

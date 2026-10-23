@@ -164,7 +164,13 @@ only what is in memory) and does what the monitor driver does.
 - **opengpu.library 0.16 looks for a driver in the ROM first**: a resident
   named `ACRTG.gpu` (amigachrome-guest `libraries/acrtg.gpu`,
   `build.sh module`) is opened by name, before `LIBS:OpenGPU/`.
+- **opengpu.library 0.17 copies Fast RAM with MOVE16** on a 68040 or 68060:
+  a COPY whose rows line up on 16 bytes, between memory lists marked Fast
+  between 16 MB and 256 MB (motherboard and accelerator RAM; Zorro RAM and
+  video RAM keep the long-word copy). Stream v1.5 adds `YUV_SCALED`, a part
+  of a YUV picture converted straight into a rect of any size (nearest),
+  which SDL 2's renderer uses for video frames.
 
 ## Contributors
 
-OpenRTG is created and maintained by [SacredTrees](https://github.com/SacredTrees) with the AmigaChrome agent team, copyright AmigaChrome Team. Everyone whose work it includes is credited in [`CONTRIBUTORS.md`](CONTRIBUTORS.md).
+OpenRTG is created and maintained by [SacredTrees](https://github.com/SacredTrees) with The AmigaChrome Team, copyright AmigaChrome Team. Everyone whose work it includes is credited in [`CONTRIBUTORS.md`](CONTRIBUTORS.md).

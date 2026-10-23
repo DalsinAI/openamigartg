@@ -1,0 +1,268 @@
+    glDisableClientState(GL_COLOR_ARRAY);
+    glDisableClientState(GL_VERTEX_ARRAY);
+}
+
+static const char *ot_scene_name(int scene);
+
+static const UBYTE *ot_glyph(char ch)
+{
+    static const UBYTE A[7]={14,17,17,31,17,17,17};
+    static const UBYTE B[7]={30,17,17,30,17,17,30};
+    static const UBYTE C[7]={14,17,16,16,16,17,14};
+    static const UBYTE D[7]={30,17,17,17,17,17,30};
+    static const UBYTE E[7]={31,16,16,30,16,16,31};
+    static const UBYTE F[7]={31,16,16,30,16,16,16};
+    static const UBYTE G[7]={14,17,16,23,17,17,14};
+    static const UBYTE H[7]={17,17,17,31,17,17,17};
+    static const UBYTE I[7]={31,4,4,4,4,4,31};
+    static const UBYTE J[7]={7,2,2,2,18,18,12};
+    static const UBYTE K[7]={17,18,20,24,20,18,17};
+    static const UBYTE L[7]={16,16,16,16,16,16,31};
+    static const UBYTE M[7]={17,27,21,21,17,17,17};
+    static const UBYTE N[7]={17,25,21,19,17,17,17};
+    static const UBYTE O[7]={14,17,17,17,17,17,14};
+    static const UBYTE P[7]={30,17,17,30,16,16,16};
+    static const UBYTE Q[7]={14,17,17,17,21,18,13};
+    static const UBYTE R[7]={30,17,17,30,20,18,17};
+    static const UBYTE S[7]={15,16,16,14,1,1,30};
+    static const UBYTE T[7]={31,4,4,4,4,4,4};
+    static const UBYTE U[7]={17,17,17,17,17,17,14};
+    static const UBYTE V[7]={17,17,17,17,17,10,4};
+    static const UBYTE W[7]={17,17,17,21,21,21,10};
+    static const UBYTE X[7]={17,17,10,4,10,17,17};
+    static const UBYTE Y[7]={17,17,10,4,4,4,4};
+    static const UBYTE Z[7]={31,1,2,4,8,16,31};
+    static const UBYTE ZERO[7]={14,17,19,21,25,17,14};
+    static const UBYTE ONE[7]={4,12,4,4,4,4,14};
+    static const UBYTE TWO[7]={14,17,1,2,4,8,31};
+    static const UBYTE THREE[7]={30,1,1,14,1,1,30};
+    static const UBYTE FOUR[7]={2,6,10,18,31,2,2};
+    static const UBYTE FIVE[7]={31,16,16,30,1,1,30};
+    static const UBYTE SIX[7]={14,16,16,30,17,17,14};
+    static const UBYTE SEVEN[7]={31,1,2,4,8,8,8};
+    static const UBYTE EIGHT[7]={14,17,17,14,17,17,14};
+    static const UBYTE NINE[7]={14,17,17,15,1,1,14};
+    static const UBYTE SLASH[7]={1,2,2,4,8,8,16};
+    static const UBYTE DOT[7]={0,0,0,0,0,12,12};
+    static const UBYTE DASH[7]={0,0,0,31,0,0,0};
+    static const UBYTE COLON[7]={0,12,12,0,12,12,0};
+    switch (ch) {
+    case 'A': return A; case 'B': return B; case 'C': return C;
+    case 'D': return D; case 'E': return E; case 'F': return F;
+    case 'G': return G; case 'H': return H; case 'I': return I;
+    case 'J': return J; case 'K': return K; case 'L': return L;
+    case 'M': return M; case 'N': return N; case 'O': return O;
+    case 'P': return P; case 'Q': return Q; case 'R': return R;
+    case 'S': return S; case 'T': return T; case 'U': return U;
+    case 'V': return V; case 'W': return W; case 'X': return X;
+    case 'Y': return Y; case 'Z': return Z;
+    case '0': return ZERO; case '1': return ONE; case '2': return TWO;
+    case '3': return THREE; case '4': return FOUR; case '5': return FIVE;
+    case '6': return SIX; case '7': return SEVEN; case '8': return EIGHT;
+    case '9': return NINE; case '/': return SLASH; case '.': return DOT;
+    case '-': return DASH; case ':': return COLON;
+    default: return NULL;
+    }
+}
+
+static float ot_text_width(const char *s, float scale)
+{
+    return (float)strlen(s) * 6.0f * scale;
+}
+
+static void ot_draw_text(float x, float y, float scale, const char *text,
+                         float r, float g, float b, float a)
+{
+    const char *p;
+    glColor4f(r, g, b, a);
+    glBegin(GL_QUADS);
+    for (p = text; *p; p++, x += 6.0f * scale) {
+        const UBYTE *rows = ot_glyph(*p);
+        int yy, xx;
+        if (!rows) continue;
+        for (yy = 0; yy < 7; yy++) {
+            for (xx = 0; xx < 5; xx++) {
+                if (rows[yy] & (1U << (4 - xx))) {
+                    float x0 = x + xx * scale;
+                    float y0 = y + yy * scale;
+                    float x1 = x0 + scale * 0.82f;
+                    float y1 = y0 + scale * 0.82f;
+                    glVertex2f(x0, y0); glVertex2f(x1, y0);
+                    glVertex2f(x1, y1); glVertex2f(x0, y1);
+                }
+            }
+        }
+    }
+    glEnd();
+}
+
+static void ot_overlay_begin(const struct Demo *d)
+{
+    glDisable(GL_DEPTH_TEST);
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(0.0, (double)d->width, (double)d->height, 0.0, -1.0, 1.0);
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+
+static void ot_overlay_end(void)
+{
+    glDisable(GL_BLEND);
+    glMatrixMode(GL_MODELVIEW);
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+    glEnable(GL_DEPTH_TEST);
+}
+
+static void ot_draw_title(struct Demo *d, float local)
+{
+    const char *title = "OPENTENSOR";
+    const char *sub = "FIRST LIGHT";
+    const char *quote = "AND THUS THE FIRST TENSOR WAS BORN";
+    float pulse = 0.72f + 0.28f * ot_sin(local * 3.0f);
+    float s1 = d->width / 180.0f;
+    float s2 = d->width / 300.0f;
+    float s3 = d->width / 520.0f;
+    ot_overlay_begin(d);
+    ot_draw_text((d->width - ot_text_width(title, s1)) * 0.5f, d->height * 0.28f,
+                 s1, title, 0.85f * pulse, 0.92f * pulse, 1.0f, 1.0f);
+    ot_draw_text((d->width - ot_text_width(sub, s2)) * 0.5f, d->height * 0.48f,
+                 s2, sub, 0.95f, 0.18f, 0.12f, 0.95f);
+    if (local > 3.0f)
+        ot_draw_text((d->width - ot_text_width(quote, s3)) * 0.5f, d->height * 0.70f,
+                     s3, quote, 0.72f, 0.78f, 0.88f, OT_MIN(1.0f, (local - 3.0f) * 0.5f));
+    ot_overlay_end();
+}
+
+static void ot_draw_stats(struct Demo *d)
+{
+    char line[96];
+    float scale = OT_MAX(0.8f, d->width / 760.0f);
+    float w = 430.0f * scale;
+    ot_overlay_begin(d);
+    glColor4f(0.02f, 0.03f, 0.05f, 0.74f);
+    glBegin(GL_QUADS);
+    glVertex2f(12, 12); glVertex2f(w, 12);
+    glVertex2f(w, 132 * scale); glVertex2f(12, 132 * scale);
+    glEnd();
+    ot_draw_text(20, 22, scale, "MESA / AHI / OPENRTG", 0.72f, 0.86f, 1.0f, 1.0f);
+    sprintf(line, "SCENE %s", ot_scene_name(d->current_scene));
+    ot_draw_text(20, 44 * scale, scale, line, 0.92f, 0.92f, 0.88f, 1.0f);
+    sprintf(line, "FPS %d  AHI UNDERRUNS %lu", (int)(d->fps + 0.5f),
+            (unsigned long)d->audio.underruns);
+    ot_draw_text(20, 66 * scale, scale, line, 0.95f, 0.58f, 0.32f, 1.0f);
+    sprintf(line, "%s / %s", d->driver_name,
+            d->breakout_active || d->windowed ? "COMPAT PRESENT" : "DIRECT PRESENT");
+    ot_draw_text(20, 88 * scale, scale, line, 0.66f, 0.80f, 0.98f, 1.0f);
+    ot_draw_text(20, 110 * scale, scale,
+                 d->breakout_active || d->windowed ? "WINDOW PIXEL PATH ACTIVE" : "SCREEN OWNED GPU PATH",
+                 0.58f, 0.70f, 0.86f, 1.0f);
+    ot_overlay_end();
+}
+
+static void ot_set_perspective(struct Demo *d)
+{
+    double aspect = (double)d->width / (double)d->height;
+    glViewport(0, 0, d->width, d->height);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glFrustum(-0.75 * aspect, 0.75 * aspect, -0.75, 0.75, 1.0, 120.0);
+    glMatrixMode(GL_MODELVIEW);
+}
+
+static void ot_scene_intro(struct Demo *d, float t)
+{
+    glLoadIdentity();
+    glRotatef(t * 1.4f, 0.0f, 0.0f, 1.0f);
+    glPointSize(1.0f + t * 0.12f);
+    ot_draw_mesh(&d->stars);
+    if (t > 4.0f) {
+        ot_overlay_begin(d);
+        ot_draw_text((d->width - ot_text_width("THE NOISE WAS WITHOUT FORM", d->width / 480.0f)) * 0.5f,
+                     d->height * 0.78f, d->width / 480.0f,
+                     "THE NOISE WAS WITHOUT FORM", 0.58f, 0.68f, 0.84f,
+                     OT_MIN(1.0f, (t - 4.0f) * 0.4f));
+        ot_overlay_end();
+    }
+}
+
+static void ot_scene_field(struct Demo *d, float t)
+{
+    float lift = 0.15f * ot_sin(t * 0.8f);
+    glLoadIdentity();
+    glRotatef(11.0f + 2.0f * ot_sin(t * 0.3f), 1, 0, 0);
+    glTranslatef(0.0f, -0.5f + lift, -5.5f);
+    ot_draw_mesh(&d->ground);
+    glPushMatrix();
+    glTranslatef(0.0f, 2.5f, -10.0f);
+    glPointSize(1.6f);
+    ot_draw_mesh(&d->stars);
+    glPopMatrix();
+}
+
+static void ot_scene_boing(struct Demo *d, float t)
+{
+    float phase = t * 1.45f;
+    float bounce = ot_absf(ot_sin(phase)) * 5.5f;
+    ot_scene_field(d, t + 5.0f);
+    glPushMatrix();
+    glTranslatef(0.0f, -0.7f + bounce, -13.0f);
+    glRotatef(t * 95.0f, 0.7f, 1.0f, 0.2f);
+    glScalef(2.2f, 2.2f, 2.2f);
+    ot_draw_mesh(&d->ball);
+    glPopMatrix();
+
+    if (bounce < 0.8f) {
+        int ring, seg;
+        float a = 1.0f - bounce / 0.8f;
+        glDisable(GL_DEPTH_TEST);
+        glColor4f(0.8f, 0.88f, 1.0f, a);
+        glBegin(GL_LINES);
+        for (ring = 0; ring < 4; ring++) {
+            float radius = 1.0f + ring * 1.4f + (float)(t - (int)t) * 1.8f;
+            for (seg = 0; seg < 48; seg++) {
+                float p0 = seg * OT_TAU / 48.0f;
+                float p1 = (seg + 1) * OT_TAU / 48.0f;
+                glVertex3f(radius * ot_cos(p0), -2.32f, -13.0f + radius * ot_sin(p0));
+                glVertex3f(radius * ot_cos(p1), -2.32f, -13.0f + radius * ot_sin(p1));
+            }
+        }
+        glEnd();
+        glEnable(GL_DEPTH_TEST);
+    }
+}
+
+static void ot_scene_tensor(struct Demo *d, float t)
+{
+    glLoadIdentity();
+    glRotatef(t * 12.0f, 0, 0, 1);
+    glTranslatef(0.0f, 0.0f, 1.5f + (float)((int)(t * 4.0f) % 8));
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glLineWidth(1.0f);
+    ot_draw_mesh(&d->tunnel);
+    glPointSize(2.0f + ot_absf(ot_sin(t * 2.0f)) * 2.0f);
+    glRotatef(-t * 18.0f, 0.2f, 0.8f, 1.0f);
+    ot_draw_mesh(&d->stars);
+    glDisable(GL_BLEND);
+}
+
+static void ot_scene_final(struct Demo *d, float t)
+{
+    glLoadIdentity();
+    glTranslatef(0.0f, 0.0f, -10.0f);
+    glRotatef(t * 22.0f, 0.3f, 1.0f, 0.1f);
+    glScalef(2.8f, 2.8f, 2.8f);
+    ot_draw_mesh(&d->ball);
+    glLoadIdentity();
+    glPointSize(1.5f);
+    ot_draw_mesh(&d->stars);
+    ot_draw_title(d, t);
+}

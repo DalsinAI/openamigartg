@@ -112,6 +112,37 @@ static void ws_dt_unmap(struct sw_winsys *ws, struct sw_displaytarget *d)
     (void)ws; (void)d;
 }
 
+/* Present hooks with a virgl companion (gla_present_set_virgl): a few, each
+ * registered once by the code that owns the present function. */
+#define GLA_VIRGL_HOOKS 4
+static struct {
+    void (*present)(void *user, const struct gla_frame *frame);
+    gla_present_virgl_fn virgl;
+} gla_virgl_hooks[GLA_VIRGL_HOOKS];
+
+void gla_present_set_virgl(void (*present)(void *user, const struct gla_frame *frame), gla_present_virgl_fn virgl)
+{
+    int i, free_slot = -1;
+    if (!present) return;
+    for (i = 0; i < GLA_VIRGL_HOOKS; i++) {
+        if (gla_virgl_hooks[i].present == present) { gla_virgl_hooks[i].virgl = virgl; return; }
+        if (!gla_virgl_hooks[i].present && free_slot < 0) free_slot = i;
+    }
+    if (free_slot >= 0) {
+        gla_virgl_hooks[free_slot].present = present;
+        gla_virgl_hooks[free_slot].virgl = virgl;
+    }
+}
+
+gla_present_virgl_fn gla_present_virgl_of(const struct gla_present *p)
+{
+    int i;
+    if (!p || !p->present) return NULL;
+    for (i = 0; i < GLA_VIRGL_HOOKS; i++)
+        if (gla_virgl_hooks[i].present == p->present) return gla_virgl_hooks[i].virgl;
+    return NULL;
+}
+
 /* softpipe's flush_frontbuffer lands here; `priv` is the buffer's hook. */
 static void ws_dt_display(struct sw_winsys *ws, struct sw_displaytarget *d, void *priv,
                           unsigned nboxes, struct pipe_box *box)
