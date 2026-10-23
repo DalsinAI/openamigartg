@@ -1,0 +1,54 @@
+SDL 3.4.14 (Zlib): SDL's spinlock on AmigaOS 3.x with Forbid(), and its
+atomic exchange through it, as libnix has no libatomic. AmigaChrome Team, 2026.
+
+diff --git a/src/atomic/SDL_atomic.c b/src/atomic/SDL_atomic.c
+index f14bd10..a4b15e8 100644
+--- a/src/atomic/SDL_atomic.c
++++ b/src/atomic/SDL_atomic.c
+@@ -46,6 +46,13 @@
+ #endif
+ #endif
+ 
++// AmigaOS 3.x on the 68k (AmigaChrome Team, 2026): GCC makes
++// __atomic_exchange_n a call to libatomic, which libnix doesn't have; the
++// exchange goes through SDL's spinlock (Forbid()) instead.
++#ifdef SDL_PLATFORM_AMIGAOS3
++#undef HAVE_ATOMIC_EXCHANGE_N
++#endif
++
+ /*
+   If any of the operations are not provided then we must emulate some
+   of them. That means we need a nice implementation of spin locks
+diff --git a/src/atomic/SDL_spinlock.c b/src/atomic/SDL_spinlock.c
+index c048866..c3b37a3 100644
+--- a/src/atomic/SDL_spinlock.c
++++ b/src/atomic/SDL_spinlock.c
+@@ -44,10 +44,27 @@
+ #include <libkern/OSAtomic.h>
+ #endif
+ 
++#ifdef SDL_PLATFORM_AMIGAOS3
++#include <proto/exec.h>
++#endif
++
+ // This function is where all the magic happens...
+ bool SDL_TryLockSpinlock(SDL_SpinLock *lock)
+ {
+-#if defined(HAVE_GCC_ATOMICS) || defined(HAVE_GCC_SYNC_LOCK_TEST_AND_SET)
++#if defined(SDL_PLATFORM_AMIGAOS3)
++    // AmigaOS 3.x (AmigaChrome Team, 2026): one CPU, and no read-modify-write
++    // cycles in Chip RAM, so the test and the set are made atomic with
++    // Forbid(), which stops other tasks for a few instructions.
++    bool result;
++    Forbid();
++    result = (*lock == 0);
++    if (result) {
++        *lock = 1;
++    }
++    Permit();
++    return result;
++
++#elif defined(HAVE_GCC_ATOMICS) || defined(HAVE_GCC_SYNC_LOCK_TEST_AND_SET)
+     return __sync_lock_test_and_set(lock, 1) == 0;
+ 
+ #elif defined(_MSC_VER) && (defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC))

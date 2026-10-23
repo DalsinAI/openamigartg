@@ -1,0 +1,45 @@
+SDL3_68k's AmigaOS 3.x threads (Zlib): a thread SDL3.module starts begins
+with the A4 of the program's copy of SDL (src/SDL_os3callout.h).
+AmigaChrome Team, 2026.
+
+diff --git a/src/thread/amigaos3/SDL_systhread.c b/src/thread/amigaos3/SDL_systhread.c
+index 33d4132..1a3df53 100644
+--- a/src/thread/amigaos3/SDL_systhread.c
++++ b/src/thread/amigaos3/SDL_systhread.c
+@@ -8,6 +8,7 @@
+ #include <SDL3/SDL_thread.h>
+ #include "../SDL_thread_c.h"
+ #include "../SDL_systhread.h"
++#include "../../SDL_os3callout.h"
+ 
+ #include <proto/exec.h>
+ #include <proto/dos.h>
+@@ -24,7 +25,10 @@ typedef struct OS3_ThreadData {
+     BYTE join_signal;
+ } OS3_ThreadData;
+ 
+-static void OS3_ThreadEntry(void)
++/* In SDL3.module (built -fbaserel32) the new process starts with the A4 of
++   the program's copy of SDL, which the parent puts in its tc_TrapData
++   (SDL_os3callout.h): OS3_ThreadEntry sets it and runs OS3_ThreadMain. */
++static void OS3_ThreadMain(void)
+ {
+     struct Task *me = FindTask(NULL);
+     OS3_ThreadData *td = (OS3_ThreadData *)me->tc_UserData;
+@@ -49,6 +53,8 @@ static void OS3_ThreadEntry(void)
+     }
+ }
+ 
++static OGPU_MODULE_THREAD_ENTRY(OS3_ThreadEntry, OS3_ThreadMain)
++
+ bool SDL_SYS_CreateThread(SDL_Thread *thread,
+                           SDL_FunctionPointer pfnBeginThread,
+                           SDL_FunctionPointer pfnEndThread)
+@@ -96,6 +102,7 @@ bool SDL_SYS_CreateThread(SDL_Thread *thread,
+ 
+     td->task = &proc->pr_Task;
+     proc->pr_Task.tc_UserData = td;
++    ogpu_module_thread_a4(&proc->pr_Task);
+ 
+     thread->handle = td;
+     thread->threadid = (SDL_ThreadID)(Uint32)&proc->pr_Task;
