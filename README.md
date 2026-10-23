@@ -183,7 +183,7 @@ only what is in memory) and does what the monitor driver does.
   so palette cycling needs no upload), the RGBA32 and ABGR32 byte orders,
   P010 video and the BT.709 full-range and BT.2020 colour spaces, and
   `SDL_RenderGeometry` straight onto 32-bit OpenRTG screens. A driver gets
-  only the variants it takes.
+  only the batches it draws right; the rest run on the 68k.
 
 ## Contributors
 

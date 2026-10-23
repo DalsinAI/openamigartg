@@ -716,12 +716,21 @@ uses the host's driver through Vulkan:
   palette textures, an INDEX8 slot read through its `PALETTE` (palette
   cycling with no upload); the RGBA32 and ABGR32 byte orders; P010 and the
   BT.709 full-range and BT.2020 YUV spaces; and TRIANGLES' SDL form into
-  XRGB32 (a 32-bit OpenRTG screen), BGRA32, RGBA32 and ABGR32 targets. A
-  back end that answers `PALETTE` takes all of v1.7; opengpu.library 0.19
-  sends a driver only the variants it takes. `tests/test_sdl3.c` checks
-  each; the Vulkan back end runs them on its core, except TRIANGLES with the
+  XRGB32 (a 32-bit OpenRTG screen), BGRA32, RGBA32 and ABGR32 targets, its
+  slot textures read in every format. PIXELART's coordinates are exact
+  across a wide picture: COMPOSITE steps its pixel centres with a
+  remainder, and TRIANGLES keeps U and V as 16.16 with remainders over the
+  triangle's area, because PIXELART's steep edges show a truncated step's
+  drift (up to 68 of 255 across a 1600-pixel row before). A back end that
+  answers `PALETTE` takes all of v1.7. opengpu.library 0.19 sends a driver
+  a batch only when the driver takes each command's variant, SURFACE in
+  each slot's format (as the driver answers for SURFACE), and, before v1.7,
+  TRIANGLES' target and slot texture formats it drew in and read right
+  (`library/opengpu/ogpu_variant.h`). `tests/test_sdl3.c` checks each; the
+  Vulkan back end runs them on its core, except TRIANGLES with the
   premultiplied blends, clamping one way and palette textures, which its 3D
-  shader draws as the core does (`tests/test_ogpu3d_emul.c`).
+  shader draws as the core does (`tests/test_ogpu3d_emul.c`; ADD_PREMUL
+  keeps the target's alpha through the colour mask).
 - **TRIANGLES on the GPU** (17 October 2026): a second compute shader,
   `host/vulkan/ogpu3d.comp`, colours the pixels of the triangles
   `ogpu_3d.c` has set up, in `ogpu_3d.c`'s own integer steps, so the GPU's

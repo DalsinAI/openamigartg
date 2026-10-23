@@ -5,18 +5,21 @@
  * 3D rasteriser's SDL form, against references written here:
  *   - SDL 3's premultiplied blend modes, from SDL_blendmode.h's formulas,
  *     with the core's rounding (each product rounded, the sum saturating):
- *     exact;
+ *     exact, TRIANGLES too, with a vertex colour and into every 32-bit order;
  *   - PIXELART, from SDL's GPU renderers' GetPixelArtUV() in doubles: within
- *     2 a channel;
+ *     3 a channel (the weights' rounding) on small pictures, and within 2
+ *     across a 2000-pixel row made 5 to 20 times wider, so no drift;
  *   - TRIANGLES' clamping one way: the texel nearest each pixel centre;
  *   - PALETTE: an INDEX8 slot draws exactly as the ARGB32 picture its table
- *     makes, in every command, filter and blend that reads it;
+ *     makes, in every command, filter and blend that reads it, and the
+ *     table is read when the slot is drawn from;
  *   - RGBA32 and ABGR32 (and BGRA32 and XRGB32 as TRIANGLES targets): the
- *     same pixels as ARGB32, in their own byte order;
+ *     same pixels as ARGB32, in their own byte order; TRIANGLES reads the
+ *     16-bit PC and 555 orders as their ARGB32 copies;
  *   - P010: exactly NV12's pixels from its samples' top bytes, rounded; the
  *     new YUV colour spaces from their matrices in doubles: within 2;
- *   - OGPU_Query's answers, and opengpu.library's variant check
- *     (ogpu_variant.h). */
+ *   - OGPU_Query's answers, and opengpu.library's batch check
+ *     (ogpu_variant.h) for a v1.6 driver and a v1.7 one. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -204,19 +207,46 @@ static void test_formats(void) {
     ogpu_target(&B, 2);
     ogpu_pixels(&B, TA, 32, OGPU_FMT_ABGR32, 0, 0, 0, 8, 1);
     check(run() == OGPU_OK && !memcmp(arena + SA, arena + TB, 32), "PIXELS: ARGB32 to ABGR32 and back");
-    /* TRIANGLES: the 3D form doesn't take them; nor a texture the sampler can't read */
+    /* TRIANGLES: the 3D form doesn't take them as targets */
     begin();
     ogpu_surface(&B, 0, TA, 128, 32, 32, OGPU_FMT_XRGB32);
     ogpu_target(&B, 0);
     quad(0, 0, 8, 8, 0, 0, 1, 1, 0xFFFFFFFFUL);
     ogpu_triangles3d(&B, VTX, 6, 20, 0, 0, 1, OGPU_TRI_NOTEX, 0, OGPU_LAY_LIST);
     check(run() == OGPU_ERR_UNSUPPORTED, "TRIANGLES' 3D form into XRGB32: UNSUPPORTED");
-    begin();
-    ogpu_surface(&B, 0, TA, 128, 32, 32, OGPU_FMT_ARGB32);
-    ogpu_surface(&B, 1, SA, 32, 16, 16, OGPU_FMT_RGB565PC);
-    ogpu_target(&B, 0);
-    ogpu_triangles(&B, VTX, 6, 20, 0, 0, 1, 1, 0);
-    check(run() == OGPU_ERR_UNSUPPORTED, "TRIANGLES with an RGB565PC texture: UNSUPPORTED, not misread");
+    /* TRIANGLES reads the 16-bit PC and 555 orders as the 2D commands do:
+     * the same picture as its ARGB32 copy (made by PIXELS). The 3D form's
+     * slot textures go through the same reader. */
+    {
+        static const int f16[3] = { OGPU_FMT_RGB565PC, OGPU_FMT_RGB555, OGPU_FMT_RGB555PC };
+        static ogpu_u8 want[16 * 16 * 4];
+        int kk, form, pass;
+        for (kk = 0; kk < 3; kk++)
+            for (form = 0; form < 1; form++) {
+                int r1, r2;
+                for (i = 0; i < 16 * 16 * 2; i++) arena[SB + (unsigned long)i] = (ogpu_u8)rnd8();
+                begin();                                    /* the ARGB32 copy */
+                ogpu_surface(&B, 0, SA, 64, 16, 16, OGPU_FMT_ARGB32);
+                ogpu_target(&B, 0);
+                ogpu_pixels(&B, SB, 32, f16[kk], 0, 0, 0, 16, 16);
+                r1 = run();
+                quad(0, 0, 16, 16, 0, 0, 1, 1, 0xFFFFFFFFUL);
+                for (pass = 0; pass < 2; pass++) {
+                    memset(arena + TA, 0, 16 * 16 * 4);
+                    begin();
+                    ogpu_surface(&B, 0, TA, 64, 16, 16, OGPU_FMT_ARGB32);
+                    ogpu_surface(&B, 1, pass ? SB : SA, pass ? 32 : 64, 16, 16, pass ? f16[kk] : OGPU_FMT_ARGB32);
+                    ogpu_target(&B, 0);
+                    if (form) ogpu_triangles3d(&B, VTX, 6, 20, 0, 0, 1, 1, 0, OGPU_LAY_LIST);
+                    else ogpu_triangles(&B, VTX, 6, 20, 0, 0, 1, 1, 0);
+                    r2 = run();
+                    if (!pass) memcpy(want, arena + TA, sizeof want);
+                }
+                sprintf(what, "TRIANGLES from format %d: its ARGB32 copy's picture", f16[kk]);
+                check(r1 == OGPU_OK && r2 == OGPU_OK && !memcmp(want, arena + TA, sizeof want)
+                      && memcmp(want, want + 4 * 17, 4) && memcmp(want, want + 4 * 100, 4), what);
+            }
+    }
 }
 
 /* ---- SDL 3's premultiplied blend modes ----------------------------------------------- */
@@ -261,7 +291,7 @@ static void test_premul(void) {
             case 4: ogpu_composite_masked(&B, 1, 0, 0, 16, 16, 0, 0, 16, 16, 255,
                                           OGPU_COMP_SRCALPHA | OGPU_COMP_MASK | OGPU_COMP_BLENDMODE | OGPU_COMP_MODE(mode), 2, 0, 0); break;
             case 5: ogpu_composite_affine(&B, 1, 0, 0, 16, 16, id, 0xC0FF8040UL, OGPU_AFF_SRCALPHA | (unsigned long)mode); break;
-            case 6: quad(0, 0, 16, 16, 0, 0, 1, 1, 0xFFFFFFFFUL);
+            case 6: quad(0, 0, 16, 16, 0, 0, 1, 1, 0xC0FF8040UL);    /* a vertex colour: each channel times the texel's */
                     ogpu_triangles(&B, VTX, 6, 20, 0, 0, 1, 1, mode == OGPU_BLEND_BLEND_PREMUL ? OGPU_TRI_BLEND_PREMUL : OGPU_TRI_BLEND_ADD_PREMUL); break;
             }
             r = run();
@@ -279,17 +309,11 @@ static void test_premul(void) {
                 case 4: { unsigned m = arena[MK + i]; sa = mul255(mul255(s.a, 255), m);
                           s.r = mul255(s.r, m); s.g = mul255(s.g, m); s.b = mul255(s.b, m); } break;
                 case 5: sa = mul255(s.a, 0xC0); s.g = mul255(s.g, 0x80); s.b = mul255(s.b, 0x40); break;
-                case 6: sa = s.a; break;
+                case 6: s.g = mul255(s.g, 0x80); s.b = mul255(s.b, 0x40); s.a = mul255(s.a, 0xC0); sa = s.a; break;
                 }
                 (void)x;
                 if (!hit) want = d;
-                else if (op == 6) {
-                    /* the 3D rasteriser's terms: every channel through ONE and the destination's factor */
-                    if (mode == OGPU_BLEND_BLEND_PREMUL) {
-                        want.r = sat(s.r + mul255(d.r, 255 - sa)); want.g = sat(s.g + mul255(d.g, 255 - sa));
-                        want.b = sat(s.b + mul255(d.b, 255 - sa)); want.a = sat(s.a + mul255(d.a, 255 - sa));
-                    } else { want.r = sat(s.r + d.r); want.g = sat(s.g + d.g); want.b = sat(s.b + d.b); want.a = sat(s.a + d.a); }
-                } else want = ref_premul(mode, d, s, sa);
+                else want = ref_premul(mode, d, s, sa);     /* TRIANGLES too: ADD_PREMUL keeps the target's alpha */
                 if (!same_px(got, want, 0, 1)) {
                     if (!bad) printf("  op %d mode %d at %d: got %u %u %u %u, want %u %u %u %u\n", op, mode, i,
                                      got.a, got.r, got.g, got.b, want.a, want.r, want.g, want.b);
@@ -299,6 +323,38 @@ static void test_premul(void) {
             sprintf(what, "premultiplied blend %d, command %d: SDL 3's formula (%d off, error %d)", mode, op, bad, r);
             check(r == OGPU_OK && !bad, what);
         }
+    }
+    /* TRIANGLES into the other 32-bit orders: the same formula in their own
+     * bytes (ADD_PREMUL keeps each order's alpha byte; XRGB32 has none) */
+    {
+        static const int fmts[4] = { OGPU_FMT_BGRA32, OGPU_FMT_RGBA32, OGPU_FMT_ABGR32, OGPU_FMT_XRGB32 };
+        int k;
+        for (mode = OGPU_BLEND_BLEND_PREMUL; mode <= OGPU_BLEND_ADD_PREMUL; mode++)
+            for (k = 0; k < 4; k++) {
+                static ogpu_u8 before[16 * 16 * 4];
+                int r;
+                picture(TB, 16, 16, fmts[k], 0);
+                picture(SA, 16, 16, OGPU_FMT_ARGB32, 0);
+                memcpy(before, arena + TB, sizeof before);
+                quad(0, 0, 16, 16, 0, 0, 1, 1, 0xC0FF8040UL);
+                begin();
+                ogpu_surface(&B, 0, TB, 64, 16, 16, fmts[k]);
+                ogpu_surface(&B, 1, SA, 64, 16, 16, OGPU_FMT_ARGB32);
+                ogpu_target(&B, 0);
+                ogpu_triangles(&B, VTX, 6, 20, 0, 0, 1, 1, mode == OGPU_BLEND_BLEND_PREMUL ? OGPU_TRI_BLEND_PREMUL : OGPU_TRI_BLEND_ADD_PREMUL);
+                r = run();
+                bad = 0;
+                for (i = 0; i < 256; i++) {
+                    struct px d = of_fmt(fmts[k], before + i * 4), s = argb_at(SA + (unsigned long)i * 4), want, got;
+                    got = of_fmt(fmts[k], arena + TB + (unsigned long)i * 4);
+                    s.g = mul255(s.g, 0x80); s.b = mul255(s.b, 0x40); s.a = mul255(s.a, 0xC0);
+                    want = ref_premul(mode, d, s, s.a);
+                    if (fmts[k] == OGPU_FMT_XRGB32) want.a = 255;
+                    if (!same_px(got, want, 0, 1) || (fmts[k] == OGPU_FMT_XRGB32 && arena[TB + (unsigned long)i * 4])) bad++;
+                }
+                sprintf(what, "TRIANGLES premultiplied blend %d into format %d: SDL 3's formula in its bytes (%d off)", mode, fmts[k], bad);
+                check(r == OGPU_OK && !bad, what);
+            }
     }
     /* 7 is no blend mode */
     for (op = 0; op < 6; op++) {
@@ -376,20 +432,20 @@ static void test_pixelart(void) {
                 ref_pixelart(SA, 8, 8, u, v, bu, bv, o);
                 for (c = 1; c < 4; c++) { int d = abs((int)p[c] - (int)floor(o[c] + 0.5)); if (d > e) e = d; }
                 if (e > worst) worst = e;
-                if (e > 3) bad++;
+                if (e > 3) bad++;                      /* the weights' rounding, 1/256ths twice */
                 /* inside a texel, at whole magnifications: that texel exactly */
                 if (k < 2) {
                     double tx = u - 0.5 * bu, ty = v - 0.5 * bv;
                     if (tx - floor(tx) <= 1 - bu - 0.01 && ty - floor(ty) <= 1 - bv - 0.01 && tx >= 0 && ty >= 0) {
                         const ogpu_u8 *q = arena + SA + ((unsigned long)floor(ty) * 8 + (unsigned long)floor(tx)) * 4;
                         inner++;
-                        if (abs(p[1] - q[1]) <= 1 && abs(p[2] - q[2]) <= 1 && abs(p[3] - q[3]) <= 1) exact++;   /* 16.16's 1/3 */
+                        if (p[1] == q[1] && p[2] == q[2] && p[3] == q[3]) exact++;
                     }
                 }
             }
         sprintf(what, "COMPOSITE PIXELART %dx%d: SDL's GetPixelArtUV within 3 (worst %d, %d off)", dw[k], dh[k], worst, bad);
         check(!bad, what);
-        if (k < 2) { sprintf(what, "COMPOSITE PIXELART x%d: inside each texel, the texel within 1 (%d of %d)", dw[k] / 8, exact, inner); check(exact == inner && inner > 0, what); }
+        if (k < 2) { sprintf(what, "COMPOSITE PIXELART x%d: inside each texel, exactly the texel (%d of %d)", dw[k] / 8, exact, inner); check(exact == inner && inner > 0, what); }
     }
     /* COMPOSITE_AFFINE: rotated and enlarged; the box from the inverse matrix */
     picture(SA, 8, 8, OGPU_FMT_ARGB32, 0);
@@ -435,22 +491,12 @@ static void test_pixelart(void) {
         bad = worst = 0;
         for (y = 0; y < 24; y++)
             for (x = 0; x < 24; x++) {
-                /* the rasteriser's coordinates are 24.8 and step by 24.8 amounts across a
-                 * row, so they drift by up to 1/32 texel: the pixel must lie within 2 of
-                 * the reference anywhere that close (where a texel's edge meets the
-                 * smoothstep, the drift moves the weight) */
+                /* PIXELART's coordinates are exact (16.16, steps with remainders) */
                 const ogpu_u8 *p = arena + TA + ((unsigned long)y * 64 + x) * 4;
-                double lo[4] = { 999, 999, 999, 999 }, hi[4] = { -999, -999, -999, -999 }, o[4];
-                int cc, e = 0, du, dv;
-                for (du = -1; du <= 1; du++)
-                    for (dv = -1; dv <= 1; dv++) {
-                        ref_pixelart(SA, 8, 8, (x + 0.5) / 3 + du / 32.0, (y + 0.5) / 3 + dv / 32.0, 85.0 / 256, 85.0 / 256, o);
-                        for (cc = 0; cc < 4; cc++) { if (o[cc] < lo[cc]) lo[cc] = o[cc]; if (o[cc] > hi[cc]) hi[cc] = o[cc]; }
-                    }
-                for (cc = 0; cc < 4; cc++) {
-                    int dd = p[cc] < lo[cc] ? (int)ceil(lo[cc] - p[cc]) : p[cc] > hi[cc] ? (int)ceil(p[cc] - hi[cc]) : 0;
-                    if (dd > e) e = dd;
-                }
+                double o[4];
+                int cc, e = 0;
+                ref_pixelart(SA, 8, 8, (x + 0.5) / 3, (y + 0.5) / 3, 1.0 / 3, 1.0 / 3, o);
+                for (cc = 0; cc < 4; cc++) { int dd = abs((int)p[cc] - (int)floor(o[cc] + 0.5)); if (dd > e) e = dd; }
                 if (e > worst) worst = e;
                 if (e > 2) bad++;
             }
@@ -470,6 +516,48 @@ static void test_pixelart(void) {
         sprintf(what, "PIXELART with BILINEAR (command %d): UNSUPPORTED", k);
         check(run() == OGPU_ERR_UNSUPPORTED, what);
     }
+}
+
+/* PIXELART at real sizes: a picture made 5 to 20 times wider across a
+ * screen, with the left part clipped away; its steep edges show any drift
+ * in the coordinates. COMPOSITE steps its centres exactly; TRIANGLES in
+ * 16.16. Two rows at the same height: one way only. */
+#define WT 0x100000UL         /* a 2000 x 2 target */
+#define WS 0x110000UL         /* the source, up to 400 x 2 */
+static int wide_worst(int tri, int sw, int dw, int clip, int tw) {
+    int x, y, worst = 0, c;
+    picture(WS, sw, 2, OGPU_FMT_ARGB32, 1);
+    memset(arena + WT, 0, 2000 * 2 * 4);
+    begin();
+    ogpu_surface(&B, 0, WT, 8000, (unsigned)tw, 2, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 1, WS, (unsigned long)sw * 4, (unsigned)sw, 2, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    if (tri) {
+        quad(-clip, 0, dw - clip, 2, 0, 0, 1, 1, 0xFFFFFFFFUL);
+        ogpu_triangles(&B, VTX, 6, 20, 0, 0, 1, 1, OGPU_TRI_PIXELART | OGPU_TRI_CLAMP);
+    } else ogpu_composite(&B, 1, 0, 0, (unsigned)sw, 2, -clip, 0, (unsigned)dw, 2, 255, OGPU_COMP_PIXELART);
+    if (run() != OGPU_OK) return 999;
+    for (y = 0; y < 2; y++)
+        for (x = 0; x < tw && x < dw - clip; x++) {
+            double o[4], bu = (double)sw / dw;
+            const ogpu_u8 *p = arena + WT + ((unsigned long)y * 2000 + x) * 4;
+            ref_pixelart(WS, sw, 2, (x + clip + 0.5) * bu, y + 0.5, bu, 1, o);
+            for (c = 1; c < 4; c++) { int d = abs((int)p[c] - (int)floor(o[c] + 0.5)); if (d > worst) worst = d; }
+        }
+    return worst;
+}
+
+static void test_pixelart_wide(void) {
+    static const int sw[5] = { 320, 100, 333, 80, 400 }, dw[5] = { 1920, 1900, 1777, 1600, 1999 }, clip[5] = { 0, 0, 0, 600, 1 };
+    int k, tri, w;
+    char what[120];
+    for (tri = 0; tri < 2; tri++)
+        for (k = 0; k < 5; k++) {
+            w = wide_worst(tri, sw[k], dw[k], clip[k], 2000 - (clip[k] ? 700 : 0));
+            sprintf(what, "%s PIXELART %d to %d texels wide (%d clipped): within 2 (worst %d)", tri ? "TRIANGLES" : "COMPOSITE", sw[k], dw[k], clip[k], w);
+            printf("  %s\n", what);
+            check(w <= 2, what);
+        }
 }
 
 /* ---- TRIANGLES: clamping one way ----------------------------------------------------- */
@@ -546,20 +634,29 @@ static void test_palette(void) {
         sprintf(what, "PALETTE, case %d: an INDEX8 slot draws as its ARGB32 picture (%d %d)", op, r1, r2);
         check(r1 == OGPU_OK && r2 == OGPU_OK && !bad, what);
     }
-    /* cycling: the table changed between batches, no SURFACE again needed */
+    /* cycling: the table is read whenever the slot is drawn from, not copied
+     * by PALETTE. One batch draws the top half, changes entry 2 by FILLing
+     * the table's own memory (a 256 x 1 ARGB32 slot), then draws the bottom
+     * half: only the bottom has the new colour. */
     for (i = 0; i < 256; i++) arena[SB + i] = (ogpu_u8)(i & 3);
     for (i = 0; i < 4; i++) put32(PAL + (unsigned long)i * 4, 0xFF000000UL | (unsigned long)(0x10 * (i + 1)) << 16);
+    memset(arena + TA, 0, 16 * 16 * 4);
     begin();
     ogpu_surface(&B, 0, TA, 64, 16, 16, OGPU_FMT_ARGB32);
     ogpu_surface(&B, 1, SB, 16, 16, 16, OGPU_FMT_INDEX8);
     ogpu_palette(&B, 1, PAL);
+    ogpu_surface(&B, 2, PAL, 1024, 256, 1, OGPU_FMT_ARGB32);
     ogpu_target(&B, 0);
-    ogpu_composite(&B, 1, 0, 0, 16, 16, 0, 0, 16, 16, 255, 0);
+    ogpu_composite(&B, 1, 0, 0, 16, 8, 0, 0, 16, 8, 255, 0);
+    ogpu_target(&B, 2);
+    ogpu_fill(&B, 2, 0, 1, 1, 0xFF00FF00UL);
+    ogpu_target(&B, 0);
+    ogpu_composite(&B, 1, 0, 8, 16, 8, 0, 8, 16, 8, 255, 0);
     r1 = run();
-    put32(PAL + 8, 0xFF00FF00UL);
-    r2 = run();
-    check(r1 == OGPU_OK && r2 == OGPU_OK && arena[TA + 2 * 4 + 2] == 0xFF && arena[TA + 1 * 4 + 1] == 0x20,
-          "PALETTE: a changed table changes the picture at the next batch");
+    check(r1 == OGPU_OK && arena[TA + 2 * 4 + 1] == 0x30 && arena[TA + 2 * 4 + 2] == 0
+          && arena[TA + 8 * 64 + 2 * 4 + 1] == 0 && arena[TA + 8 * 64 + 2 * 4 + 2] == 0xFF
+          && arena[TA + 1 * 4 + 1] == 0x20 && arena[TA + 8 * 64 + 1 * 4 + 1] == 0x20,
+          "PALETTE: the table is read when the slot is drawn from (changed mid-batch, the next draw has it)");
     /* the errors */
     {
         static const char *what_err[] = {
@@ -759,14 +856,77 @@ static void test_query(void) {
     }
 }
 
+/* opengpu.library 0.19's whole-batch check (ogpu_batch_takes), for a v1.6
+ * driver and a v1.7 one: the tables the library keeps (opcodes it carries
+ * out; formats it takes SURFACE in, as each core answers). */
+static void test_routing(void) {
+    static unsigned char ok16[256], ok17[256], fmt16[OGPU_FMT_COUNT], fmt17[OGPU_FMT_COUNT];
+    int k, f, op;
+    char what[120];
+    for (op = 0; op < 256; op++) {
+        int real = op <= OGPU_OP_PALETTE || (op >= OGPU_OP_3D_FIRST && op <= OGPU_OP_3D_LAST);
+        ok17[op] = (unsigned char)real;
+        ok16[op] = (unsigned char)(real && op != OGPU_OP_PALETTE);
+    }
+    for (f = 0; f < OGPU_FMT_COUNT; f++) {
+        fmt17[f] = (unsigned char)(f && ogpu_core_supports(OGPU_OP_SURFACE, f) != OGPU_NONE);
+        fmt16[f] = (unsigned char)(fmt17[f] && f != OGPU_FMT_INDEX8 && f != OGPU_FMT_RGBA32 && f != OGPU_FMT_ABGR32);
+    }
+    check(fmt17[OGPU_FMT_INDEX8] && fmt17[OGPU_FMT_RGBA32] && fmt17[OGPU_FMT_ABGR32] && fmt17[OGPU_FMT_XRGB32],
+          "the core takes SURFACE in INDEX8, RGBA32 and ABGR32");
+    for (k = 0; k < 11; k++) {
+        int want16 = 0;
+        const char *name = "";
+        begin();
+        switch (k) {
+        case 0: name = "COMPOSITE from an RGBA32 slot";
+            ogpu_surface(&B, 1, SA, 32, 8, 8, OGPU_FMT_RGBA32); ogpu_surface(&B, 0, TA, 256, 64, 64, OGPU_FMT_ARGB32);
+            ogpu_target(&B, 0); ogpu_composite(&B, 1, 0, 0, 8, 8, 0, 0, 8, 8, 255, 0); break;
+        case 1: name = "FILL into an INDEX8 slot, no PALETTE";
+            ogpu_surface(&B, 0, TA, 64, 64, 64, OGPU_FMT_INDEX8); ogpu_target(&B, 0); ogpu_fill(&B, 0, 0, 4, 4, 1); break;
+        case 2: name = "TRIANGLES into XRGB32";
+            ogpu_surface(&B, 0, TA, 256, 64, 64, OGPU_FMT_XRGB32); ogpu_surface(&B, 1, SA, 32, 8, 8, OGPU_FMT_ARGB32);
+            ogpu_target(&B, 0); ogpu_triangles(&B, VTX, 3, 20, 0, 0, 1, 1, 0); break;
+        case 3: name = "TRIANGLES from a BGRA32 slot";
+            ogpu_surface(&B, 0, TA, 256, 64, 64, OGPU_FMT_ARGB32); ogpu_surface(&B, 1, SA, 32, 8, 8, OGPU_FMT_BGRA32);
+            ogpu_target(&B, 0); ogpu_triangles(&B, VTX, 3, 20, 0, 0, 1, 1, 0); break;
+        case 4: name = "the 3D form from an RGB565PC slot";
+            ogpu_surface(&B, 0, TA, 256, 64, 64, OGPU_FMT_ARGB32); ogpu_surface(&B, 1, SA, 16, 8, 8, OGPU_FMT_RGB565PC);
+            ogpu_target(&B, 0); ogpu_triangles3d(&B, VTX, 3, 20, 0, 0, 1, 1, 0, OGPU_LAY_LIST); break;
+        case 5: name = "COMPOSITE with PIXELART";
+            ogpu_surface(&B, 1, SA, 32, 8, 8, OGPU_FMT_ARGB32); ogpu_surface(&B, 0, TA, 256, 64, 64, OGPU_FMT_ARGB32);
+            ogpu_target(&B, 0); ogpu_composite(&B, 1, 0, 0, 8, 8, 0, 0, 16, 16, 255, OGPU_COMP_PIXELART); break;
+        case 6: name = "TRIANGLES, ARGB32 from ARGB32"; want16 = 1;
+            ogpu_surface(&B, 0, TA, 256, 64, 64, OGPU_FMT_ARGB32); ogpu_surface(&B, 1, SA, 32, 8, 8, OGPU_FMT_ARGB32);
+            ogpu_target(&B, 0); ogpu_triangles(&B, VTX, 3, 20, 0, 0, 1, 1, OGPU_TRI_BLEND_BLEND); break;
+        case 7: name = "TRIANGLES, RGB565 from CLUT8"; want16 = 1;
+            ogpu_surface(&B, 0, TA, 128, 64, 64, OGPU_FMT_RGB565); ogpu_surface(&B, 1, SA, 8, 8, 8, OGPU_FMT_CLUT8);
+            ogpu_target(&B, 0); ogpu_triangles(&B, VTX, 3, 20, 0, 0, 1, 1, 0); break;
+        case 8: name = "FILL into XRGB32"; want16 = 1;
+            ogpu_surface(&B, 0, TA, 256, 64, 64, OGPU_FMT_XRGB32); ogpu_target(&B, 0); ogpu_fill(&B, 0, 0, 4, 4, 1); break;
+        case 9: name = "a SURFACE in RGBA32 alone";
+            ogpu_surface(&B, 1, SA, 32, 8, 8, OGPU_FMT_RGBA32); break;
+        case 10: name = "a slot set twice: XRGB32, then ARGB32 before TRIANGLES"; want16 = 1;
+            ogpu_surface(&B, 0, TA, 256, 64, 64, OGPU_FMT_XRGB32); ogpu_surface(&B, 0, TA, 256, 64, 64, OGPU_FMT_ARGB32);
+            ogpu_surface(&B, 1, SA, 32, 8, 8, OGPU_FMT_ARGB32); ogpu_target(&B, 0); ogpu_triangles(&B, VTX, 3, 20, 0, 0, 1, 1, 0); break;
+        }
+        sprintf(what, "whole batch, %s: a v1.6 driver %s it", name, want16 ? "takes" : "doesn't take");
+        check(ogpu_batch_takes(sbuf, (unsigned long)B.words, ok16, fmt16) == want16, what);
+        sprintf(what, "whole batch, %s: a v1.7 driver takes it", name);
+        check(ogpu_batch_takes(sbuf, (unsigned long)B.words, ok17, fmt17) == 1, what);
+    }
+}
+
 int main(void) {
     test_formats();
     test_premul();
     test_pixelart();
+    test_pixelart_wide();
     test_clamp();
     test_palette();
     test_yuv();
     test_query();
+    test_routing();
     printf("sdl3 (stream v1.7): %d/%d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;
 }

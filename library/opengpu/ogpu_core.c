@@ -806,6 +806,29 @@ static void pa_box(ogpu_u32 span, ogpu_u32 *b16, ogpu_u32 *rb) {
     *rb = 0x1000000UL / span;
 }
 
+/* PIXELART's pixel centres one way (16.16): exact at every pixel, a
+ * remainder carried, as its steep edges show a truncated 16.16 step's drift
+ * across a wide picture. Centre i of n pixels over size texels is
+ * (2i + 1) * size * 65536 / 2n. Past 32767 pixels, the plain step. */
+struct pa_walk { ogpu_u32 p, e, step, inc, den; };
+
+static void pa_start(struct pa_walk *w, ogpu_u32 size, ogpu_u32 n, ogpu_u32 first) {
+    ogpu_u32 big = size << 16, extra;
+    w->step = big / n;
+    if (n > 32767) { w->p = first * w->step + (w->step >> 1); w->e = 0; w->inc = 0; w->den = 1; return; }
+    w->den = n << 1;
+    w->inc = (big % n) << 1;                            /* below den */
+    extra = big % w->den + first * w->inc;              /* below 2n * n: 32 bits */
+    w->p = big / w->den + first * w->step + extra / w->den;
+    w->e = extra % w->den;
+}
+
+PX_FN void pa_next(struct pa_walk *w) {
+    w->p += w->step;
+    w->e += w->inc;
+    if (w->e >= w->den) { w->e -= w->den; w->p++; }
+}
+
 /* Bilinear between rows r0 and r1 at x0..x1 with weights wx, wy (0-256). */
 PX_FN void sample_bi(const struct ogpu_surface *s, const ogpu_u8 *r0, const ogpu_u8 *r1, int x0, int x1,
                       unsigned wx, unsigned wy, struct ch *o) {
@@ -827,6 +850,8 @@ OP_FN op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
     int pixelart = (flags & OGPU_COMP_PIXELART) != 0, premul = mode == OGPU_BLEND_BLEND_PREMUL || mode == OGPU_BLEND_ADD_PREMUL;
     ogpu_u32 pbx = 0, prx = 0, pby = 0, pry = 0;
     ogpu_u32 stepx, stepy;
+    struct pa_walk wx0 = { 0, 0, 0, 0, 1 }, wxr = wx0, wyr = wx0;
+    int dw = w, dh = h;
     ogpu_u8 *drow;
     if (slot >= OGPU_MAX_SLOTS || !c->slot[slot].pixels) return OGPU_ERR_NOSURFACE;
     s = &c->slot[slot];
@@ -850,6 +875,7 @@ OP_FN op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
     if (pixelart) { pa_box(stepx, &pbx, &prx); pa_box(stepy, &pby, &pry); }
     dbpp = bytes_per_pixel(t->format);
     if (!clip_rect(c, &x, &y, &w, &h, &ox, &oy)) return OGPU_OK;
+    if (pixelart) { pa_start(&wx0, (ogpu_u32)sw, (ogpu_u32)dw, (ogpu_u32)ox); pa_start(&wyr, (ogpu_u32)sh, (ogpu_u32)dh, (ogpu_u32)oy); }
     fast = s->format == OGPU_FMT_ARGB32 && (t->format == OGPU_FMT_ARGB32 || t->format == OGPU_FMT_RGB565)
            && mode < 0 && !m && !(flags & (OGPU_COMP_ADD | OGPU_COMP_IN | OGPU_COMP_BILINEAR | OGPU_COMP_PIXELART));
     srcalpha = (flags & OGPU_COMP_SRCALPHA) != 0;
@@ -869,7 +895,9 @@ OP_FN op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
             if (y0 >= sh - 1) { y0 = sh - 1; wy = 0; }
             y1 = y0 + 1 < sh ? y0 + 1 : y0;
         } else if (pixelart) {
-            y0 = pa_axis((long)py, pby, pry, &wy);
+            y0 = pa_axis((long)wyr.p, pby, pry, &wy);
+            pa_next(&wyr);
+            wxr = wx0;
             y1 = y0 + 1;
             if (y0 < 0) y0 = 0;
             if (y0 > sh - 1) y0 = sh - 1;
@@ -932,7 +960,8 @@ OP_FN op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
                 sample_bi(s, r0, r1, sx + x0, sx + x1, wx, wy, &sp);
             } else if (pixelart) {
                 unsigned wx;
-                int x0 = pa_axis((long)px, pbx, prx, &wx), x1 = x0 + 1;
+                int x0 = pa_axis((long)wxr.p, pbx, prx, &wx), x1 = x0 + 1;
+                pa_next(&wxr);
                 if (x0 < 0) x0 = 0;
                 if (x0 > sw - 1) x0 = sw - 1;
                 if (x1 < 0) x1 = 0;

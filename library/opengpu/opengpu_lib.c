@@ -40,7 +40,11 @@
  * only its opcode: v1.7's in a v1.2 command need a driver that answers
  * PALETTE, and v1.6's blend modes in COMPOSITE_PD one that answers
  * PATH_FILL (0.18 checked opcodes only, so an older runtime refused such a
- * COMPOSITE_PD and its pixels were missing).
+ * COMPOSITE_PD and its pixels were missing). The driver must also take
+ * SURFACE in each slot's format (0.18 counted a format the driver's if any
+ * command answered for it, and the 3D state commands answer for all), and,
+ * before v1.7, TRIANGLES' target and slot texture formats must be ones it
+ * drew in and read right (ogpu_variant.h).
  * Built bare by library/build.sh.
  */
 #include <exec/types.h>
@@ -61,7 +65,7 @@
 #include "ogpu_3d.h"
 #endif
 #include "../../include/opengpu/opengpu.h"
-#include "ogpu_variant.h"                       /* driver_takes' look at each command's variant */
+#include "ogpu_variant.h"                       /* driver_takes: each command's variant and formats */
 #include "../../include/opengpu/driver.h"
 #include "../../include/opengpu/module.h"
 #include "ogpu_module.h"
@@ -89,7 +93,7 @@ struct OpenGPUBase {
     struct Library *drv_lib;                    /* the driver's library, kept open */
     struct OGPUDriver *drv;                     /* its table, or NULL: the CPU does everything */
     UBYTE drv_ok[256];                          /* opcodes the driver carries out (for some format) */
-    UBYTE drv_fmt[OGPU_FMT_COUNT];              /* surface formats it draws in (for some opcode) */
+    UBYTE drv_fmt[OGPU_FMT_COUNT];              /* formats it takes SURFACE in */
     unsigned long drv_last;                     /* the driver's last fence, before a batch runs on the CPU */
     char drv_names[MAX_DRIVERS][32];            /* drivers_load's scratch, under drv_lock */
     struct ogpu_modules modules;                /* shared modules loaded (ogpu_module.c) */
@@ -385,11 +389,11 @@ static int driver_try(struct OpenGPUBase *base, const char *name, int rom)
                 if (d->supports(op, f, 0) != OGPU_NONE) base->drv_ok[op] = 1;
         }
         base->drv_ok[OGPU_OP_NOP] = 1;
-        for (f = 1; f < OGPU_FMT_COUNT; f++) {
-            base->drv_fmt[f] = 0;
-            for (op = 0; op < 256 && !base->drv_fmt[f]; op++)
-                if (op != OGPU_OP_NOP && d->supports(op, f, 0) != OGPU_NONE) base->drv_fmt[f] = 1;
-        }
+        /* 0.19: a format is the driver's if it takes SURFACE in it (the 3D
+         * state commands answer for any format, so they can't say). */
+        base->drv_fmt[0] = 0;
+        for (f = 1; f < OGPU_FMT_COUNT; f++)
+            base->drv_fmt[f] = d->supports(OGPU_OP_SURFACE, f, 0) != OGPU_NONE;
     }
     return 1;
 }
@@ -459,27 +463,11 @@ static void drivers_close(struct OpenGPUBase *base)
     base->dos = NULL;
 }
 
-/* 1 when the driver carries out every command in the batch. */
+/* 1 when the driver carries out every command in the batch, each one's
+ * variant and the formats it draws in and reads (ogpu_variant.h). */
 static int driver_takes(struct OpenGPUBase *base, const UBYTE *s, ULONG words)
 {
-    ULONG at = 0;
-    while (at < words) {
-        UWORD op = (UWORD)(s[at * 4] << 8 | s[at * 4 + 1]), len = (UWORD)(s[at * 4 + 2] << 8 | s[at * 4 + 3]), need;
-        if (op > 255 || !base->drv_ok[op]) return 0;
-        if (!len) return 1;                     /* a bad length: the driver says so, as the CPU would */
-        if (at + len > words) return 1;         /* a length past the batch: likewise */
-        need = (UWORD)ogpu_variant_needs(s, at, op, len);
-        if (need && !base->drv_ok[need]) return 0;
-        /* A surface in a format the driver doesn't know (a newer stream's,
-         * against an older runtime): the CPU draws the batch. Depth and
-         * stencil (stream3d.h) are the 3D commands' to answer. */
-        if (op == OGPU_OP_SURFACE && len >= 6 && at + 5 < words) {
-            ULONG f = (ULONG)s[(at + 5) * 4] << 24 | (ULONG)s[(at + 5) * 4 + 1] << 16 | (ULONG)s[(at + 5) * 4 + 2] << 8 | s[(at + 5) * 4 + 3];
-            if (f > 0 && f < OGPU_FMT_COUNT && !base->drv_fmt[f]) return 0;
-        }
-        at += len;
-    }
-    return 1;
+    return ogpu_batch_takes(s, words, base->drv_ok, base->drv_fmt);
 }
 
 /* ---- OpenGPU's calls ------------------------------------------------------------- */

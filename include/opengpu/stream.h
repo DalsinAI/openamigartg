@@ -73,7 +73,8 @@
 #define OGPU_FMT_RGB565         2   /* 2 bytes, high byte first */
 #define OGPU_FMT_ARGB32         3   /* 4 bytes: A, R, G, B */
 #define OGPU_FMT_INDEX8         4   /* 1 byte, looked up in a 256-entry ARGB32 table: PIXELS' table, or
-                                       from v1.7 a surface's PALETTE (a source, never a target) */
+                                       from v1.7 a surface's PALETTE (drawn into, it takes indexes
+                                       as CLUT8 takes pens: PALETTE below) */
 #define OGPU_FMT_A8             5   /* v1.1: 1 byte: coverage (alpha) 0-255, no colour */
 /* v1.2: the screens of real cards and of a PiStorm's Picasso96, as targets
  * and sources; ACRTG needs only RGB565 and ARGB32. */
@@ -377,8 +378,13 @@
  * alike: premultiplied ARGB32); work bytes at least 2 x 4 x the larger of w
  * and h. */
 
-/* v1.7: PALETTE. SURFACE takes INDEX8 from v1.7, as a source only: a
- * command that draws into one says UNSUPPORTED. Its pixels are indexes into
+/* v1.7: PALETTE. SURFACE takes INDEX8 from v1.7. Drawn into, an INDEX8 slot
+ * takes indexes as a CLUT8 slot takes pens, and OGPU_Query answers for it
+ * as for CLUT8: FILL, INVERT, TEMPLATE, PATTERN and LINE write indexes,
+ * COPY moves them from another INDEX8 slot, and PIXELS takes pens (CLUT8)
+ * or indexes (INDEX8 with no table); a command that writes colours or
+ * blends (COMPOSITE, MASK, the _BLEND commands, COMPOSITE_PD, the paths,
+ * YUV, TRIANGLES, PIXELS of colours) says UNSUPPORTED. Its pixels are indexes into
  * the slot's palette, 256 ARGB32 words at the table address (as PIXELS'
  * table; colours not premultiplied, unless the blend mode says they are),
  * read whenever the slot is drawn from, so a program that changes the table
