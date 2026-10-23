@@ -59,7 +59,18 @@ struct ogpu_vk_config {
     /* As ogpu_core's ext (OGPU_OP_VIRGL and its range), with user; called
      * once the GPU has finished everything before the command. 0: none. */
     int (*ext)(void *user, int op, const ogpu_u8 *cmd, long words);
+    /* Where a command the GPU path takes is drawn: OGPU_VK_ROUTE_COST, on
+     * the GPU only where that is faster, its wait included (the back end
+     * measures this device's round trip when it starts; the costs a pixel
+     * are those measured on daletop's RX 460 and its host); OGPU_VK_ROUTE_GPU,
+     * wherever the GPU path takes it; OGPU_VK_ROUTE_CORE, always on the core
+     * here. 0 (OGPU_VK_ROUTE_COST) takes the environment's OGPU_VK_ROUTE
+     * (cost, gpu or core) when it is set. Results are the same every way. */
+    int route;
 };
+#define OGPU_VK_ROUTE_COST 0
+#define OGPU_VK_ROUTE_GPU  1
+#define OGPU_VK_ROUTE_CORE 2
 
 /* 0 on failure, with the reason in err. */
 struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int errlen);
@@ -97,6 +108,11 @@ struct ogpu_vk_stats {
     unsigned long gpu;      /* drawing commands the GPU did (2D) */
     unsigned long cpu;      /* commands the C core did */
     unsigned long submits;  /* command buffers sent */
+    unsigned long routed;   /* of cpu: commands the GPU path could take that cost the core drew */
+    unsigned long trip_us;  /* a submit and its wait on this device, measured at the start (0: not measured) */
+    int route;              /* OGPU_VK_ROUTE_ in force */
+    unsigned long lists;    /* composite lists sent (each one dispatch) */
+    unsigned long listed;   /* of gpu: commands drawn in those lists */
     /* The 3D range (OGPU_WITH_3D): TRIANGLES commands drawn on the GPU, on
      * the core as quicker there, on the core as the GPU can't draw them
      * exactly; the texture cache; and the costs TRIANGLES is routed by. */

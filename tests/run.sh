@@ -16,6 +16,10 @@ OGPU="$HERE/../library/opengpu"
 cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined \
     -o "$OUT/test_opengpu" "$HERE/test_opengpu.c" "$HERE/golden_scenes.c" "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c"
 "$OUT/test_opengpu" "$HERE/golden/opengpu-g1.txt" "$HERE/golden/opengpu-v11.txt" "$HERE/golden/opengpu-v12.txt"
+# COMPOSITE_PD (v1.4, pixman.library's composites) against its per-pixel reference.
+cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+    -o "$OUT/test_composite_pd" "$HERE/test_composite_pd.c" "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c"
+"$OUT/test_composite_pd"
 # The Vulkan back end against the core, when Vulkan's loader and headers are there
 # (it skips itself when no device is found; lavapipe will do). Built with the 3D
 # range (OGPU_WITH_3D), as the runtime is: TRIANGLES on the 3D shader, the rest
@@ -59,8 +63,8 @@ fi
 STOVE=${STOVE:-$HOME/AmigaChrome/stoves/os32}
 CC68K=${CC68K:-$STOVE/prefix/bin/m68k-amigaos-gcc}
 if [ -x "$CC68K" ]; then
-    "$CC68K" -m68020 -O2 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -c -o "$OUT/modes-m68k.o" "$HERE/../library/modes.c"
-    "$CC68K" -m68020 -O2 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -fno-builtin -c -o "$OUT/ogpu_core-m68k.o" "$HERE/../library/opengpu/ogpu_core.c"
+    "$CC68K" -m68040 -O2 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -c -o "$OUT/modes-m68k.o" "$HERE/../library/modes.c"
+    "$CC68K" -m68040 -O2 -fno-delete-null-pointer-checks -Wall -Wextra -Werror -fno-builtin -c -o "$OUT/ogpu_core-m68k.o" "$HERE/../library/opengpu/ogpu_core.c"
     echo "library/modes.c and library/opengpu/ogpu_core.c build for the 68k"
 else
     echo "no m68k compiler; the 68k check is skipped"

@@ -2,6 +2,8 @@
 
 TinyGL programs build for AmigaOS 3.2 and run on OpenGPU's GL module: Mesa on the GPU through virgl on AmigaChrome, else Mesa's softpipe on the 68k. There is no second GL here. TinyGL's calls become the GL module's calls.
 
+libtinygl.a is built hard float (`-m68040 -m68881`), as the GL module is. Programs using it need a 68040 or 68060 with its FPU; an LC040 or EC040 (no FPU) can't run them.
+
 ## Which TinyGL
 
 There are two TinyGLs:

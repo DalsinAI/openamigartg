@@ -1,0 +1,20 @@
+{
+  "sdl3": {
+    "name": "SDL 3",
+    "version": "3.4.14",
+    "file": "SDL3-3.4.14.tar.gz",
+    "dir": "SDL3-3.4.14",
+    "url": "https://github.com/libsdl-org/SDL/releases/download/release-3.4.14/SDL3-3.4.14.tar.gz",
+    "sha256": "30d4aa2b3037718142b32dffd4e72f917ebb6cc5227150e7bb9c45efb2153aeb",
+    "licence": "Zlib"
+  },
+  "amigaos3": {
+    "name": "SDL3_68k",
+    "version": "3.4.14",
+    "url": "https://github.com/SteffenHaeuser/SDL3_68k",
+    "commit": "c82dea042718200eea401e7ed62d88b997bc9fd9",
+    "subdir": "SDL3",
+    "licence": "Zlib",
+    "used_for": "the AmigaOS 3.x back ends (video, AHI audio, threads, timer, time, joystick, filesystem, locale, file dialogs) that patches/amigaos3 changes"
+  }
+}

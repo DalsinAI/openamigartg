@@ -58,9 +58,11 @@ register struct CGXBase *cgx_S __asm__("a4");
 #include <graphics/layers.h>
 #include <graphics/displayinfo.h>
 #include <graphics/modeid.h>
+#include "../include/oa_protos_begin.h"   /* the protos' unused varargs wrappers dropped */
 #include <proto/exec.h>
 #include <proto/graphics.h>
 #include <proto/utility.h>
+#include "../include/oa_protos_end.h"
 
 #include "../include/openrtg/openrtg.h"
 

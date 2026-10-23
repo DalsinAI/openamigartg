@@ -159,10 +159,28 @@ void ogpu_composite_affine(struct OGPUBatch *b, int src_slot, int sx, int sy, in
     cmd(b, OGPU_OP_COMPOSITE_AFFINE, 11, a);
 }
 
+void ogpu_composite_pd(struct OGPUBatch *b, unsigned long op_flags, unsigned long src, int sx, int sy,
+                       unsigned long mask, int mx, int my, int x, int y, int w, int h) {
+    unsigned long a[7];
+    a[0] = op_flags; a[1] = src; a[2] = OGPU_XY(sx, sy); a[3] = mask; a[4] = OGPU_XY(mx, my);
+    a[5] = OGPU_XY(x, y); a[6] = OGPU_XY(w, h);
+    cmd(b, OGPU_OP_COMPOSITE_PD, 7, a);
+}
+
 void ogpu_yuv(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr, unsigned long u_address, unsigned long u_bpr,
               unsigned long v_address, unsigned long v_bpr, int w, int h, int x, int y, unsigned long format) {
     unsigned long a[9];
     a[0] = y_address; a[1] = y_bpr; a[2] = u_address; a[3] = u_bpr; a[4] = v_address; a[5] = v_bpr;
     a[6] = OGPU_XY(w, h); a[7] = OGPU_XY(x, y); a[8] = format;
     cmd(b, OGPU_OP_YUV, 9, a);
+}
+
+void ogpu_yuv_scaled(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr, unsigned long u_address,
+                     unsigned long u_bpr, unsigned long v_address, unsigned long v_bpr, int w, int h,
+                     unsigned long format, int sx, int sy, int sw, int sh, int x, int y, int dw, int dh) {
+    unsigned long a[12];
+    a[0] = y_address; a[1] = y_bpr; a[2] = u_address; a[3] = u_bpr; a[4] = v_address; a[5] = v_bpr;
+    a[6] = OGPU_XY(w, h); a[7] = format; a[8] = OGPU_XY(sx, sy); a[9] = OGPU_XY(sw, sh);
+    a[10] = OGPU_XY(x, y); a[11] = OGPU_XY(dw, dh);
+    cmd(b, OGPU_OP_YUV_SCALED, 12, a);
 }

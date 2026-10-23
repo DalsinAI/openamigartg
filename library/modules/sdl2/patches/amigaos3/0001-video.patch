@@ -139,12 +139,13 @@ diff -ruN a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3event
 diff -ruN a/src/video/amigaos3/SDL_os3framebuffer.c b/src/video/amigaos3/SDL_os3framebuffer.c
 --- a/src/video/amigaos3/SDL_os3framebuffer.c	2026-10-08 05:33:48.490333619 +0100
 +++ b/src/video/amigaos3/SDL_os3framebuffer.c	2026-10-08 05:33:48.492463133 +0100
-@@ -138,6 +138,100 @@
+@@ -138,6 +138,101 @@
  /* Bytes per pixel for ARGB8888 */
  #define OS3_BPP 4
  
 +#if SDL_VIDEO_RENDER_OPENGPU
 +#include "SDL_os3gpu.h"
++#include "SDL_os3vram.h"
 +#include <proto/layers.h>
 +#include <graphics/clip.h>
 +
@@ -240,7 +241,7 @@ diff -ruN a/src/video/amigaos3/SDL_os3framebuffer.c b/src/video/amigaos3/SDL_os3
  /* Forward declaration (defined later in this file) */
  void OS3_DestroyWindowFramebuffer(_THIS, SDL_Window *window);
  
-@@ -175,6 +269,21 @@
+@@ -175,6 +270,21 @@
  #endif
  }
  
@@ -262,7 +263,7 @@ diff -ruN a/src/video/amigaos3/SDL_os3framebuffer.c b/src/video/amigaos3/SDL_os3
  int OS3_CreateWindowFramebuffer(_THIS, SDL_Window *window,
                                  Uint32 *format, void **pixels,
                                  int *pitch)
-@@ -218,12 +327,17 @@
+@@ -218,12 +328,17 @@
      /* Pre-allocate scaling resources if window > surface */
      {
          OS3_WindowData *data = (OS3_WindowData *)window->driverdata;
@@ -284,7 +285,7 @@ diff -ruN a/src/video/amigaos3/SDL_os3framebuffer.c b/src/video/amigaos3/SDL_os3
                  BMF_MINPLANES, friend_bm);
  
              if (scale_bm) {
-@@ -313,9 +427,10 @@
+@@ -313,9 +428,10 @@
  
      /* --- RTG path --- */
      {
@@ -298,7 +299,7 @@ diff -ruN a/src/video/amigaos3/SDL_os3framebuffer.c b/src/video/amigaos3/SDL_os3
  
  #ifdef SDL_OS3_PROFILE
          /* PRE-SPLIT: increment call_count AND dump regardless of which branch
-@@ -401,7 +516,21 @@
+@@ -401,7 +517,21 @@
              ULONG _t0, _t1;
  #endif
  
@@ -321,7 +322,7 @@ diff -ruN a/src/video/amigaos3/SDL_os3framebuffer.c b/src/video/amigaos3/SDL_os3
                  ULONG bm_base = 0, bm_pitch = 0;
                  ULONG bm_pixfmt = 0, bm_bppix = 0;
                  APTR lock;
-@@ -564,4 +693,15 @@
+@@ -564,4 +694,164 @@
      if (scale_bm) {
          FreeBitMap(scale_bm);
      }
@@ -337,6 +338,155 @@ diff -ruN a/src/video/amigaos3/SDL_os3framebuffer.c b/src/video/amigaos3/SDL_os3
 +    }
 +#endif
  }
++
++#if SDL_VIDEO_RENDER_OPENGPU
++/* The window surface in an OpenRTG board's video RAM (Open, 18 Oct 2026;
++ * SDL_os3vram.c, amigachrome's Design-OpenGPU-2D-On-The-GPU 5.4 B). On a
++ * 32-bit OpenRTG screen, a window that needs no scaling gets its surface in
++ * a displayable friend of the screen's bitmap, so OpenGPU's GPU draws in it
++ * and shows it from there. Any other window, or one whose bitmap OpenRTG
++ * can only give in Fast RAM, keeps the framebuffer above, as before. These
++ * go round the back end's own functions (SDL_OS3_VRAM_HookFramebuffer). */
++#define OS3_VRAM_KEY "OS3_VRAM"
++
++typedef struct OS3_VRAMWindow {
++    struct BitMap *bm;
++    void *pixels;
++    int pitch, w, h;
++} OS3_VRAMWindow;
++
++static SDL_VideoDevice *os3_vram_device = NULL;
++static int (*os3_create_fb)(_THIS, SDL_Window *window, Uint32 *format, void **pixels, int *pitch);
++static int (*os3_update_fb)(_THIS, SDL_Window *window, const SDL_Rect *rects, int numrects);
++static void (*os3_destroy_fb)(_THIS, SDL_Window *window);
++static void (*os3_destroy_window)(_THIS, SDL_Window *window);
++
++struct Window *SDL_OS3_IntuitionWindow(SDL_Window *window)
++{
++    OS3_WindowData *data;
++
++    /* Only this back end's windows have its driverdata. */
++    if (!window || !os3_vram_device || SDL_GetVideoDevice() != os3_vram_device) {
++        return NULL;
++    }
++    data = (OS3_WindowData *)window->driverdata;
++    return data ? data->window : NULL;
++}
++
++static void OS3_VRAM_FreeWindow(SDL_Window *window)
++{
++    OS3_VRAMWindow *vw = (OS3_VRAMWindow *)SDL_SetWindowData(window, OS3_VRAM_KEY, NULL);
++
++    if (vw) {
++        SDL_OS3_VRAM_FreeBitMap(vw->bm);
++        SDL_free(vw);
++    }
++}
++
++static int OS3_VRAM_CreateWindowFramebuffer(_THIS, SDL_Window *window, Uint32 *format, void **pixels, int *pitch)
++{
++    OS3_WindowData *data = (OS3_WindowData *)window->driverdata;
++    OS3_VRAMWindow *vw;
++    int w, h, win_w, win_h;
++
++    OS3_VRAM_FreeWindow(window); /* the one from before a resize */
++    SDL_GetWindowSizeInPixels(window, &w, &h);
++    if (data && data->window) {
++        OS3_InnerSize(data->window, &win_w, &win_h);
++        /* a window larger than its surface is scaled, from Fast RAM */
++        if (win_w <= w && win_h <= h && (vw = (OS3_VRAMWindow *)SDL_calloc(1, sizeof(*vw))) != NULL) {
++            vw->bm = SDL_OS3_VRAM_AllocBitMap(data->window, w, h, &vw->pixels, &vw->pitch);
++            if (vw->bm) {
++                static int vram_logged = 0;
++                vw->w = w;
++                vw->h = h;
++                if (os3_destroy_fb) {
++                    os3_destroy_fb(_this, window); /* a Fast RAM one from before */
++                }
++                SDL_SetWindowData(window, OS3_VRAM_KEY, vw);
++                *format = SDL_PIXELFORMAT_ARGB8888;
++                *pixels = vw->pixels;
++                *pitch = vw->pitch;
++                if (!vram_logged) {
++                    SDL_Log("OS3_FB: window surface in video RAM (%dx%d, %d bytes a row)", w, h, vw->pitch);
++                    vram_logged = 1;
++                }
++                return 0;
++            }
++            SDL_free(vw);
++        }
++    }
++    return os3_create_fb(_this, window, format, pixels, pitch);
++}
++
++static int OS3_VRAM_UpdateWindowFramebuffer(_THIS, SDL_Window *window, const SDL_Rect *rects, int numrects)
++{
++    OS3_VRAMWindow *vw = (OS3_VRAMWindow *)SDL_GetWindowData(window, OS3_VRAM_KEY);
++    OS3_WindowData *data = (OS3_WindowData *)window->driverdata;
++    SDL_Surface *surface = window->surface;
++    SDL_Rect all, r;
++    int i;
++
++    if (!vw) {
++        return os3_update_fb(_this, window, rects, numrects);
++    }
++    if (!data || !data->window) {
++        return SDL_SetError("OS3_FB: the window has gone");
++    }
++    /* OpenGPU copies from video RAM into the window's visible parts: on its
++       Vulkan back end, the GPU does it */
++    if (surface && surface->pixels == vw->pixels && OS3_GPU_Present(window, data, surface, rects, numrects)) {
++        return 0;
++    }
++    /* A covered part, or no OpenGPU: OpenRTG blits from the bitmap through
++       the window's layer */
++    all.x = 0;
++    all.y = 0;
++    all.w = vw->w;
++    all.h = vw->h;
++    for (i = 0; i < numrects; i++) {
++        if (SDL_IntersectRect(&rects[i], &all, &r)) {
++            BltBitMapRastPort(vw->bm, r.x, r.y, data->window->RPort, r.x, r.y, r.w, r.h, 0xC0);
++        }
++    }
++    return 0;
++}
++
++static void OS3_VRAM_DestroyWindowFramebuffer(_THIS, SDL_Window *window)
++{
++    OS3_VRAM_FreeWindow(window);
++    if (os3_destroy_fb) {
++        os3_destroy_fb(_this, window);
++    }
++}
++
++/* The back end's DestroyWindow frees its framebuffer itself: the video RAM
++   one goes first, before the window and its screen close. */
++static void OS3_VRAM_DestroyWindow(_THIS, SDL_Window *window)
++{
++    OS3_VRAM_FreeWindow(window);
++    os3_destroy_window(_this, window);
++}
++
++void SDL_OS3_VRAM_HookFramebuffer(SDL_VideoDevice *device)
++{
++    if (!device->CreateWindowFramebuffer || !device->UpdateWindowFramebuffer ||
++        device->CreateWindowFramebuffer == OS3_VRAM_CreateWindowFramebuffer) {
++        return;
++    }
++    os3_create_fb = device->CreateWindowFramebuffer;
++    os3_update_fb = device->UpdateWindowFramebuffer;
++    os3_destroy_fb = device->DestroyWindowFramebuffer;
++    device->CreateWindowFramebuffer = OS3_VRAM_CreateWindowFramebuffer;
++    device->UpdateWindowFramebuffer = OS3_VRAM_UpdateWindowFramebuffer;
++    device->DestroyWindowFramebuffer = OS3_VRAM_DestroyWindowFramebuffer;
++    if (device->DestroyWindow) {
++        os3_destroy_window = device->DestroyWindow;
++        device->DestroyWindow = OS3_VRAM_DestroyWindow;
++    }
++    os3_vram_device = device;
++}
++#endif /* SDL_VIDEO_RENDER_OPENGPU */
 diff -ruN a/src/video/amigaos3/SDL_os3mouse.c b/src/video/amigaos3/SDL_os3mouse.c
 --- a/src/video/amigaos3/SDL_os3mouse.c	2026-10-08 05:33:48.511748882 +0100
 +++ b/src/video/amigaos3/SDL_os3mouse.c	2026-10-08 05:33:48.513752119 +0100
@@ -388,18 +538,25 @@ diff -ruN a/src/video/amigaos3/SDL_os3mouse.c b/src/video/amigaos3/SDL_os3mouse.
 diff -ruN a/src/video/amigaos3/SDL_os3video.c b/src/video/amigaos3/SDL_os3video.c
 --- a/src/video/amigaos3/SDL_os3video.c	2026-10-08 05:33:48.529783812 +0100
 +++ b/src/video/amigaos3/SDL_os3video.c	2026-10-08 05:33:48.533961611 +0100
-@@ -25,6 +25,7 @@
+@@ -25,6 +25,8 @@
  #include "SDL_os3framebuffer.h"
  #include "SDL_os3events.h"
  #include "SDL_os3mouse.h"
 +#include "SDL_os3clipboard.h"
++#include "SDL_os3vram.h"
  #include "../SDL_sysvideo.h"
  #include "../../events/SDL_events_c.h"
  
-@@ -107,6 +108,11 @@
+@@ -107,6 +109,17 @@
      /* Events */
      device->PumpEvents = OS3_PumpEvents;
  
++#if SDL_VIDEO_RENDER_OPENGPU
++    /* The window surface in video RAM on a 32-bit OpenRTG screen (Open,
++       SDL_os3vram.h): round the framebuffer functions, all set above */
++    SDL_OS3_VRAM_HookFramebuffer(device);
++#endif
++
 +    /* Clipboard (Open): clipboard.device unit 0 */
 +    device->SetClipboardText = OS3_SetClipboardText;
 +    device->GetClipboardText = OS3_GetClipboardText;
@@ -408,7 +565,7 @@ diff -ruN a/src/video/amigaos3/SDL_os3video.c b/src/video/amigaos3/SDL_os3video.
      return device;
  }
  
-@@ -148,15 +154,13 @@
+@@ -148,15 +161,13 @@
          return SDL_SetError("Cannot open intuition.library V39+");
      }
  
@@ -430,7 +587,7 @@ diff -ruN a/src/video/amigaos3/SDL_os3video.c b/src/video/amigaos3/SDL_os3video.
  
      /* Restore requesters now that library opens are done */
      me->pr_WindowPtr = oldwin;
-@@ -402,6 +406,21 @@
+@@ -402,6 +413,21 @@
          SA_AutoScroll, FALSE,
          TAG_DONE
      );

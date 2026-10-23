@@ -51,7 +51,16 @@ void ogpu_points_blend(struct OGPUBatch *b, unsigned long points, unsigned long 
 /* m: m00, m01, m02, m10, m11, m12, 16.16 (source to target) */
 void ogpu_composite_affine(struct OGPUBatch *b, int src_slot, int sx, int sy, int sw, int sh,
                            const long m[6], unsigned long argb, unsigned long flags);
+/* v1.4: Porter-Duff compositing of premultiplied colour (stream.h). src is a
+ * slot, or the colour with OGPU_PD_SOLID; mask a slot (OGPU_PD_MASK), an
+ * alpha (OGPU_PD_MASK_SOLID) or unused. Ask OGPU_Query first. */
+void ogpu_composite_pd(struct OGPUBatch *b, unsigned long op_flags, unsigned long src, int sx, int sy,
+                       unsigned long mask, int mx, int my, int x, int y, int w, int h);
 void ogpu_yuv(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr, unsigned long u_address, unsigned long u_bpr,
               unsigned long v_address, unsigned long v_bpr, int w, int h, int x, int y, unsigned long format);
+/* v1.5: the part sx, sy, sw, sh of a w x h YUV picture into x, y, dw, dh. */
+void ogpu_yuv_scaled(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr, unsigned long u_address,
+                     unsigned long u_bpr, unsigned long v_address, unsigned long v_bpr, int w, int h,
+                     unsigned long format, int sx, int sy, int sw, int sh, int x, int y, int dw, int dh);
 
 #endif

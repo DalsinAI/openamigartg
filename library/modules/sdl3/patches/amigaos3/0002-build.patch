@@ -1,0 +1,15 @@
+SDL3_68k's AmigaOS 3.x back ends (Zlib): what they need to build on SDL
+3.4.14 as released and the GCC 16 stove's libnix. AmigaChrome Team, 2026.
+
+diff --git a/src/video/amigaos3/SDL_os3window.c b/src/video/amigaos3/SDL_os3window.c
+index 87e023a..b0c7913 100644
+--- a/src/video/amigaos3/SDL_os3window.c
++++ b/src/video/amigaos3/SDL_os3window.c
+@@ -3,6 +3,7 @@
+ #if SDL_VIDEO_DRIVER_AMIGAOS3
+ 
+ #include "SDL_os3window.h"
++#include "../../events/SDL_windowevents_c.h"
+ #include "SDL_os3modes.h"
+ #include <utility/tagitem.h>
+ #include <exec/tasks.h>

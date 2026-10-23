@@ -41,12 +41,14 @@
 #include <devices/inputevent.h>
 #include <exec/interrupts.h>
 #include <exec/io.h>
+#include "../include/oa_protos_begin.h"   /* the protos' unused varargs wrappers dropped */
 #include <proto/exec.h>
 #include <proto/graphics.h>
 #include <proto/intuition.h>
 #include <proto/utility.h>
 #include <proto/opengpu.h>
 #include <proto/dos.h>
+#include "../include/oa_protos_end.h"
 #include <dos/dosextens.h>
 #include <opengpu/build.h>
 #include <opengpu/virgl.h>
@@ -183,7 +185,7 @@ typedef LONG (*line8_fn)(REG(a0, struct RastPort *), REG(d0, ULONG), REG(d1, ULO
 #define BLOCKS 128
 #define FONT_CACHE 8
 struct ortg_shown { struct ortg_bitmap *bm; UWORD w, h; UBYTE fmt; };
-struct ortg_blk { ULONG off, size; UBYTE used, monitor; };
+struct ortg_blk { ULONG off, size; UBYTE used, monitor, displayable; };
 struct ortg_font { const UBYTE *rom; UBYTE *ram; };
 
 /* Everything screens.c writes (0.18): its part of the library's state (ortg_state.h). */
@@ -381,6 +383,7 @@ static LONG vram_alloc(int monitor, ULONG size)
     for (i = 0; i < BLOCKS; i++)
         if (!SC->blk[i].used) {
             SC->blk[i].off = off; SC->blk[i].size = size; SC->blk[i].used = 1; SC->blk[i].monitor = (UBYTE)monitor;
+            SC->blk[i].displayable = 0;
             if (i >= nblk) nblk = i + 1;
             return (LONG)off;
         }
@@ -391,6 +394,24 @@ static void vram_free(int monitor, ULONG off)
 {
     for (int i = 0; i < nblk; i++)
         if (SC->blk[i].used && SC->blk[i].monitor == monitor && SC->blk[i].off == off) { SC->blk[i].used = 0; return; }
+}
+
+/* 0.19: friends asked for as displayable (BMF_DISPLAYABLE) may take at most
+ * half of a board's video RAM between them, so screens opened later still
+ * find room. 1 when a w x h one of bpp bytes a pixel fits under that. */
+static int displayable_room(int monitor, ULONG w, ULONG h, ULONG bpp)
+{
+    ULONG used = 0, limit = vram_limit[monitor] ? vram_limit[monitor] : vram_size[monitor];
+    ULONG want = (64 /* ORTG_HEAD */ + ((w * bpp + 63) & ~63UL) * h + 63) & ~63UL;
+    for (int i = 0; i < nblk; i++)
+        if (SC->blk[i].used && SC->blk[i].monitor == monitor && SC->blk[i].displayable) used += SC->blk[i].size;
+    return used + want <= limit / 2;
+}
+
+static void vram_mark_displayable(int monitor, ULONG off)
+{
+    for (int i = 0; i < nblk; i++)
+        if (SC->blk[i].used && SC->blk[i].monitor == monitor && SC->blk[i].off == off) { SC->blk[i].displayable = 1; return; }
 }
 
 /* ---- OpenRTG bitmaps ---------------------------------------------------------------- */
@@ -1903,8 +1924,20 @@ static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, UL
         /* a friend of a 16 or 32-bit bitmap is one too, whatever the depth asked
          * (as Picasso96 does); of an 8-bit one, when it asks for at most 8 */
         if (f->bpp != 1 || depth <= 8) {
-            struct ortg_bitmap *o = ortg_alloc(0, (UWORD)w, (UWORD)h, (flags & BMF_CLEAR) != 0, f->format);
-            if (o) { o->pal_index = f->pal_index; return &o->bm; }
+            /* 0.19: asked for as displayable (BMF_DISPLAYABLE), in the friend's
+             * board's video RAM, as Picasso96 keeps displayable bitmaps on its
+             * card, while such friends take at most half of it: SDL's window
+             * and textures ask so, and OpenGPU's GPU then draws in them
+             * (amigachrome's Design-OpenGPU-2D-On-The-GPU 5.4 B). Every other
+             * friend stays in fast RAM, as before. */
+            int n = (flags & BMF_DISPLAYABLE) && f->monitor && displayable_room(f->monitor, (UWORD)w, (UWORD)h, f->bpp)
+                    ? f->monitor : 0;
+            struct ortg_bitmap *o = ortg_alloc(n, (UWORD)w, (UWORD)h, (flags & BMF_CLEAR) != 0, f->format);
+            if (o) {
+                o->pal_index = f->pal_index;
+                if (o->monitor) vram_mark_displayable(o->monitor, o->vram_block);
+                return &o->bm;
+            }
         }
     }
     return old_allocbm(w, h, depth, flags, friend, g);

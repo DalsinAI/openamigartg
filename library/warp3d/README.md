@@ -17,7 +17,7 @@ It is a thin front end over the one library's 3D path. It keeps Warp3D's state, 
 | Driver | `W3D_CC_DRIVERTYPE` | Where it draws |
 | --- | --- | --- |
 | W3D_OpenGPU | `W3D_DRIVER_3DHW` | It sends batches to `opengpu.library`, whose back end draws them. On AmigaChrome that is `ACRTG.gpu`, the Cradle on the PC; on a PiStorm it will be `PiStorm.gpu`. It is offered when `OGPU_Query(OGPU_OP_TRIANGLES)` answers. |
-| W3D_CPU | `W3D_DRIVER_CPU` | The same 3D core (`library/opengpu/ogpu_3d.c`) linked in, on the 68k. It needs no `opengpu.library`, so it works on any Amiga with a 68040 or 68060, its FPU and RTG. |
+| W3D_CPU | `W3D_DRIVER_CPU` | The same 3D core (`library/opengpu/ogpu_3d.c`) linked in, on the 68k. It needs no `opengpu.library`, so it works on any Amiga with a 68040 or 68060 and RTG. Warp3D is soft float, so an LC040 or EC040 (no FPU) runs it too. |
 
 `W3D_DRIVER_BEST` takes OpenGPU when its back end is not the 68k itself, and the CPU driver otherwise, unless the preferences say which.
 
@@ -144,6 +144,7 @@ The library, its headers and its tests are MIT, Copyright (c) 2026 AmigaChrome T
   - `tools/w3dcheck.c` (W3DCheck);
   - `tools/w3dprefs.c` (Warp3DPrefs).
 - Build: `library/warp3d/build.sh [OUT]`, which `library/build.sh` also runs.
+  - Soft float: `-m68040` linked through `tools/m68k-soft-m68040.specs`, with `-lm -lgcc`. Its float work goes through libnix's soft libm to the mathieee libraries, which Warp3D opens on its first open and closes on expunge; they use the FPU where there is one. On an AC090 with its FPU, W3DTest CPU ran 6% slower than the hard-float build (37.5 and 37.9 against 35.5 and 35.2 frames a second, 17 October 2026).
 
 ## Left to do
 

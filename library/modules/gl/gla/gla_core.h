@@ -48,15 +48,23 @@ struct gla_virgl_frame {
     int           x0, y0, x1, y1;
 };
 
+/* A buffer's present hook. Its two fields are the ABI every GL program was
+ * built with (the stove's SDK has this header): a program keeps the struct
+ * in its own memory and GL.module only reads these two, never more. */
 struct gla_present {
     void (*present)(void *user, const struct gla_frame *frame);
     void  *user;
-    /* When there is one, virgl's frames go here first, and the host writes
-     * them straight into the display (ACV_PRESENT): the pixels it wrote, or
-     * -1, and then the frame is read back into this CPU's memory and comes
-     * to present as before. */
-    long (*present_virgl)(void *user, const struct gla_virgl_frame *frame);
 };
+
+/* A present hook's virgl companion: when there is one, virgl's frames go
+ * there first and the host writes them straight into the display
+ * (ACV_PRESENT): the pixels it wrote, or -1, and then the frame is read
+ * back into this CPU's memory and comes to present as before. It is
+ * registered against the present function (gla_present_os3.c registers
+ * its own), so the program's gla_present stays two fields. */
+typedef long (*gla_present_virgl_fn)(void *user, const struct gla_virgl_frame *frame);
+void gla_present_set_virgl(void (*present)(void *user, const struct gla_frame *frame), gla_present_virgl_fn virgl);
+gla_present_virgl_fn gla_present_virgl_of(const struct gla_present *p);
 
 /* What GLA did with its frames, since it started or was last reset. */
 struct gla_stats {

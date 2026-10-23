@@ -1,6 +1,8 @@
 # SDL 2 in OpenGPU: SDL2.module
 
-SDL 2 for AmigaOS 3.2, as part of the one library. Programs open only
+SDL 2 for AmigaOS 3.2, as part of the one library. SDL2.module, its
+satellites and libSDL2.a are built hard float (`-m68040 -m68881`): they need
+a 68040 or 68060 with its FPU, not an LC040 or EC040 (no FPU). Programs open only
 opengpu.library and link `-lSDL2` as on any other system. Their SDL calls
 go to `LIBS:OpenGPU/SDL2.module`: SDL 2.32.10 with Amiga back ends that
 draw through OpenGPU, play through AHI and read the Amiga's input. When
@@ -23,6 +25,10 @@ the GCC 16 stove:
 | `libSDL2_image_static.a`, `libSDL2_mixer_static.a` | The same two inside the program, for `libSDL2_static.a`. |
 | `libSDL2_ttf.a`, `libSDL2_net.a` | SDL2_ttf and SDL2_net, link libraries. |
 | `tests/sdl2/` | The tests (`tests/sdl2` in the repository). |
+
+`build-amiga.sh` is the same build for the Cradle's `stove_build` (`STOVE`
+and `OUT` set): SDL2.module, the link libraries and the tests, without the
+satellites.
 
 Build a program the usual way:
 
@@ -74,7 +80,7 @@ or, with the OpenGPU developer kit (`tools/make_sdk.py`, `sdk/README`):
 
 | SDL part | Back end |
 | --- | --- |
-| Video | Intuition windows and screens. RTG through the CyberGraphX API (OpenRTG's cybergraphics.library); AGA through c2p. A window on an RTG screen is shown by OpenGPU, which copies the frame into video RAM through each visible part of the window's layer; WritePixelArray does it when part of the window is covered. |
+| Video | Intuition windows and screens. RTG through the CyberGraphX API (OpenRTG's cybergraphics.library); AGA through c2p. A window on an RTG screen is shown by OpenGPU, which copies the frame into video RAM through each visible part of the window's layer; WritePixelArray does it when part of the window is covered. On a 32-bit OpenRTG screen the window's surface is itself in video RAM (see *In video RAM*). |
 | Renderer | `opengpu` first, then `software`. See below. |
 | Audio | AHI first (8 or 16-bit, mono or stereo, double buffered with `ahir_Link`, opened in SDL's audio thread), then Paula's audio.device. |
 | Threads, timers | Exec processes and semaphores. `SDL_Delay`, timed semaphore and condition waits use timer.device's UNIT_MICROHZ, so `SDL_Delay(1)` is a millisecond, not dos.library's 20 ms tick. |
@@ -89,7 +95,10 @@ Settings, with `SetEnv` or `SDL_SetHint`:
 - `SDL_RENDER_DRIVER=software` picks the software renderer.
 - `SDL_OPENGPU=0` keeps SDL off OpenGPU altogether.
 - `SDL_OPENGPU_STATS=1` logs, when a renderer closes, how many commands
-  OpenGPU drew and how many the CPU drew.
+  OpenGPU drew and how many the CPU drew, and how many textures were made
+  in video RAM and how many in Fast RAM.
+- `SDL_OPENGPU_VRAM=0` keeps the window surface and the textures in Fast
+  RAM on an OpenRTG screen too.
 - `SDL_AUDIODRIVER=paula` picks Paula.
 - `SDL_OPENGPU_GL=cpu` draws SDL's GL with softpipe even where the PC's
   graphics chip is there.
@@ -241,6 +250,33 @@ isn't there or the window's format isn't one OpenGPU draws.
 `tests/sdl2/rendercompare` draws the same scenes with both renderers and
 compares them.
 
+### In video RAM
+
+On a 32-bit OpenRTG screen, SDL's window surface and the opengpu renderer's
+ARGB8888 and RGB888 textures (YUV textures' XRGB surfaces among them) are in
+the video RAM of the board that shows the screen, so OpenGPU's GPU back end
+draws in them (amigachrome's `docs/design/Design-OpenGPU-2D-On-The-GPU.md`
+5.4 B; `src/video/amigaos3/SDL_os3vram.c`).
+
+- Each is a bitmap asked for as
+  `AllocBitMap(w, h, depth, BMF_DISPLAYABLE | BMF_MINPLANES, the screen's bitmap)`.
+  openrtg.library 0.19 puts such a friend in its board's video RAM while
+  displayable friends take no more than their share of it.
+- OpenRTG may still give it in Fast RAM (past that share, or with the board
+  full). SDL keeps a bitmap only when `ORTG_BitMapInfo` says it is on the
+  screen's board; otherwise it frees it and makes its surface in Fast RAM,
+  as before. The pixels and the pitch are `LockBitMapTags`'.
+- A program keeps at most 32 bitmaps in video RAM: OpenRTG has 128 blocks
+  of video RAM for every board together. Its other textures are in Fast RAM.
+- Fast RAM, as before, for anything else: a window larger than its surface
+  (it is scaled), other texture formats, an AGA, 8-bit or 16-bit screen, a
+  screen that isn't OpenRTG's, no opengpu.library, `SDL_OPENGPU=0` or
+  `SDL_OPENGPU_VRAM=0`.
+- The window is shown from video RAM by OpenGPU through each visible part
+  of its layer, or by `BltBitMapRastPort` when part of it is covered.
+- Each bitmap is freed with its texture, or with its window's surface (a
+  resize, the window closing).
+
 ## SDL2_image and SDL2_mixer: modules, decoding on the cores
 
 The design is amigachrome's `docs/design/Design-OpenGPU-SDL2-Satellites.md`.
@@ -302,7 +338,8 @@ Nothing third-party is committed. `build.sh`:
    returns for GCC 6 programs) and
    `patches/amigaos3` (the Team's changes to libSDL2-amigaos3's back ends);
 4. adds `src/` (the Team's own files: AHI, the joystick on OpenInput or
-   lowlevel.library, the clipboard, OpenGPU's helpers) and
+   lowlevel.library, the clipboard, OpenGPU's helpers, the surfaces in
+   video RAM) and
    `include/SDL_config_amigaos.h`;
 5. builds the satellites from their pinned tarballs (`satellites/`), with
    `patches/freetype` applied to FreeType (two null checks), and

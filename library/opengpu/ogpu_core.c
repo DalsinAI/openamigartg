@@ -5,7 +5,7 @@
  * The 68k runs it as the CPU back end, the Cradle's runtime runs it behind
  * ACRTG.gpu, and a PiStorm's spare ARM core runs it behind PiStorm.gpu;
  * tests/test_opengpu.c checks it against simple per-pixel references and
- * keeps golden checksums every build must match. Stream v1.2: the 2D
+ * keeps golden checksums every build must match. Stream v1.4: the 2D
  * commands here; the 3D range (0x0030-0x003F) goes to ogpu_3d.c when the
  * build links it (OGPU_WITH_3D).
  *
@@ -234,6 +234,110 @@ PX_FN void xor_raw(ogpu_u8 *p, int bpp, const ogpu_u8 *v) {
     if (bpp > 1) { p[1] ^= v[1]; if (bpp > 2) { p[2] ^= v[2]; p[3] ^= v[3]; } }
 }
 
+/* v1.4: whole 32-bit words where a row allows it (fills and copies): the
+ * same bytes as the byte loops, a quarter of the stores. The word is put
+ * together in memory order, so it is right on either byte order. */
+typedef unsigned int ogpu_w32;          /* 32 bits on the 68k and the hosts */
+PX_FN ogpu_w32 word_of(const ogpu_u8 *b) {
+    ogpu_w32 w;
+    ogpu_u8 *p = (ogpu_u8 *)&w;
+    p[0] = b[0]; p[1] = b[1]; p[2] = b[2]; p[3] = b[3];
+    return w;
+}
+PX_FN int aligned4(const void *p) { return ((unsigned long)p & 3) == 0; }
+
+/* OGPU_HOST (the Cradle's runtime defines it before it includes this file;
+ * hosts with a C library and fast 32-bit multiplies): rows copied with the
+ * C library's memmove, and COMPOSITE_PD's common cases worked on whole
+ * pixels, two channels a multiply (each byte lane rounded and saturated
+ * as mul255 and sat8 do, so the bytes are the same). The 68k keeps the
+ * byte forms: there a 32-bit multiply is slow on the AC090's JIT. */
+#ifndef OGPU_HOST
+#define OGPU_HOST 0
+#endif
+#if OGPU_HOST
+#include <string.h>
+/* each byte lane of x times a / 255, rounded as mul255 */
+PX_FN ogpu_w32 mul_lanes(ogpu_w32 x, ogpu_w32 a) {
+    ogpu_w32 rb = (x & 0x00FF00FFu) * a + 0x00800080u, ag = ((x >> 8) & 0x00FF00FFu) * a + 0x00800080u;
+    rb = ((rb + ((rb >> 8) & 0x00FF00FFu)) >> 8) & 0x00FF00FFu;
+    ag = (ag + ((ag >> 8) & 0x00FF00FFu)) & 0xFF00FF00u;
+    return rb | ag;
+}
+/* each byte lane of x + y, saturating at 255 */
+PX_FN ogpu_w32 add_lanes(ogpu_w32 x, ogpu_w32 y) {
+    ogpu_w32 rb = (x & 0x00FF00FFu) + (y & 0x00FF00FFu), ag = ((x >> 8) & 0x00FF00FFu) + ((y >> 8) & 0x00FF00FFu);
+    rb |= 0x01000100u - ((rb >> 8) & 0x00FF00FFu);
+    ag |= 0x01000100u - ((ag >> 8) & 0x00FF00FFu);
+    return (rb & 0x00FF00FFu) | ((ag & 0x00FF00FFu) << 8);
+}
+/* where an ARGB32 pixel's A (its first byte in memory) is in a word read on this host */
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define LANE_A(w) ((w) & 0xFFu)
+#define LANE_A_MASK 0x000000FFu
+#else
+#define LANE_A(w) ((w) >> 24)
+#define LANE_A_MASK 0xFF000000u
+#endif
+#endif
+
+/* n bytes of one row from sp to dp, front to back (no overlap that matters) */
+PX_FN void copy_fwd(ogpu_u8 *dp, const ogpu_u8 *sp, int n) {
+#if OGPU_HOST
+    memmove(dp, sp, (size_t)n);
+    return;
+#endif
+    if (aligned4(dp) && aligned4(sp)) {
+        ogpu_w32 *q = (ogpu_w32 *)dp;
+        const ogpu_w32 *r = (const ogpu_w32 *)sp;
+        int k = n >> 2;
+        n &= 3;
+        while (k >= 4) { q[0] = r[0]; q[1] = r[1]; q[2] = r[2]; q[3] = r[3]; q += 4; r += 4; k -= 4; }
+        while (k--) *q++ = *r++;
+        dp = (ogpu_u8 *)q; sp = (const ogpu_u8 *)r;
+    }
+    while (n--) *dp++ = *sp++;
+}
+
+/* MOVE16 (Open, 22 Oct 2026): a row copied 16 bytes a time, as whole
+ * cache lines, when source and destination are both in Fast RAM on the
+ * CPU's own bus (the library lists it; MOVE16 is a burst, which Zorro and
+ * video RAM may not take) and line up on 16 bytes with each other. The
+ * bytes are the same as copy_fwd's. 68k builds only. */
+#if (defined(__mc68040__) || defined(__mc68060__)) && defined(__GNUC__) && !OGPU_HOST
+#define OGPU_MOVE16 1
+PX_FN int in_fast(const struct ogpu_core *c, const ogpu_u8 *p, int n) {
+    ogpu_u32 a = (ogpu_u32)p, e = a + (ogpu_u32)n;
+    int i;
+    for (i = 0; i < c->nfast; i++)
+        if (a >= c->fast_lo[i] && e <= c->fast_hi[i]) return 1;
+    return 0;
+}
+static void copy_move16(ogpu_u8 *dp, const ogpu_u8 *sp, int n) {
+    int head = (int)((16 - ((ogpu_u32)dp & 15)) & 15), lines;
+    if (head) { copy_fwd(dp, sp, head); dp += head; sp += head; n -= head; }
+    lines = n >> 4;
+    n &= 15;
+    if (lines) {
+        const ogpu_u8 *s = sp;
+        ogpu_u8 *d = dp;
+        int k = lines;
+        __asm__ volatile ("1:\n\tmove16 (%0)+,(%1)+\n\tsubq.l #1,%2\n\tbne.s 1b"
+                          : "+a"(s), "+a"(d), "+d"(k) : : "cc", "memory");
+        sp = s; dp = d;
+    }
+    if (n) copy_fwd(dp, sp, n);
+}
+#else
+#define OGPU_MOVE16 0
+#endif
+
+/* n words of wv from q */
+PX_FN void fill_words(ogpu_w32 *q, ogpu_w32 wv, int n) {
+    while (n >= 4) { q[0] = wv; q[1] = wv; q[2] = wv; q[3] = wv; q += 4; n -= 4; }
+    while (n--) *q++ = wv;
+}
+
 /* The draw modes of a 1-bit source (TEMPLATE, PATTERN, LINE), worked out
  * once per command. */
 struct pen { ogpu_u8 fg[4], bg[4], flip[4]; int bpp, mode; };
@@ -385,10 +489,24 @@ OP_FN op_fill(struct ogpu_core *c, const ogpu_u8 *a, int invert) {
             else { ogpu_u8 b0 = pv[0]; for (i = 0; i < w; i++) p[i] ^= b0; }
         } else if (bpp == 4) {
             ogpu_u8 b0 = pv[0], b1 = pv[1], b2 = pv[2], b3 = pv[3];
-            for (i = 0; i < w; i++, p += 4) { p[0] = b0; p[1] = b1; p[2] = b2; p[3] = b3; }
+            if (aligned4(p)) {
+                fill_words((ogpu_w32 *)p, word_of(pv), w);
+            } else
+                for (i = 0; i < w; i++, p += 4) { p[0] = b0; p[1] = b1; p[2] = b2; p[3] = b3; }
         } else if (bpp == 2) {
             ogpu_u8 b0 = pv[0], b1 = pv[1];
-            for (i = 0; i < w; i++, p += 2) { p[0] = b0; p[1] = b1; }
+            i = 0;
+            if (((unsigned long)p & 1) == 0) {
+                if (!aligned4(p) && w) { p[0] = b0; p[1] = b1; p += 2; i = 1; }
+                if (i + 2 <= w) {
+                    ogpu_u8 q4[4];
+                    int k = (w - i) >> 1;
+                    q4[0] = b0; q4[1] = b1; q4[2] = b0; q4[3] = b1;
+                    fill_words((ogpu_w32 *)p, word_of(q4), k);
+                    i += k << 1; p += k << 2;
+                }
+            }
+            for (; i < w; i++, p += 2) { p[0] = b0; p[1] = b1; }
         } else {
             ogpu_u8 b0 = pv[0];
             for (i = 0; i < w; i++) p[i] = b0;
@@ -422,8 +540,17 @@ OP_FN op_copy(struct ogpu_core *c, const ogpu_u8 *a) {
         int r = px_at(t, x, y) > px_at(s, sx, sy) ? h - 1 - row : row;
         const ogpu_u8 *sp = px_at(s, sx, sy + r);
         ogpu_u8 *dp = px_at(t, x, y + r);
+#if OGPU_HOST
+        (void)j;
+        memmove(dp, sp, (size_t)n);         /* overlap safe, the same bytes as the loops */
+#else
         if (dp > sp && dp < sp + n) { for (j = n - 1; j >= 0; j--) dp[j] = sp[j]; }
-        else { for (j = 0; j < n; j++) dp[j] = sp[j]; }
+#if OGPU_MOVE16
+        else if (n >= 64 && c->nfast && !(((ogpu_u32)dp ^ (ogpu_u32)sp) & 15) && (dp >= sp + n || dp + n <= sp) &&
+                 in_fast(c, dp, n) && in_fast(c, sp, n)) copy_move16(dp, sp, n);
+#endif
+        else copy_fwd(dp, sp, n);
+#endif
     }
     return OGPU_OK;
 }
@@ -1002,6 +1129,280 @@ OP_FN op_yuv(struct ogpu_core *c, const ogpu_u8 *a) {
     return OGPU_OK;
 }
 
+/* YUV_SCALED (v1.5, Open, 22 Oct 2026): a part of a YUV picture converted
+ * straight into a destination rect of another size, nearest, so a video
+ * frame that is shown at its size or smaller is converted once, into the
+ * target, with no ARGB32 copy in between. The arithmetic per pixel is
+ * YUV's; source pixels are picked as COMPOSITE's nearest picks them (the
+ * centre of each destination pixel, 16.16). */
+OP_FN op_yuv_scaled(struct ogpu_core *c, const ogpu_u8 *a) {
+    ogpu_u32 ya = rd32(a), ybpr = rd32(a + 4), ua = rd32(a + 8), ubpr = rd32(a + 12), va = rd32(a + 16), vbpr = rd32(a + 20);
+    ogpu_u32 pwh = rd32(a + 24), fmt = rd32(a + 28), sxy = rd32(a + 32), swh = rd32(a + 36), dxy = rd32(a + 40), dwh = rd32(a + 44);
+    const struct ogpu_surface *t = &c->slot[c->target];
+    int layout = (int)(fmt & 255), space = (int)((fmt >> 8) & 255);
+    int pw = hi_u(pwh), ph = lo_u(pwh), sx = hi_s(sxy), sy = lo_s(sxy), sw = hi_u(swh), sh = lo_u(swh);
+    int x = hi_s(dxy), y = lo_s(dxy), w = hi_u(dwh), h = lo_u(dwh), ox, oy, i, j, dbpp = bytes_per_pixel(t->format);
+    int ky, kr, kgu, kgv, kb, yoff;
+    const ogpu_u8 *yp, *up = 0, *vp = 0;
+    ogpu_u32 len, stepx, stepy, fx0, fy;
+    ogpu_u8 *drow;
+    int packed = layout >= OGPU_YUV_YUY2 && layout <= OGPU_YUV_YVYU, semi = layout == OGPU_YUV_NV12 || layout == OGPU_YUV_NV21;
+    if (c->target < 0 || !is_colour(t->format) || layout < OGPU_YUV_I420 || layout > OGPU_YUV_YVYU || space > OGPU_YUV_JPEG)
+        return OGPU_ERR_UNSUPPORTED;
+    if (!pw || !ph || !sw || !sh || !w || !h) return OGPU_OK;
+    if ((pw | ph) & 1) return OGPU_ERR_UNSUPPORTED;
+    if (sx < 0 || sy < 0 || sx + sw > pw || sy + sh > ph) return OGPU_ERR_UNSUPPORTED;
+    switch (space) {
+    case OGPU_YUV_BT709: ky = 298; kr = 459; kgu = 55; kgv = 136; kb = 541; yoff = 16; break;
+    case OGPU_YUV_JPEG: ky = 256; kr = 359; kgu = 88; kgv = 183; kb = 454; yoff = 0; break;
+    default: ky = 298; kr = 409; kgu = 100; kgv = 208; kb = 516; yoff = 16; break;
+    }
+    if (packed) {
+        if (ybpr < (ogpu_u32)pw * 2 || ybpr > 0x01000000UL || !span_len(ybpr, ph, (ogpu_u32)pw * 2, &len)) return OGPU_ERR_UNSUPPORTED;
+        if (!(yp = c->map(c->user, ya, len))) return OGPU_ERR_NOMAP;
+    } else {
+        if (ybpr < (ogpu_u32)pw || ybpr > 0x01000000UL || !span_len(ybpr, ph, (ogpu_u32)pw, &len)) return OGPU_ERR_UNSUPPORTED;
+        if (!(yp = c->map(c->user, ya, len))) return OGPU_ERR_NOMAP;
+        if (semi) {
+            if (ubpr < (ogpu_u32)pw || ubpr > 0x01000000UL || !span_len(ubpr, ph / 2, (ogpu_u32)pw, &len)) return OGPU_ERR_UNSUPPORTED;
+            if (!(up = c->map(c->user, ua, len))) return OGPU_ERR_NOMAP;
+        } else {
+            if (ubpr < (ogpu_u32)pw / 2 || ubpr > 0x01000000UL || !span_len(ubpr, ph / 2, (ogpu_u32)pw / 2, &len)) return OGPU_ERR_UNSUPPORTED;
+            if (!(up = c->map(c->user, ua, len))) return OGPU_ERR_NOMAP;
+            if (vbpr < (ogpu_u32)pw / 2 || vbpr > 0x01000000UL || !span_len(vbpr, ph / 2, (ogpu_u32)pw / 2, &len)) return OGPU_ERR_UNSUPPORTED;
+            if (!(vp = c->map(c->user, va, len))) return OGPU_ERR_NOMAP;
+        }
+    }
+    /* 16.16 steps, once per command; the first pixel's source is at the
+     * centre of the destination's first pixel */
+    stepx = ((ogpu_u32)sw << 16) / (ogpu_u32)w;
+    stepy = ((ogpu_u32)sh << 16) / (ogpu_u32)h;
+    if (!clip_rect(c, &x, &y, &w, &h, &ox, &oy)) return OGPU_OK;
+    fx0 = ((ogpu_u32)sx << 16) + (stepx >> 1) + stepx * (ogpu_u32)ox;
+    fy = ((ogpu_u32)sy << 16) + (stepy >> 1) + stepy * (ogpu_u32)oy;
+    drow = px_at(t, x, y);
+    for (j = 0; j < h; j++, drow += t->bpr, fy += stepy) {
+        int py = (int)(fy >> 16);
+        const ogpu_u8 *yr = yp + (long)py * (long)ybpr;
+        const ogpu_u8 *ur = up ? up + (long)(py >> 1) * (long)ubpr : 0, *vr = vp ? vp + (long)(py >> 1) * (long)vbpr : 0;
+        ogpu_u8 *dp = drow;
+        ogpu_u32 fx = fx0;
+        for (i = 0; i < w; i++, dp += dbpp, fx += stepx) {
+            int px = (int)(fx >> 16), Y, U, V, cy, r, g, b;
+            if (packed) {
+                const ogpu_u8 *q = yr + ((long)(px >> 1) << 2);
+                switch (layout) {
+                case OGPU_YUV_YUY2: Y = q[(px & 1) << 1]; U = q[1]; V = q[3]; break;
+                case OGPU_YUV_UYVY: Y = q[1 + ((px & 1) << 1)]; U = q[0]; V = q[2]; break;
+                default: Y = q[(px & 1) << 1]; V = q[1]; U = q[3]; break;      /* YVYU */
+                }
+            } else {
+                Y = yr[px];
+                if (semi) {
+                    const ogpu_u8 *q = ur + ((px >> 1) << 1);
+                    if (layout == OGPU_YUV_NV12) { U = q[0]; V = q[1]; } else { V = q[0]; U = q[1]; }
+                } else { U = ur[px >> 1]; V = vr[px >> 1]; }
+            }
+            cy = SMUL16(Y - yoff, ky) + 128;
+            U -= 128; V -= 128;
+            r = (cy + SMUL16(V, kr)) >> 8;
+            g = (cy - SMUL16(U, kgu) - SMUL16(V, kgv)) >> 8;
+            b = (cy + SMUL16(U, kb)) >> 8;
+            st(dp, t->format, 255, clamp255(r), clamp255(g), clamp255(b));
+        }
+    }
+    return OGPU_OK;
+}
+
+/* ---- COMPOSITE_PD (v1.4) ------------------------------------------------------------ */
+
+/* Porter-Duff on premultiplied channels, as stream.h says: each product
+ * rounded (mul255), the sum saturating. pixman's own arithmetic, so its
+ * results come out the same. */
+PX_FN unsigned sat8(unsigned v) { return v > 255 ? 255 : v; }
+PX_FN unsigned pd2(unsigned x, unsigned fa, unsigned y, unsigned fb) {
+    return sat8(mul255(x, fa) + mul255(y, fb));
+}
+PX_FN void pd_apply(struct ch *d, const struct ch *s, int op) {
+    unsigned as = s->a, ad = d->a, fa, fb;
+    switch (op) {
+    case OGPU_PD_CLEAR: d->a = d->r = d->g = d->b = 0; return;
+    case OGPU_PD_SRC: *d = *s; return;
+    case OGPU_PD_DST: return;
+    case OGPU_PD_ADD:
+        d->a = sat8(s->a + d->a); d->r = sat8(s->r + d->r); d->g = sat8(s->g + d->g); d->b = sat8(s->b + d->b);
+        return;
+    case OGPU_PD_OVER: fa = 255; fb = 255 - as; break;
+    case OGPU_PD_OVER_REVERSE: fa = 255 - ad; fb = 255; break;
+    case OGPU_PD_IN: fa = ad; fb = 0; break;
+    case OGPU_PD_IN_REVERSE: fa = 0; fb = as; break;
+    case OGPU_PD_OUT: fa = 255 - ad; fb = 0; break;
+    case OGPU_PD_OUT_REVERSE: fa = 0; fb = 255 - as; break;
+    case OGPU_PD_ATOP: fa = ad; fb = 255 - as; break;
+    case OGPU_PD_ATOP_REVERSE: fa = 255 - ad; fb = as; break;
+    default: fa = 255 - ad; fb = 255 - as; break;       /* OGPU_PD_XOR */
+    }
+    d->a = pd2(s->a, fa, d->a, fb);
+    d->r = pd2(s->r, fa, d->r, fb);
+    d->g = pd2(s->g, fa, d->g, fb);
+    d->b = pd2(s->b, fa, d->b, fb);
+}
+
+/* v mod n, for n > 0, never negative. */
+static int wrap(int v, int n) {
+    v %= n;
+    return v < 0 ? v + n : v;
+}
+
+OP_FN op_composite_pd(struct ogpu_core *c, const ogpu_u8 *a) {
+    ogpu_u32 of = rd32(a), src = rd32(a + 4), sxy = rd32(a + 8), mask = rd32(a + 12), mxy = rd32(a + 16);
+    ogpu_u32 dxy = rd32(a + 20), dwh = rd32(a + 24);
+    const struct ogpu_surface *t = &c->slot[c->target], *s = 0, *m = 0;
+    int op = (int)(of & 255), x = hi_s(dxy), y = lo_s(dxy), w = hi_u(dwh), h = lo_u(dwh), ox, oy, i, j;
+    int sx = hi_s(sxy), sy = lo_s(sxy), mx = hi_s(mxy), my = lo_s(mxy), dbpp, sbpp = 0, mbpp = 0;
+    int srep = (of & OGPU_PD_SRC_REPEAT) != 0, mrep = (of & OGPU_PD_MASK_REPEAT) != 0;
+    unsigned malpha = 255;
+    struct ch solid = { 0, 0, 0, 0 };
+    ogpu_u8 *drow;
+    if (op >= OGPU_PD_OPS) return OGPU_ERR_UNSUPPORTED;
+    if (!is_colour(t->format) && t->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
+    if ((of & OGPU_PD_MASK) && (of & OGPU_PD_MASK_SOLID)) return OGPU_ERR_UNSUPPORTED;
+    if (of & OGPU_PD_SOLID) ch_of(src, &solid);
+    else {
+        if (src >= OGPU_MAX_SLOTS || !c->slot[src].pixels) return OGPU_ERR_NOSURFACE;
+        s = &c->slot[src];
+        if (!is_colour(s->format) && s->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
+        sbpp = bytes_per_pixel(s->format);
+    }
+    if (of & OGPU_PD_MASK) {
+        if (mask >= OGPU_MAX_SLOTS || !c->slot[mask].pixels) return OGPU_ERR_NOSURFACE;
+        m = &c->slot[mask];
+        if (!is_colour(m->format) && m->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
+        mbpp = bytes_per_pixel(m->format);
+    } else if (of & OGPU_PD_MASK_SOLID) malpha = (unsigned)(mask & 255);
+    if (!w || !h) return OGPU_OK;
+    if (!clip_rect(c, &x, &y, &w, &h, &ox, &oy)) return OGPU_OK;
+    if (op == OGPU_PD_DST) return OGPU_OK;
+    dbpp = bytes_per_pixel(t->format);
+    drow = px_at(t, x, y);
+    /* The browser's two commonest, without the general reads and writes
+     * (the same arithmetic): an ARGB32 image OVER ARGB32 or XRGB32, and a
+     * solid colour OVER them through an A8 mask (text). */
+    if (op == OGPU_PD_OVER && (t->format == OGPU_FMT_ARGB32 || t->format == OGPU_FMT_XRGB32) && !srep && !mrep &&
+        ((s && s->format == OGPU_FMT_ARGB32 && !(of & (OGPU_PD_MASK | OGPU_PD_MASK_SOLID)) &&
+          sx + ox >= 0 && sy + oy >= 0 && sx + ox + w <= s->w && sy + oy + h <= s->h) ||
+         (!s && m && m->format == OGPU_FMT_A8 && mx + ox >= 0 && my + oy >= 0 && mx + ox + w <= m->w && my + oy + h <= m->h))) {
+        int xa = t->format == OGPU_FMT_XRGB32;
+#if OGPU_HOST
+        /* whole pixels, where every row is on a 4-byte boundary */
+        if (aligned4(drow) && !(t->bpr & 3) && (!s || (aligned4(s->pixels) && !(s->bpr & 3)))) {
+            ogpu_u8 cb[4];
+            ogpu_w32 cw, xmask = xa ? ~LANE_A_MASK : 0xFFFFFFFFu;
+            cb[0] = (ogpu_u8)solid.a; cb[1] = (ogpu_u8)solid.r; cb[2] = (ogpu_u8)solid.g; cb[3] = (ogpu_u8)solid.b;
+            cw = word_of(cb);
+            for (j = 0; j < h; j++, drow += t->bpr) {
+                ogpu_w32 *dp = (ogpu_w32 *)drow;
+                if (s) {
+                    const ogpu_w32 *sp = (const ogpu_w32 *)(row_at(s, sy + oy + j) + xoff(sx + ox, 4));
+                    /* no branches: a = 255 gives v, v = 0 gives d, exactly */
+                    for (i = 0; i < w; i++) {
+                        ogpu_w32 v = sp[i];
+                        dp[i] = add_lanes(v, mul_lanes(dp[i], 255 - LANE_A(v))) & xmask;
+                    }
+                } else {
+                    const ogpu_u8 *mp = row_at(m, my + oy + j) + (mx + ox);
+                    for (i = 0; i < w; i++) {
+                        ogpu_w32 v = mul_lanes(cw, mp[i]);     /* 255 gives cw, 0 gives 0, exactly */
+                        dp[i] = add_lanes(v, mul_lanes(dp[i], 255 - LANE_A(v))) & xmask;
+                    }
+                }
+            }
+            return OGPU_OK;
+        }
+#endif
+        for (j = 0; j < h; j++, drow += t->bpr) {
+            ogpu_u8 *dp = drow;
+            if (s) {
+                const ogpu_u8 *sp = row_at(s, sy + oy + j) + xoff(sx + ox, 4);
+                for (i = 0; i < w; i++, dp += 4, sp += 4) {
+                    unsigned sa = sp[0], ia;
+                    if (sa == 255) { dp[0] = xa ? 0 : 255; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = sp[3]; continue; }
+                    if (!(sa | sp[1] | sp[2] | sp[3])) continue;
+                    ia = 255 - sa;
+                    dp[0] = xa ? 0 : (ogpu_u8)sat8(sa + mul255(dp[0], ia));
+                    dp[1] = (ogpu_u8)sat8(sp[1] + mul255(dp[1], ia));
+                    dp[2] = (ogpu_u8)sat8(sp[2] + mul255(dp[2], ia));
+                    dp[3] = (ogpu_u8)sat8(sp[3] + mul255(dp[3], ia));
+                }
+            } else {
+                const ogpu_u8 *mp = row_at(m, my + oy + j) + (mx + ox);
+                for (i = 0; i < w; i++, dp += 4) {
+                    unsigned ma = mp[i], ca, cr, cg, cb, ia;
+                    if (!ma) continue;
+                    if (ma == 255) { ca = solid.a; cr = solid.r; cg = solid.g; cb = solid.b; }
+                    else { ca = mul255(solid.a, ma); cr = mul255(solid.r, ma); cg = mul255(solid.g, ma); cb = mul255(solid.b, ma); }
+                    if (ca == 255) { dp[0] = xa ? 0 : 255; dp[1] = (ogpu_u8)cr; dp[2] = (ogpu_u8)cg; dp[3] = (ogpu_u8)cb; continue; }
+                    if (!(ca | cr | cg | cb)) continue;
+                    ia = 255 - ca;
+                    dp[0] = xa ? 0 : (ogpu_u8)sat8(ca + mul255(dp[0], ia));
+                    dp[1] = (ogpu_u8)sat8(cr + mul255(dp[1], ia));
+                    dp[2] = (ogpu_u8)sat8(cg + mul255(dp[2], ia));
+                    dp[3] = (ogpu_u8)sat8(cb + mul255(dp[3], ia));
+                }
+            }
+        }
+        return OGPU_OK;
+    }
+    for (j = 0; j < h; j++, drow += t->bpr) {
+        ogpu_u8 *dp = drow;
+        const ogpu_u8 *srow = 0, *mrow = 0;
+        int scol = 0, mcol = 0, sok = 1, mok = 1;
+        if (s) {
+            int ry = sy + oy + j;
+            if (srep) ry = wrap(ry, s->h);
+            if (ry >= 0 && ry < s->h) srow = row_at(s, ry); else sok = 0;
+            scol = sx + ox;
+            if (srep) scol = wrap(scol, s->w);
+        }
+        if (m) {
+            int ry = my + oy + j;
+            if (mrep) ry = wrap(ry, m->h);
+            if (ry >= 0 && ry < m->h) mrow = row_at(m, ry); else mok = 0;
+            mcol = mx + ox;
+            if (mrep) mcol = wrap(mcol, m->w);
+        }
+        for (i = 0; i < w; i++, dp += dbpp) {
+            struct ch sp, d;
+            unsigned ma = malpha;
+            if (s) {
+                if (sok && scol >= 0 && scol < s->w) ld(srow + xoff(scol, sbpp), s->format, &sp);
+                else sp.a = sp.r = sp.g = sp.b = 0;
+                if (++scol == s->w && srep) scol = 0;
+            } else sp = solid;
+            if (m) {
+                if (mok && mcol >= 0 && mcol < m->w) {
+                    struct ch mp;
+                    ld(mrow + xoff(mcol, mbpp), m->format, &mp);
+                    ma = mp.a;
+                } else ma = 0;
+                if (++mcol == m->w && mrep) mcol = 0;
+            }
+            if (ma != 255) {
+                sp.a = mul255(sp.a, ma); sp.r = mul255(sp.r, ma); sp.g = mul255(sp.g, ma); sp.b = mul255(sp.b, ma);
+            }
+            if (op == OGPU_PD_OVER && sp.a == 255) {          /* covers: as SRC */
+                st(dp, t->format, 255, sp.r, sp.g, sp.b);
+                continue;
+            }
+            if (op == OGPU_PD_OVER && !(sp.a | sp.r | sp.g | sp.b)) continue;
+            ld(dp, t->format, &d);
+            pd_apply(&d, &sp, op);
+            st(dp, t->format, d.a, d.r, d.g, d.b);
+        }
+    }
+    return OGPU_OK;
+}
+
 /* ---- the run ---------------------------------------------------------------------- */
 
 void ogpu_core_init(struct ogpu_core *c) {
@@ -1012,6 +1413,7 @@ void ogpu_core_init(struct ogpu_core *c) {
     c->last_error = OGPU_OK;
     c->error_word = 0;
     c->d3 = 0;
+    c->nfast = 0;
 }
 
 /* Words each opcode needs after its header (-1: not a command of the core;
@@ -1033,6 +1435,8 @@ static int args_for(int op) {
     case OGPU_OP_COMPOSITE: return 7;       /* 9 with OGPU_COMP_MASK, checked in the run */
     case OGPU_OP_COMPOSITE_AFFINE: return 11;
     case OGPU_OP_YUV: return 9;
+    case OGPU_OP_YUV_SCALED: return 12;
+    case OGPU_OP_COMPOSITE_PD: return 7;
     case OGPU_OP_FENCE: return 1;
     }
 #ifdef OGPU_WITH_3D
@@ -1097,6 +1501,8 @@ long ogpu_core_run(struct ogpu_core *c, const ogpu_u8 *stream, long words) {
         case OGPU_OP_COMPOSITE: r = op_composite(c, a); break;
         case OGPU_OP_COMPOSITE_AFFINE: r = op_composite_affine(c, a); break;
         case OGPU_OP_YUV: r = op_yuv(c, a); break;
+        case OGPU_OP_YUV_SCALED: r = op_yuv_scaled(c, a); break;
+        case OGPU_OP_COMPOSITE_PD: r = op_composite_pd(c, a); break;
         case OGPU_OP_FENCE: if (c->fence) c->fence(c->user, rd32(a)); break;
         }
         if (r != OGPU_OK && c->last_error == OGPU_OK) { c->last_error = r; c->error_word = at; }
@@ -1119,10 +1525,10 @@ int ogpu_core_supports(int op, int format) {
         return OGPU_FULL;
     case OGPU_OP_PIXELS:    /* pens only on CLUT8, coverage only on A8 */
         return format == OGPU_FMT_CLUT8 || format == OGPU_FMT_A8 ? OGPU_PARTIAL : OGPU_FULL;
-    case OGPU_OP_COMPOSITE: case OGPU_OP_MASK:
+    case OGPU_OP_COMPOSITE: case OGPU_OP_MASK: case OGPU_OP_COMPOSITE_PD:
         return format == OGPU_FMT_CLUT8 ? OGPU_NONE : OGPU_FULL;
     case OGPU_OP_FILL_BLEND: case OGPU_OP_LINES_BLEND: case OGPU_OP_POINTS_BLEND:
-    case OGPU_OP_COMPOSITE_AFFINE: case OGPU_OP_YUV:
+    case OGPU_OP_COMPOSITE_AFFINE: case OGPU_OP_YUV: case OGPU_OP_YUV_SCALED:
         return colour ? OGPU_FULL : OGPU_NONE;
     }
     return OGPU_NONE;

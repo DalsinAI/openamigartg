@@ -37,8 +37,10 @@
 #include <exec/libraries.h>
 #include <exec/execbase.h>
 #include <exec/semaphores.h>
+#include "../../include/oa_protos_begin.h"   /* the protos' unused varargs wrappers dropped */
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include "../../include/oa_protos_end.h"
 
 #include <exec/memory.h>
 #include "ogpu_core.h"
@@ -54,7 +56,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 16
+#define LIB_REVISION 17
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -80,8 +82,12 @@ struct OpenGPUBase {
     struct Interrupt low_mem;                   /* the low-memory handler: unloads unused modules */
     UBYTE low_mem_on;                           /* added (exec 39 and later) */
     struct ogfx_state ogfx;                     /* OpenGfx (library/ogfx) */
+    /* Fast RAM on the CPU's own bus, for the core's MOVE16 copies (a 68040
+     * or 68060): looked at on the first batch the CPU runs, once every
+     * board's memory is in the system. fast_state 0 not yet, 1 done. */
+    UBYTE fast_state, nfast;
+    ULONG fast_lo[OGPU_CORE_FAST], fast_hi[OGPU_CORE_FAST];
 };
-const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 
 /* No writable globals (the library may run from ROM): each function takes
  * exec and dos.library from the base, under the names the system's headers
@@ -93,10 +99,14 @@ const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
  * in the file: build.sh keeps source order (-fno-toplevel-reorder). */
 int start(void) { return -1; }
 
+/* where OpenGfx's state is in the base (library/ogfx): after the stub, as
+ * a constant before it was the file's first word */
+const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
+
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.16 (15.10.2026) OpenGPU, AmigaChrome Team\r\n";
+static const char lib_id[] = "opengpu.library 0.17 (22.10.2026) OpenGPU, AmigaChrome Team\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.16 (15.10.2026) OpenGPU, AmigaChrome Team";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.17 (22.10.2026) OpenGPU, AmigaChrome Team";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";
@@ -232,6 +242,33 @@ static int has_3d(const UBYTE *s, ULONG words)
 }
 #endif
 
+/* The Fast RAM MOVE16 may copy in: a 68040 or 68060, and memory lists
+ * marked MEMF_FAST between 16 MB and 256 MB, where motherboard and
+ * accelerator RAM are (Zorro II RAM is below, Zorro III above, and their
+ * buses may not take a burst). */
+static void fast_find(struct OpenGPUBase *base)
+{
+    EXEC(base);
+    struct MemHeader *mh;
+    UBYTE n = 0;
+    if (SysBase->AttnFlags & AFF_68040) {
+        Forbid();
+        for (mh = (struct MemHeader *)SysBase->MemList.lh_Head; mh->mh_Node.ln_Succ && n < OGPU_CORE_FAST;
+             mh = (struct MemHeader *)mh->mh_Node.ln_Succ) {
+            ULONG lo = (ULONG)mh->mh_Lower, hi = (ULONG)mh->mh_Upper;
+            if ((mh->mh_Attributes & MEMF_FAST) && !(mh->mh_Attributes & MEMF_CHIP) &&
+                lo >= 0x01000000UL && hi <= 0x10000000UL && hi > lo) {
+                base->fast_lo[n] = lo;
+                base->fast_hi[n] = hi;
+                n++;
+            }
+        }
+        Permit();
+    }
+    base->nfast = n;
+    base->fast_state = 1;   /* after the ranges: a task that sees 1 sees them */
+}
+
 /* A batch on the 68k: done when this returns. */
 static LONG cpu_run(struct OpenGPUBase *base, APTR stream, ULONG words)
 {
@@ -247,6 +284,12 @@ static LONG cpu_run(struct OpenGPUBase *base, APTR stream, ULONG words)
     core.fence = 0;
     core.ext = 0;               /* the CPU back end carries no GPU APIs: OGPU_OP_VIRGL is BADOP */
     core.user = 0;
+    if (!base->fast_state) fast_find(base);
+    {
+        int i;
+        for (i = 0; i < base->nfast; i++) { core.fast_lo[i] = base->fast_lo[i]; core.fast_hi[i] = base->fast_hi[i]; }
+        core.nfast = base->nfast;
+    }
 #ifdef OGPU_WITH_3D
     if (has_3d((const UBYTE *)stream, words) && (d3 = AllocVec(sizeof *d3, MEMF_ANY)) != NULL) {
         ogpu3d_init(d3, &core);
