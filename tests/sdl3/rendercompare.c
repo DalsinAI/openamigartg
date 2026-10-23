@@ -109,7 +109,10 @@ static void make_textures(SDL_Renderer *r, Textures *t)
         SDL_SetTextureBlendMode(t->pal, SDL_BLENDMODE_NONE);
     }
 
-    /* I420 and NV12: stripes of luma, a chroma ramp */
+    /* I420, NV12 and YUY2: stripes of luma, a chroma ramp. The chroma stays
+       in 80..220: below that a blue or red past -128 reads outside the clamp
+       table of SDL's own C conversion (yuv_rgb_std.c), which the software
+       renderer uses on the 68k. */
     for (y = 0; y < 48; y++) {
         for (x = 0; x < 64; x++) {
             planes[y * 64 + x] = (Uint8)(16 + ((x / 8) * 27) % 220);
@@ -117,8 +120,8 @@ static void make_textures(SDL_Renderer *r, Textures *t)
     }
     for (y = 0; y < 24; y++) {
         for (x = 0; x < 32; x++) {
-            planes[64 * 48 + y * 32 + x] = (Uint8)(64 + x * 4);
-            planes[64 * 48 + 32 * 24 + y * 32 + x] = (Uint8)(64 + y * 6);
+            planes[64 * 48 + y * 32 + x] = (Uint8)(80 + x * 4);
+            planes[64 * 48 + 32 * 24 + y * 32 + x] = (Uint8)(80 + y * 6);
         }
     }
     t->yuv = SDL_CreateTexture(r, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STATIC, 64, 48);
@@ -130,8 +133,8 @@ static void make_textures(SDL_Renderer *r, Textures *t)
         Uint8 uv[32 * 24 * 2];
         for (y = 0; y < 24; y++) {
             for (x = 0; x < 32; x++) {
-                uv[(y * 32 + x) * 2] = (Uint8)(64 + x * 4);
-                uv[(y * 32 + x) * 2 + 1] = (Uint8)(64 + y * 6);
+                uv[(y * 32 + x) * 2] = (Uint8)(80 + x * 4);
+                uv[(y * 32 + x) * 2 + 1] = (Uint8)(80 + y * 6);
             }
         }
         SDL_UpdateNVTexture(t->nv12, NULL, planes, 64, uv, 64);
@@ -143,9 +146,9 @@ static void make_textures(SDL_Renderer *r, Textures *t)
             for (x = 0; x < 64; x += 2) {
                 Uint8 *q = packed + (y * 64 + x) * 2;
                 q[0] = planes[y * 64 + x];
-                q[1] = (Uint8)(64 + (x / 2) * 4);
+                q[1] = (Uint8)(80 + (x / 2) * 4);
                 q[2] = planes[y * 64 + x + 1];
-                q[3] = (Uint8)(64 + (y / 2) * 6);
+                q[3] = (Uint8)(80 + (y / 2) * 6);
             }
         }
         SDL_UpdateTexture(t->yuy2, NULL, packed, 64 * 2);
