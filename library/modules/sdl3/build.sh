@@ -55,10 +55,14 @@ SUB=$(pin amigaos3 subdir)
 [ -d "$A3/.git" ] || git clone -q "$(pin amigaos3 url)" "$A3"
 git -C "$A3" cat-file -e "$COMMIT^{commit}" 2>/dev/null || git -C "$A3" fetch -q origin "$COMMIT"
 
-# 3. A fresh tree: SDL, then the back ends, the patches and the Team's files.
+# 3. A fresh tree: SDL; the opengpu renderer starts as a copy of SDL's
+#    software one (patches/sdl3/0004 turns it into the renderer); then the
+#    back ends, the patches and the Team's files.
 TREE=$WORK/$(pin sdl3 dir)
 rm -rf "$TREE"
 tar xzf "$TARBALL" -C "$WORK"
+mkdir -p "$TREE/src/render/opengpu"
+cp "$TREE/src/render/software/SDL_render_sw.c" "$TREE/src/render/opengpu/SDL_render_opengpu.c"
 for d in video audio thread timer time joystick filesystem locale dialog; do
     git -C "$A3" archive "$COMMIT" "$SUB/src/$d/amigaos3" | tar x --strip-components=1 -C "$TREE"
 done

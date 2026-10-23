@@ -1,0 +1,76 @@
+SDL3_68k's timer (Zlib): timer.device opened without a reply port, and
+closed when the program ends, so an SDL program no longer leaves a signal
+behind in the Shell that ran it. AmigaChrome Team, 2026.
+
+--- a/src/timer/amigaos3/SDL_systimer.c
++++ b/src/timer/amigaos3/SDL_systimer.c
+@@ -18,8 +18,13 @@
+ /* Required by proto/timer.h inline calls on classic AmigaOS. */
+ struct Device *TimerBase = NULL;
+ 
+-static struct MsgPort *timer_port = NULL;
+-static struct timerequest *timer_io = NULL;
++/* AmigaOS 3.x (AmigaChrome Team, 2026): the request only opens timer.device
++   for TimerBase (ReadEClock and GetSysTime send no I/O), so it has no reply
++   port, and so no signal: the port it had was never deleted, and each SDL
++   program left a signal behind in the Shell that ran it, until that Shell
++   could open no more windows. The device is closed when the program ends. */
++static struct timerequest timer_req;
++static bool timer_open = false;
+ static ULONG eclock_freq = 0;
+ 
+ static bool OS3_InitEClock(void)
+@@ -28,28 +33,16 @@
+         return true;
+     }
+ 
+-    timer_port = CreateMsgPort();
+-    if (!timer_port) {
+-        return false;
++    if (!timer_open) {
++        SDL_zero(timer_req);
++        if (OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_ECLOCK,
++                       (struct IORequest *)&timer_req, 0) != 0) {
++            return false;
++        }
++        timer_open = true;
+     }
+ 
+-    timer_io = (struct timerequest *)CreateIORequest(timer_port, sizeof(struct timerequest));
+-    if (!timer_io) {
+-        DeleteMsgPort(timer_port);
+-        timer_port = NULL;
+-        return false;
+-    }
+-
+-    if (OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_ECLOCK,
+-                   (struct IORequest *)timer_io, 0) != 0) {
+-        DeleteIORequest((struct IORequest *)timer_io);
+-        timer_io = NULL;
+-        DeleteMsgPort(timer_port);
+-        timer_port = NULL;
+-        return false;
+-    }
+-
+-    TimerBase = (struct Device *)timer_io->tr_node.io_Device;
++    TimerBase = (struct Device *)timer_req.tr_node.io_Device;
+ 
+     {
+         struct EClockVal now;
+@@ -59,6 +52,16 @@
+     return eclock_freq != 0;
+ }
+ 
++__attribute__((destructor)) static void OS3_QuitEClock(void)
++{
++    if (timer_open) {
++        CloseDevice((struct IORequest *)&timer_req);
++        timer_open = false;
++        TimerBase = NULL;
++        eclock_freq = 0;
++    }
++}
++
+ static Uint64 OS3_EClockToU64(const struct EClockVal *value)
+ {
+     return ((Uint64)value->ev_hi << 32) | (Uint64)value->ev_lo;

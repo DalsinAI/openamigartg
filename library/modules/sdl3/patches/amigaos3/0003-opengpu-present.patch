@@ -1,0 +1,29 @@
+SDL3_68k's window framebuffer (Zlib) shown through OpenGPU where it can be
+(src/video/amigaos3/SDL_os3gpu.c): one copy into the screen's bitmap through
+the window's visible parts, in place of WritePixelArray. AmigaChrome Team, 2026.
+
+--- a/src/video/amigaos3/SDL_os3framebuffer.c
++++ b/src/video/amigaos3/SDL_os3framebuffer.c
+@@ -1,6 +1,9 @@
+ #include "SDL_internal.h"
+ #if SDL_VIDEO_DRIVER_AMIGAOS3
+ #include "SDL_os3framebuffer.h"
++#ifdef SDL_VIDEO_RENDER_OPENGPU
++#include "SDL_os3gpu.h"
++#endif
+ bool OS3_CreateWindowFramebuffer(SDL_VideoDevice *_this, SDL_Window *window, Uint32 *format, void **pixels, int *pitch)
+ {
+     SDL_WindowData*d=window->internal;(void)_this;if(!d||!d->syswin)return SDL_SetError("AmigaOS3: no native window");
+@@ -12,6 +15,12 @@
+ {
+     SDL_WindowData*d=window->internal;int i;(void)_this;if(!d||!d->syswin||!d->fb_pixels)return false;
+     if(!CyberGfxBase)return SDL_SetError("AmigaOS3: RTG framebuffer currently requires CyberGraphX/P96");
++#ifdef SDL_VIDEO_RENDER_OPENGPU
++    /* AmigaOS 3.x (AmigaChrome Team, 2026): through OpenGPU, which copies the
++       rects into the screen's bitmap, where it can show the window
++       (SDL_os3gpu.h); WritePixelArray otherwise. */
++    if(window->surface&&window->surface->pixels==d->fb_pixels&&SDL_OS3_GPU_Present(window,window->surface,rects,numrects))return true;
++#endif
+     for(i=0;i<numrects;i++){const SDL_Rect*r=&rects[i];WritePixelArray((UBYTE*)d->fb_pixels+r->y*d->fb_pitch+r->x*4,0,0,d->fb_pitch,d->syswin->RPort,r->x+d->syswin->BorderLeft,r->y+d->syswin->BorderTop,r->w,r->h,RECTFMT_ARGB);}
+     return true;
+ }
