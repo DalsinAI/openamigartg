@@ -705,6 +705,23 @@ uses the host's driver through Vulkan:
   (also in COMPOSITE_PD); an A8 mask as the clip; BLUR (three box blurs,
   SVG's sizes). Integers only. `tests/test_vector.c` checks each against a
   reference in doubles. The Vulkan back end runs them on its core.
+- **Stream v1.7: what SDL 3.4's renderer needs** (23 October 2026, so
+  SDL3.module can take SDL2.module's opengpu renderer). SDL 3's
+  premultiplied blend modes (`BLEND_PREMUL`, `ADD_PREMUL`) wherever v1.2's
+  modes are taken, as SDL 3's software and GPU renderers blend them (the
+  colour modulation scales R, G and B, the alpha only A); the PIXELART
+  filter (`SDL_SCALEMODE_PIXELART`, SDL's GPU renderers' `GetPixelArtUV`)
+  in COMPOSITE, COMPOSITE_AFFINE and TRIANGLES; TRIANGLES clamping or
+  repeating each axis on its own (`SDL_SetRenderTextureAddressMode`);
+  palette textures, an INDEX8 slot read through its `PALETTE` (palette
+  cycling with no upload); the RGBA32 and ABGR32 byte orders; P010 and the
+  BT.709 full-range and BT.2020 YUV spaces; and TRIANGLES' SDL form into
+  XRGB32 (a 32-bit OpenRTG screen), BGRA32, RGBA32 and ABGR32 targets. A
+  back end that answers `PALETTE` takes all of v1.7; opengpu.library 0.19
+  sends a driver only the variants it takes. `tests/test_sdl3.c` checks
+  each; the Vulkan back end runs them on its core, except TRIANGLES with the
+  premultiplied blends, clamping one way and palette textures, which its 3D
+  shader draws as the core does (`tests/test_ogpu3d_emul.c`).
 - **TRIANGLES on the GPU** (17 October 2026): a second compute shader,
   `host/vulkan/ogpu3d.comp`, colours the pixels of the triangles
   `ogpu_3d.c` has set up, in `ogpu_3d.c`'s own integer steps, so the GPU's
@@ -839,7 +856,7 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
 ##### include/: the one include tree for programs
 
 - `opengpu/`:
-  - library owner: `opengpu.h`, `stream.h` (v1.6), `build.h` (batch builders), `driver.h`, `module.h`, `virgl.h` (the ACVirgl request format);
+  - library owner: `opengpu.h`, `stream.h` (v1.7), `build.h` (batch builders), `driver.h`, `module.h`, `virgl.h` (the ACVirgl request format);
   - Warp3D helper: `stream3d.h`, plus `build3d.h` with `ogpu_build3d.c` for its builders;
   - `gfx.h`: the OpenGfx fork's public calls.
 - `proto/`, `inline/`: `opengpu.h`.

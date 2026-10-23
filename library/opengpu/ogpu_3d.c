@@ -227,6 +227,7 @@ static int o3_bpp_of(int format) {
     case OGPU_FMT_CLUT8: case OGPU_FMT_INDEX8: case OGPU_FMT_A8: case OGPU_FMT_S8: return 1;
     case OGPU_FMT_RGB565: case OGPU_FMT_Z16: return 2;
     case OGPU_FMT_ARGB32: case OGPU_FMT_Z32: return 4;
+    case OGPU_FMT_XRGB32: case OGPU_FMT_BGRA32: case OGPU_FMT_RGBA32: case OGPU_FMT_ABGR32: return 4;   /* v1.7, SDL's form */
     }
     return 0;
 }
@@ -284,6 +285,10 @@ PIXEL void o3_texel(const struct o3_level *L, int x, int y, int *c) {
         p += x << 2;
         c[3] = p[0]; c[0] = p[1]; c[1] = p[2]; c[2] = p[3];
         return;
+    case OGPU_FMT_XRGB32: p += x << 2; c[3] = 255; c[0] = p[1]; c[1] = p[2]; c[2] = p[3]; return;   /* v1.7 */
+    case OGPU_FMT_BGRA32: p += x << 2; c[2] = p[0]; c[1] = p[1]; c[0] = p[2]; c[3] = p[3]; return;
+    case OGPU_FMT_RGBA32: p += x << 2; c[0] = p[0]; c[1] = p[1]; c[2] = p[2]; c[3] = p[3]; return;
+    case OGPU_FMT_ABGR32: p += x << 2; c[3] = p[0]; c[2] = p[1]; c[1] = p[2]; c[0] = p[3]; return;
     case OGPU_FMT_RGB565:
         o3_from565(p + (x << 1), c);
         return;
@@ -318,6 +323,46 @@ PIXEL void o3_sample(const struct o3_level *L, o3_s32 U, o3_s32 V, int bilinear,
             c[k] = (int)((o3_muluw(top, 256 - fy) + o3_muluw(bot, fy) + 128) >> 8);
         }
     }
+}
+
+/* SDL's PIXELART (v1.7) at U, V (24.8 texels): texels n and n + 1 each way
+ * mixed by smoothstep(1 - b, 1, fract(U - b / 2)), b the texels a pixel
+ * spans (stream.h's OGPU_AFF_PIXELART), with the level's wrap or clamp. */
+PIXEL int o3_pa_axis(o3_s32 P, unsigned b8, unsigned rb, unsigned *f) {
+    o3_s32 t = P - (o3_s32)(b8 >> 1);
+    int sv = (int)((o3_u32)t & 255) - 256 + (int)b8;
+    unsigned tt, q;
+    if (sv <= 0) *f = 0;
+    else {
+        tt = (unsigned)o3_muluw((o3_u32)sv, rb) >> 8;
+        if (tt >= 256) *f = 256;
+        else { q = (unsigned)o3_muluw(tt, tt) >> 8; *f = (unsigned)o3_muluw(q, 768 - (tt << 1)) >> 8; }
+    }
+    return (int)(t >> 8);
+}
+
+PIXEL void o3_sample_pa(const struct o3_level *L, const struct o3_tri *tr, o3_s32 U, o3_s32 V, int *c) {
+    int t00[4], t10[4], t01[4], t11[4], k, x, y;
+    unsigned fx, fy;
+    x = o3_pa_axis(U, tr->pbu, tr->pru, &fx);
+    y = o3_pa_axis(V, tr->pbv, tr->prv, &fy);
+    o3_texel(L, x, y, t00); o3_texel(L, x + 1, y, t10);
+    o3_texel(L, x, y + 1, t01); o3_texel(L, x + 1, y + 1, t11);
+    for (k = 0; k < 4; k++) {
+        o3_u32 top = o3_muluw((o3_u32)t00[k], 256 - fx) + o3_muluw((o3_u32)t10[k], fx);
+        o3_u32 bot = o3_muluw((o3_u32)t01[k], 256 - fx) + o3_muluw((o3_u32)t11[k], fx);
+        top = (top + 128) >> 8; bot = (bot + 128) >> 8;
+        c[k] = (int)((o3_muluw(top, 256 - fy) + o3_muluw(bot, fy) + 128) >> 8);
+    }
+}
+
+/* PIXELART's b8 and its reciprocal from a coordinate's steps across and down (24.8 texels). */
+static void o3_pa_box(o3_s32 gx, o3_s32 gy, unsigned *b8, unsigned *rb) {
+    o3_u32 b = (o3_u32)(gx < 0 ? -gx : gx) + (o3_u32)(gy < 0 ? -gy : gy);
+    if (b < 1) b = 1;
+    if (b > 256) b = 256;
+    *b8 = (unsigned)b;
+    *rb = b == 1 ? 65535u : (unsigned)(65536u / b);
 }
 
 /* ---- the state ops ------------------------------------------------------------------ */
@@ -612,6 +657,10 @@ PIXEL void o3_read_dst(const struct ogpu3d *t, const ogpu_u8 *p, int fmt, int *c
     switch (fmt) {
     case OGPU_FMT_ARGB32: c[3] = p[0]; c[0] = p[1]; c[1] = p[2]; c[2] = p[3]; return;
     case OGPU_FMT_RGB565: o3_from565(p, c); return;
+    case OGPU_FMT_XRGB32: c[3] = 255; c[0] = p[1]; c[1] = p[2]; c[2] = p[3]; return;    /* v1.7, SDL's form */
+    case OGPU_FMT_BGRA32: c[2] = p[0]; c[1] = p[1]; c[0] = p[2]; c[3] = p[3]; return;
+    case OGPU_FMT_RGBA32: c[0] = p[0]; c[1] = p[1]; c[2] = p[2]; c[3] = p[3]; return;
+    case OGPU_FMT_ABGR32: c[3] = p[0]; c[2] = p[1]; c[1] = p[2]; c[0] = p[3]; return;
     }
     if (t->palette) { const ogpu_u8 *q = t->palette + (p[0] << 2); c[3] = q[0]; c[0] = q[1]; c[1] = q[2]; c[2] = q[3]; }
     else { c[0] = c[1] = c[2] = p[0]; c[3] = 255; }
@@ -652,6 +701,10 @@ PIXEL void o3_write_px(const struct ogpu3d *t, ogpu_u8 *p, int fmt, const int *c
         p[0] = (ogpu_u8)((c[0] & 0xF8) | (c[1] >> 5));
         p[1] = (ogpu_u8)(((c[1] & 0x1C) << 3) | (c[2] >> 3));
         return;
+    case OGPU_FMT_XRGB32: p[0] = 0; p[1] = (ogpu_u8)c[0]; p[2] = (ogpu_u8)c[1]; p[3] = (ogpu_u8)c[2]; return;   /* v1.7 */
+    case OGPU_FMT_BGRA32: p[0] = (ogpu_u8)c[2]; p[1] = (ogpu_u8)c[1]; p[2] = (ogpu_u8)c[0]; p[3] = (ogpu_u8)c[3]; return;
+    case OGPU_FMT_RGBA32: p[0] = (ogpu_u8)c[0]; p[1] = (ogpu_u8)c[1]; p[2] = (ogpu_u8)c[2]; p[3] = (ogpu_u8)c[3]; return;
+    case OGPU_FMT_ABGR32: p[0] = (ogpu_u8)c[3]; p[1] = (ogpu_u8)c[2]; p[2] = (ogpu_u8)c[1]; p[3] = (ogpu_u8)c[0]; return;
     }
     p[0] = (ogpu_u8)o3_to_raw(t, fmt, c);
 }
@@ -782,7 +835,8 @@ static void o3_edge_step(struct o3_edge *e) {
 SPAN void o3_span(struct ogpu3d *t, const struct o3_pipe *pp, const struct o3_tri *tr, int py, int x0, int x1) {
     const struct ogpu_surface *dst = pp->dst;
     o3_s32 v[AT_N];
-    int i, k, fmt = pp->fmt, bpp = fmt == OGPU_FMT_ARGB32 ? 4 : fmt == OGPU_FMT_RGB565 ? 2 : 1, seg = 0;
+    int i, k, fmt = pp->fmt, bpp = o3_bpp_of(fmt), seg = 0;
+    int dalpha = fmt == OGPU_FMT_ARGB32 || fmt == OGPU_FMT_BGRA32 || fmt == OGPU_FMT_RGBA32 || fmt == OGPU_FMT_ABGR32;
     o3_u32 en = pp->en;
     ogpu_u8 *dp = dst->pixels + o3_mulw((o3_u32)dst->bpr, py) + (bpp == 4 ? x0 << 2 : bpp == 2 ? x0 << 1 : x0);
     ogpu_u8 *zp = 0, *sp = 0;
@@ -846,7 +900,8 @@ SPAN void o3_span(struct ogpu3d *t, const struct o3_pipe *pp, const struct o3_tr
         }
         if (tex) {
             int T[4];
-            o3_sample(&tr->L0, U, V, tr->bilinear, T);
+            if (tr->pixelart) o3_sample_pa(&tr->L0, tr, U, V, T);
+            else o3_sample(&tr->L0, U, V, tr->bilinear, T);
             if (tr->lfrac) {
                 int T1[4], j;
                 o3_sample(&tr->L1, U >> 1, V >> 1, tr->bilinear, T1);
@@ -908,7 +963,7 @@ SPAN void o3_span(struct ogpu3d *t, const struct o3_pipe *pp, const struct o3_tr
             if (blend) {
                 int dc[4], j;
                 o3_read_dst(t, dp, fmt, dc);
-                if (fmt != OGPU_FMT_ARGB32) dc[3] = 255;
+                if (!dalpha) dc[3] = 255;
                 if (pp->bsrc == 7 && pp->bdst == 8) {           /* the usual: SRC_ALPHA, ONE_MINUS_SRC_ALPHA */
                     int sa = f[3], da = 255 - f[3];
                     for (j = 0; j < 4; j++) f[j] = o3_m255(f[j], sa) + o3_m255(dc[j], da);
@@ -1102,6 +1157,7 @@ static int o3_fast_ok(const struct ogpu3d *t, const struct o3_pipe *pp, const st
     if (!pp->mask_all) return 0;
     if ((en & OGPU_R3D_BLEND) && !(pp->bsrc == 2 && pp->bdst == 1) && !(pp->bsrc == 7 && pp->bdst == 8)
         && !(pp->bsrc == 2 && pp->bdst == 2)) return 0;
+    if (tr->pixelart) return 0;
     if (pp->tx) {
         const struct o3_level *L = &tr->L0;
         if (L->format != OGPU_FMT_ARGB32 || tr->lfrac) return 0;
@@ -1156,6 +1212,7 @@ static void o3_draw_triangle(struct ogpu3d *t, const struct o3_pipe *pp, const s
     if ((pp->en & OGPU_R3D_FOG) && t->fogmode && t->fogmode != OGPU_FOG_VERTEX && pp->has_w) active |= 1u << AT_FI;
     if ((pp->en & OGPU_R3D_ZTEST) && t->depth.mem && pp->has_z) active |= 1u << AT_Z;
     tr.persp = 0; tr.bilinear = 0; tr.lfrac = 0;
+    tr.pixelart = 0; tr.pbu = tr.pru = tr.pbv = tr.prv = 0;
 #ifdef OGPU3D_SINK
     tr.level = 0;
 #endif
@@ -1278,6 +1335,11 @@ static void o3_draw_triangle(struct ogpu3d *t, const struct o3_pipe *pp, const s
             tr.row[k] = (o3_s32)((o3_u32)ref + o3_mulw((o3_u32)gy, ystart - ry));
         }
     }
+    if (pp->tx && pp->tx->min == OGPU3D_PIXELART && !tr.persp && !tr.lfrac) {     /* SDL's form: no perspective, one level */
+        tr.pixelart = 1;
+        o3_pa_box(tr.gx[AT_U], tr.gy[AT_U], &tr.pbu, &tr.pru);
+        o3_pa_box(tr.gx[AT_V], tr.gy[AT_V], &tr.pbv, &tr.prv);
+    }
 
     fast = !t->slow && o3_fast_ok(t, pp, &tr);
 #ifdef OGPU3D_SINK
@@ -1381,7 +1443,13 @@ static int o3_op_triangles(struct ogpu3d *t, const ogpu_u8 *a, long args) {
     }
     pp.dst = &c->slot[c->target];
     pp.fmt = pp.dst->format;
-    if (pp.fmt != OGPU_FMT_ARGB32 && pp.fmt != OGPU_FMT_RGB565 && pp.fmt != OGPU_FMT_CLUT8) return OGPU_ERR_UNSUPPORTED;
+    if (pp.fmt != OGPU_FMT_ARGB32 && pp.fmt != OGPU_FMT_RGB565 && pp.fmt != OGPU_FMT_CLUT8
+        && (three_d || (pp.fmt != OGPU_FMT_XRGB32 && pp.fmt != OGPU_FMT_BGRA32 && pp.fmt != OGPU_FMT_RGBA32
+                        && pp.fmt != OGPU_FMT_ABGR32)))      /* v1.7: SDL's form draws into any 32-bit target */
+        return OGPU_ERR_UNSUPPORTED;
+    if (!three_d && ((flags & OGPU_TRI_BLEND_MASK) > OGPU_TRI_BLEND_ADD_PREMUL
+                     || ((flags & OGPU_TRI_PIXELART) && (flags & OGPU_TRI_BILINEAR))))
+        return OGPU_ERR_UNSUPPORTED;
 
     /* the settings */
     pp.tx = 0;
@@ -1407,6 +1475,8 @@ static int o3_op_triangles(struct ogpu3d *t, const ogpu_u8 *a, long args) {
         case OGPU_TRI_BLEND_ADD: pp.bsrc = 7; pp.bdst = 2; break;          /* SRC_ALPHA, ONE */
         case OGPU_TRI_BLEND_MOD: pp.bsrc = 1; pp.bdst = 3; break;          /* ZERO, SRC_COLOR */
         case OGPU_TRI_BLEND_MUL: pp.bsrc = 4; pp.bdst = 8; break;          /* DST_COLOR, 1 - SRC_ALPHA */
+        case OGPU_TRI_BLEND_PREMUL: pp.bsrc = 2; pp.bdst = 8; break;       /* v1.7: ONE, 1 - SRC_ALPHA */
+        case OGPU_TRI_BLEND_ADD_PREMUL: pp.bsrc = 2; pp.bdst = 2; break;   /* v1.7: ONE, ONE */
         }
         if (pp.bsrc != 2 || pp.bdst != 1) pp.en |= OGPU_R3D_BLEND;
     }
@@ -1415,13 +1485,19 @@ static int o3_op_triangles(struct ogpu3d *t, const ogpu_u8 *a, long args) {
         const struct ogpu_surface *s = &c->slot[texw];
         if (!s->pixels) return OGPU_ERR_NOSURFACE;
         if (s->bpr > 0xFFFF) return OGPU_ERR_UNSUPPORTED;
+        /* v1.7: only formats the sampler reads (the 16-bit PC and 555 orders it doesn't);
+         * an INDEX8 slot through its PALETTE */
+        if (!o3_bpp_of(s->format) || s->format == OGPU_FMT_RGB565PC || s->format == OGPU_FMT_RGB555
+            || s->format == OGPU_FMT_RGB555PC || (s->format == OGPU_FMT_INDEX8 && !s->table))
+            return OGPU_ERR_UNSUPPORTED;
         slot_tex.level[0] = s->pixels; slot_tex.bpr[0] = s->bpr;
         slot_tex.w = s->w; slot_tex.h = s->h; slot_tex.levels = 1;
         slot_tex.format = s->format; slot_tex.bpp = o3_bpp_of(s->format);
         slot_tex.base = s->format == OGPU_FMT_A8 ? OGPU_TEXBASE_ALPHA : OGPU_TEXBASE_RGBA;
-        slot_tex.table = 0;
-        slot_tex.min = slot_tex.mag = (flags & OGPU_TRI_BILINEAR) ? 2 : 1;
-        slot_tex.wrap_s = slot_tex.wrap_t = (flags & OGPU_TRI_CLAMP) ? OGPU_WRAP_CLAMP : OGPU_WRAP_REPEAT;
+        slot_tex.table = s->format == OGPU_FMT_INDEX8 ? s->table : 0;
+        slot_tex.min = slot_tex.mag = (flags & OGPU_TRI_BILINEAR) ? 2 : (!three_d && (flags & OGPU_TRI_PIXELART)) ? OGPU3D_PIXELART : 1;
+        slot_tex.wrap_s = (flags & OGPU_TRI_CLAMP) || (!three_d && (flags & OGPU_TRI_CLAMP_U)) ? OGPU_WRAP_CLAMP : OGPU_WRAP_REPEAT;
+        slot_tex.wrap_t = (flags & OGPU_TRI_CLAMP) || (!three_d && (flags & OGPU_TRI_CLAMP_V)) ? OGPU_WRAP_CLAMP : OGPU_WRAP_REPEAT;
         slot_tex.border = 0;
         pp.tx = &slot_tex;
         pp.base = slot_tex.base;
@@ -1574,6 +1650,8 @@ int ogpu3d_supports(int op, int format) {
     if (!ogpu3d_is_op(op)) return OGPU_NONE;
     if (op == OGPU_OP_TRIANGLES)
         return format == OGPU_FMT_ARGB32 || format == OGPU_FMT_RGB565 ? OGPU_FULL
-             : format == OGPU_FMT_CLUT8 ? OGPU_PARTIAL : OGPU_NONE;       /* CLUT8 through a pen table */
+             : format == OGPU_FMT_CLUT8 ? OGPU_PARTIAL                    /* CLUT8 through a pen table */
+             : format == OGPU_FMT_XRGB32 || format == OGPU_FMT_BGRA32 || format == OGPU_FMT_RGBA32
+               || format == OGPU_FMT_ABGR32 ? OGPU_PARTIAL : OGPU_NONE;   /* v1.7: SDL's form only */
     return OGPU_FULL;
 }

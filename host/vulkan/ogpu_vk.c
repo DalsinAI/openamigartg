@@ -25,7 +25,11 @@
  * pixel, as LINE does). Stream v1.4's COMPOSITE_PD and v1.6's PATH_FILL,
  * PATH_STROKE and BLUR run on the core too: the GPU path doesn't take
  * them (gpu_op), so the run waits for the GPU and hands them on, and
- * ogpu_vk_supports answers as the core does.
+ * ogpu_vk_supports answers as the core does. So do v1.7's (SDL 3's): its
+ * premultiplied blend modes, PIXELART, PALETTE and INDEX8 sources and
+ * targets, the RGBA32 and ABGR32 orders, P010 and the new YUV colour spaces
+ * are refused by the GPU path's checks below and drawn by the core;
+ * TRIANGLES with them likewise (ogpu3d_rec.c's o3r_can).
  *
  * Routing (docs/design/Design-OpenGPU-2D-On-The-GPU.md 5.2, in amigachrome):
  * a command the GPU path takes is drawn there only where that is faster,
@@ -555,6 +559,7 @@ static const struct ogpu_surface *gpu_target(const struct ogpu_vk *vk, ogpu_u32 
     if (vk->core.target < 0) return 0;
     t = &vk->core.slot[vk->core.target];
     if (!t->pixels) return 0;
+    if (t->format == OGPU_FMT_INDEX8) return 0;     /* v1.7: an INDEX8 slot's indexes are the core's */
     bpp = bytes_per_pixel(t->format);
     if (!bpp) return 0;
     o = vram_off(vk, t->pixels, (unsigned long)(t->bpr * (t->h - 1) + (long)t->w * bpp));
@@ -810,6 +815,7 @@ static int gpu_composite(struct ogpu_vk *vk, const ogpu_u8 *a) {
     if (!t || slot >= OGPU_MAX_SLOTS || !vk->core.slot[slot].pixels) return 0;
     s = &vk->core.slot[slot];
     if (t->format == OGPU_FMT_CLUT8 || s->format == OGPU_FMT_CLUT8) return 0;
+    if (s->format == OGPU_FMT_INDEX8) return 0;     /* v1.7: through its PALETTE, on the core */
     if (!bytes_per_pixel(s->format)) return 0;      /* a format the shader doesn't read: the core's */
     if ((flags & OGPU_COMP_ADD) && (flags & OGPU_COMP_IN)) return 0;
     /* v1.2's blend modes (SDL's copies), as the core's blend12 */
@@ -966,6 +972,7 @@ static int gpu_affine(struct ogpu_vk *vk, const ogpu_u8 *a) {
     if (!t || slot >= OGPU_MAX_SLOTS || !vk->core.slot[slot].pixels) return 0;
     s = &vk->core.slot[slot];
     if (!blend_format(t->format) || !blend_format(s->format) || mode > OGPU_BLEND_MUL) return 0;
+    if (flags & OGPU_AFF_PIXELART) return 0;        /* v1.7: the core's */
     if (!sw || !sh) return 1;
     if (sx < 0 || sy < 0 || sx + sw > s->w || sy + sh > s->h) return 0;
     if (sw >= 0x8000 || sh >= 0x8000) return 0;                      /* the shader's 16.16 sizes are 32-bit */

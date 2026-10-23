@@ -18,7 +18,12 @@
  * Rules for both: pixel centres at +0.5, the top-left fill rule, both
  * windings drawn (culling is the caller's), coordinates within +-16383.
  * 3D pictures are compared with a tolerance (+-2 a channel, edge pixels
- * excepted): a GPU never matches an integer core bit for bit. */
+ * excepted): a GPU never matches an integer core bit for bit.
+ * v1.7, SDL's form only (what SDL 3's renderer needs): the target may also
+ * be XRGB32 (a 32-bit OpenRTG screen), BGRA32, RGBA32 or ABGR32; the texture
+ * slot may be ARGB32, XRGB32, BGRA32, RGBA32, ABGR32, RGB565, A8, or INDEX8
+ * with its PALETTE (stream.h), and any other format is UNSUPPORTED; and the
+ * flags take the premultiplied blends, PIXELART and clamping one way. */
 #ifndef OPENGPU_STREAM3D_H
 #define OPENGPU_STREAM3D_H
 
@@ -56,8 +61,17 @@
 #define OGPU_TRI_BLEND_ADD      2       /* dst + src * srcA, saturating */
 #define OGPU_TRI_BLEND_MOD      3       /* dst * src */
 #define OGPU_TRI_BLEND_MUL      4       /* dst * src + dst * (1 - srcA) */
+#define OGPU_TRI_BLEND_PREMUL   5       /* v1.7: src + dst * (1 - srcA), premultiplied (stream.h's BLEND_PREMUL) */
+#define OGPU_TRI_BLEND_ADD_PREMUL 6     /* v1.7: src + dst, premultiplied, saturating */
 #define OGPU_TRI_BILINEAR       8
-#define OGPU_TRI_CLAMP          16      /* clamp, not repeat */
+#define OGPU_TRI_CLAMP          16      /* clamp, not repeat, both ways */
+/* v1.7 (SDL's form): SDL 3's pixel-art filter (stream.h's OGPU_AFF_PIXELART,
+ * with each triangle's own texels per pixel), not with BILINEAR; and
+ * clamping one way only (SDL_SetRenderTextureAddressMode's u and v), the
+ * other way repeating unless CLAMP is set too. */
+#define OGPU_TRI_PIXELART       32
+#define OGPU_TRI_CLAMP_U        64
+#define OGPU_TRI_CLAMP_V        128
 
 /* TRIANGLES' layout word (3D form): the primitive and the extra vertex
  * fields, which follow x, y, ARGB32, u, v in this order. */

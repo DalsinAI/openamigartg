@@ -32,6 +32,15 @@
  * PATH_STROKE), gradients and patterns as their paint, BLUR, and the W3C
  * blend modes as operators. A driver that doesn't take them leaves its
  * batch to the CPU, as for any newer command.
+ * 0.19: stream v1.7 (SDL 3.4's renderer) on the CPU back end: premultiplied
+ * blend modes, PIXELART, TRIANGLES' clamping one way, PALETTE and INDEX8
+ * sources, RGBA32 and ABGR32, P010 and the BT.709 full range and BT.2020
+ * YUV spaces, and TRIANGLES (SDL's form) into any 32-bit target. A batch
+ * goes to a driver only if the driver takes each command's variant too, not
+ * only its opcode: v1.7's in a v1.2 command need a driver that answers
+ * PALETTE, and v1.6's blend modes in COMPOSITE_PD one that answers
+ * PATH_FILL (0.18 checked opcodes only, so an older runtime refused such a
+ * COMPOSITE_PD and its pixels were missing).
  * Built bare by library/build.sh.
  */
 #include <exec/types.h>
@@ -52,6 +61,7 @@
 #include "ogpu_3d.h"
 #endif
 #include "../../include/opengpu/opengpu.h"
+#include "ogpu_variant.h"                       /* driver_takes' look at each command's variant */
 #include "../../include/opengpu/driver.h"
 #include "../../include/opengpu/module.h"
 #include "ogpu_module.h"
@@ -60,7 +70,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 18
+#define LIB_REVISION 19
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -108,9 +118,9 @@ int start(void) { return -1; }
 const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.18 (23.10.2026) OpenGPU, AmigaChrome Team\r\n";
+static const char lib_id[] = "opengpu.library 0.19 (23.10.2026) OpenGPU, AmigaChrome Team\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.18 (23.10.2026) OpenGPU, AmigaChrome Team";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.19 (23.10.2026) OpenGPU, AmigaChrome Team";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";
@@ -454,9 +464,12 @@ static int driver_takes(struct OpenGPUBase *base, const UBYTE *s, ULONG words)
 {
     ULONG at = 0;
     while (at < words) {
-        UWORD op = (UWORD)(s[at * 4] << 8 | s[at * 4 + 1]), len = (UWORD)(s[at * 4 + 2] << 8 | s[at * 4 + 3]);
+        UWORD op = (UWORD)(s[at * 4] << 8 | s[at * 4 + 1]), len = (UWORD)(s[at * 4 + 2] << 8 | s[at * 4 + 3]), need;
         if (op > 255 || !base->drv_ok[op]) return 0;
         if (!len) return 1;                     /* a bad length: the driver says so, as the CPU would */
+        if (at + len > words) return 1;         /* a length past the batch: likewise */
+        need = (UWORD)ogpu_variant_needs(s, at, op, len);
+        if (need && !base->drv_ok[need]) return 0;
         /* A surface in a format the driver doesn't know (a newer stream's,
          * against an older runtime): the CPU draws the batch. Depth and
          * stencil (stream3d.h) are the 3D commands' to answer. */

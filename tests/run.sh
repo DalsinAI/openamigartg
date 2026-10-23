@@ -24,6 +24,12 @@ cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanit
 cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined \
     -o "$OUT/test_vector" "$HERE/test_vector.c" "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c" -lm
 "$OUT/test_vector"
+# Stream v1.7 (SDL 3's blend modes, PIXELART, clamping one way, PALETTE, RGBA32 and ABGR32,
+# P010 and the new YUV spaces; the library's variant check) against its references, with
+# the 3D rasteriser for TRIANGLES' SDL form.
+cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined -DOGPU_WITH_3D \
+    -o "$OUT/test_sdl3" "$HERE/test_sdl3.c" "$OGPU/ogpu_core.c" "$OGPU/ogpu_3d.c" "$OGPU/ogpu_build.c" "$OGPU/ogpu_build3d.c" -lm
+"$OUT/test_sdl3"
 # The Vulkan back end against the core, when Vulkan's loader and headers are there
 # (it skips itself when no device is found; lavapipe will do). Built with the 3D
 # range (OGPU_WITH_3D), as the runtime is: TRIANGLES on the 3D shader, the rest

@@ -521,6 +521,10 @@ static int o3r_can(struct ogpu3d_rec *r) {
     const ogpu_u8 *wr[3][2], *rd[6][2];
     int nw = 0, nr = 0, i, j;
     unsigned long worst;
+    /* v1.7: SDL's form also draws into the other 32-bit orders, and samples with
+     * PIXELART: the core's, as the shader knows neither */
+    if (pp->fmt != OGPU_FMT_ARGB32 && pp->fmt != OGPU_FMT_RGB565 && pp->fmt != OGPU_FMT_CLUT8) return 0;
+    if (pp->tx && (pp->tx->min == OGPU3D_PIXELART || pp->tx->mag == OGPU3D_PIXELART)) return 0;
     r->ctg.mem = d->pixels; r->ctg.bpr = d->bpr; r->ctg.w = d->w; r->ctg.h = d->h; r->ctg.fmt = pp->fmt;
     r->ctg.bpp = pp->fmt == OGPU_FMT_ARGB32 ? 4 : pp->fmt == OGPU_FMT_RGB565 ? 2 : 1;
     if (r->ctg.bpr < (long)r->ctg.w * r->ctg.bpp || r->ctg.w > 65535) return 0;
