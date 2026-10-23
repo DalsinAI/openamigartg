@@ -96,12 +96,14 @@ SRCS_CORE = \
 	video/dummy/SDL_nullframebuffer.c video/dummy/SDL_nullvideo.c \
 	filesystem/SDL_filesystem.c audio/dummy/SDL_dummyaudio.c
 
-# The Amiga back ends: SDL3_68k's (Zlib) with patches/amigaos3.
+# The Amiga back ends: SDL3_68k's (Zlib) with patches/amigaos3, and the
+# Team's (src/): OpenGPU, and the opengpu renderer (patches/sdl3/0004).
 SRCS_AMIGA = \
 	video/amigaos3/SDL_os3video.c video/amigaos3/SDL_os3window.c \
 	video/amigaos3/SDL_os3framebuffer.c video/amigaos3/SDL_os3events.c \
 	video/amigaos3/SDL_os3keyboard.c video/amigaos3/SDL_os3modes.c \
 	video/amigaos3/SDL_os3mouse.c video/amigaos3/SDL_os3messagebox.c \
+	video/amigaos3/SDL_os3gpu.c render/opengpu/SDL_render_opengpu.c \
 	audio/amigaos3/SDL_os3audio.c \
 	thread/amigaos3/SDL_systhread.c thread/amigaos3/SDL_sysmutex.c \
 	thread/amigaos3/SDL_syssem.c thread/amigaos3/SDL_systls.c \
@@ -123,8 +125,10 @@ CORE_DIR   = $(WORK)/obj-module
 STUB_DIR   = $(WORK)/obj-stub
 TEST_DIR   = $(OUT)/tests/sdl3
 
-STATIC_OBJS = $(addprefix $(STATIC_DIR)/,$(SRCS:.c=.o))
-CORE_OBJS   = $(addprefix $(CORE_DIR)/,$(SRCS:.c=.o))
+# OpenGPU's batch builders (library/opengpu), in SDL as in SDL2.module.
+OGPU_OBJS   = ogpu_build.o ogpu_build3d.o
+STATIC_OBJS = $(addprefix $(STATIC_DIR)/,$(SRCS:.c=.o) $(OGPU_OBJS))
+CORE_OBJS   = $(addprefix $(CORE_DIR)/,$(SRCS:.c=.o) $(OGPU_OBJS))
 TEST_OBJS   = $(addprefix $(STATIC_DIR)/,$(SRCS_TEST:.c=.o))
 INLINE      = $(SDK_INC)/inline/opengpu.h
 
@@ -148,6 +152,12 @@ $(STATIC_DIR)/%.o: $(SDL)/src/%.c $(INLINE) $(CONFIG_H)
 $(CORE_DIR)/%.o: $(SDL)/src/%.c $(INLINE) $(CONFIG_H)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_BASE) $(MODULE_CFLAGS) -DSDL_OPEN_LIBRARY_BUILD=1 -c $< -o $@
+$(STATIC_DIR)/ogpu_%.o: $(OGPU_SRC)/ogpu_%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_BASE) -c $< -o $@
+$(CORE_DIR)/ogpu_%.o: $(OGPU_SRC)/ogpu_%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_BASE) $(MODULE_CFLAGS) -c $< -o $@
 
 $(OUT)/libSDL3_static.a: $(STATIC_OBJS)
 	@rm -f $@; $(AR) rcs $@ $^; $(RANLIB) $@; echo "built $@"
@@ -210,6 +220,20 @@ $(STATIC_TESTS): $(TEST_DIR)/%: $(TEST_DIR)/obj/%.o $(TEST_RUN) $(OUT)/libSDL3_s
 	$(CC) $(CPU) -noixemul -o $@ $< $(TEST_RUN) -L$(OUT) -lSDL3_test -lSDL3_static -lm -lamiga
 $(MODULE_TESTS): $(TEST_DIR)/%.m: $(TEST_DIR)/obj/%.o $(TEST_RUN) $(OUT)/libSDL3.a $(OUT)/libSDL3_test.a
 	$(CC) $(CPU) -noixemul -o $@ $< $(TEST_RUN) -L$(OUT) -lSDL3_test -lSDL3 -lm -lamiga
+
+# The Team's own (tests/sdl3): rendercompare checks the opengpu renderer's
+# pictures against the software renderer's (rendercompare_host.sh runs it on
+# a PC). rendercompare is static, rendercompare.m on the module.
+OWN_TESTS = rendercompare
+OWNTEST_OBJS = $(addprefix $(TEST_DIR)/obj/,$(addsuffix .o,$(OWN_TESTS)))
+tests: $(addprefix $(TEST_DIR)/,$(OWN_TESTS)) $(addsuffix .m,$(addprefix $(TEST_DIR)/,$(OWN_TESTS)))
+$(OWNTEST_OBJS): $(TEST_DIR)/obj/%.o: $(ROOT)/tests/sdl3/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_BASE) -c $< -o $@
+$(addprefix $(TEST_DIR)/,$(OWN_TESTS)): $(TEST_DIR)/%: $(TEST_DIR)/obj/%.o $(OUT)/libSDL3_static.a
+	$(CC) $(CPU) -noixemul -o $@ $< -L$(OUT) -lSDL3_static -lm -lamiga
+$(addsuffix .m,$(addprefix $(TEST_DIR)/,$(OWN_TESTS))): $(TEST_DIR)/%.m: $(TEST_DIR)/obj/%.o $(OUT)/libSDL3.a
+	$(CC) $(CPU) -noixemul -o $@ $< -L$(OUT) -lSDL3 -lm -lamiga
 
 # nomodule.m: that a program ends when SDL3.module isn't there
 # (tests/sdl3/nomodule.c, run with the module renamed away).

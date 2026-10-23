@@ -85,6 +85,7 @@
 /* The Amiga back ends: SDL3_68k's (patches/amigaos3). */
 #define SDL_VIDEO_DRIVER_AMIGAOS3 1
 #define SDL_VIDEO_DRIVER_DUMMY 1
+#define SDL_VIDEO_RENDER_OPENGPU 1 /* the Team's: patches/sdl3/0004, src/video/amigaos3/SDL_os3gpu.c */
 #define SDL_VIDEO_RENDER_SW 1
 #define SDL_AMIGAOS3_SW_ONLY 1     /* SDL3_68k's switch: no MiniGL */
 #define SDL_AUDIO_DRIVER_AMIGAOS3 1
