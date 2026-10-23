@@ -22,6 +22,13 @@
  * v1.5 (22 October 2026) adds YUV_SCALED: a part of a YUV picture converted
  * straight into a destination rect of any size (nearest), so a video frame
  * reaches the target in one pass.
+ * v1.6 (23 October 2026) adds vector drawing, so that opengpu.library is the
+ * one place for a browser's pixels (no cairo, no pixman): PATH_FILL (an
+ * anti-aliased path, non-zero or even-odd), PATH_STROKE (widths, caps,
+ * joins, dashes), gradients (linear, radial, conic) as a path's paint, BLUR
+ * (shadows), and the W3C blend modes (multiply to luminosity) as operators of
+ * COMPOSITE_PD and of the paths. A back end that answers PATH_FILL in
+ * OGPU_Query takes all of v1.6.
  *
  * A stream is 32-bit words, big-endian (the Amiga's order) wherever it is
  * read. Each command starts with a header word: the opcode in the top 16
@@ -43,7 +50,7 @@
 #define OPENGPU_STREAM_H
 
 #define OGPU_STREAM_VERSION 1
-#define OGPU_STREAM_MINOR   5
+#define OGPU_STREAM_MINOR   6
 
 #define OGPU_HDR(op, words)     (((unsigned long)(op) << 16) | ((unsigned long)(words) & 0xFFFFUL))
 #define OGPU_HDR_OP(w)          ((unsigned)((w) >> 16))
@@ -110,6 +117,14 @@
 #define OGPU_OP_YUV_SCALED      0x0024  /* v1.5: YUV's six plane words, the picture's
                                            wh, format, then the part's source xy and
                                            wh, and the destination xy and wh (nearest)  13 */
+#define OGPU_OP_PATH_FILL       0x0025  /* v1.6: flags (operator, winding, paint), paint,
+                                           paint xy, mask slot, mask xy, path address,
+                                           path words, m00, m01, m02, m10, m11, m12,
+                                           work address, work bytes                     16 */
+#define OGPU_OP_PATH_STROKE     0x0026  /* v1.6: PATH_FILL's words, then width, style
+                                           (cap, join), miter limit, dash address,
+                                           dash count, dash offset                      22 */
+#define OGPU_OP_BLUR            0x0027  /* v1.6: xy, wh, radii, work address, work bytes 6  */
 /* 0x0030-0x003F: 3D (TRIANGLES, RENDER3D, TEXENV, TEXTURE, DEPTH, CLEAR3D):
  * include/opengpu/stream3d.h. */
 #define OGPU_OP_FENCE           0x00F0  /* id: reported when everything before is done   2  */
@@ -176,12 +191,160 @@
 #define OGPU_PD_ATOP_REVERSE    10
 #define OGPU_PD_XOR             11
 #define OGPU_PD_ADD             12
-#define OGPU_PD_OPS             13      /* operators 0 .. OGPU_PD_OPS - 1; others are UNSUPPORTED */
+#define OGPU_PD_OPS             13      /* operators 0 .. OGPU_PD_OPS - 1, and from v1.6 the blend modes below */
 #define OGPU_PD_SOLID           0x0100  /* the source word is a premultiplied ARGB32 colour, not a slot */
 #define OGPU_PD_MASK            0x0200  /* a mask: the mask word is a slot (A8 or ARGB32) */
 #define OGPU_PD_MASK_SOLID      0x0400  /* a mask: the mask word's low byte is a constant alpha */
 #define OGPU_PD_SRC_REPEAT      0x0800  /* the source tiles (pixman's REPEAT_NORMAL) */
 #define OGPU_PD_MASK_REPEAT     0x1000  /* the mask tiles */
+
+/* v1.6: the W3C blend modes (Compositing and Blending Level 1), with pixman's
+ * numbers, as operators of COMPOSITE_PD, PATH_FILL and PATH_STROKE. Each is
+ * source-over with the colour mixed by the mode B:
+ *   co = cs (1 - ad) + cd (1 - as) + as ad B(Cd, Cs),  ao = as + ad - as ad
+ * on premultiplied channels (Cs = cs / as and Cd = cd / ad are the
+ * unpremultiplied colours), in integers: B's products exact, co rounded once
+ * (to within 1 of the real formula; soft-light's square root and the HSL
+ * modes' divisions within 2). The HSL modes use the spec's luminosity
+ * 0.3 R + 0.59 G + 0.11 B and its ClipColor. */
+#define OGPU_BLEND_MULTIPLY     0x30
+#define OGPU_BLEND_SCREEN       0x31
+#define OGPU_BLEND_OVERLAY      0x32
+#define OGPU_BLEND_DARKEN       0x33
+#define OGPU_BLEND_LIGHTEN      0x34
+#define OGPU_BLEND_COLOR_DODGE  0x35
+#define OGPU_BLEND_COLOR_BURN   0x36
+#define OGPU_BLEND_HARD_LIGHT   0x37
+#define OGPU_BLEND_SOFT_LIGHT   0x38
+#define OGPU_BLEND_DIFFERENCE   0x39
+#define OGPU_BLEND_EXCLUSION    0x3A
+#define OGPU_BLEND_HUE          0x3B
+#define OGPU_BLEND_SATURATION   0x3C
+#define OGPU_BLEND_COLOR        0x3D
+#define OGPU_BLEND_LUMINOSITY   0x3E
+
+/* v1.6: PATH_FILL and PATH_STROKE. Coordinates are device pixels: the
+ * target's, with no picture drawn larger and scaled down.
+ *   The path is words in memory (path address, path words): each element a
+ *   verb, then its points, each an x and a y word in 24.8 (signed):
+ *   MOVE 1 point, LINE 1, QUAD 2 (control, end), CUBIC 3, CLOSE none; a
+ *   path that doesn't start with MOVE starts at (0, 0).
+ *   A point (x, y) is drawn at x' = m00 x + m01 y + m02, y' = m10 x + m11 y
+ *   + m12 (the matrix 16.16, as COMPOSITE_AFFINE's), y down.
+ *   PATH_FILL closes each subpath and fills it, non-zero unless EVENODD.
+ *   Coverage is the exact area of each pixel inside the path (curves cut
+ *   into lines within 1/16 pixel), 0-255.
+ *   PATH_STROKE fills the outline of the path's stroke, non-zero: width (16.16,
+ *   in the path's units, so the matrix scales it), the cap and join in the
+ *   style word, the miter limit (16.16, as canvas's miterLimit: a miter
+ *   longer than limit times half the width is bevelled), and dashes: dash
+ *   count 16.16 lengths at dash address (on, off, on, ...; an odd count is
+ *   used twice, as canvas does; 0 or a zero total: solid), started dash
+ *   offset into the pattern at each subpath. A dashed subpath's pieces each
+ *   have caps, but a closed one on at its start and its end has one piece
+ *   there, joined where it starts; an undashed closed one has joins all round.
+ *   The paint, for each pixel's centre: a premultiplied ARGB32 colour (the
+ *   paint word), a slot (PATH_SLOT: the slot's pixel (x - px, y - py) for
+ *   paint xy px, py; outside it 0, or tiled with PATH_REPEAT), or a gradient
+ *   (PATH_GRADIENT: the paint word is its address, below), or a picture
+ *   under a matrix (PATH_PATTERN: the paint word is a pattern's address,
+ *   below: drawImage and patterns with a transform). With PATH_MASK,
+ *   the coverage is times the A8 or ARGB32 mask slot's alpha at (x - mx, y -
+ *   my) (0 outside): a clip path drawn into an A8 surface first. To clip by
+ *   two paths, draw the second into the mask with IN.
+ *   Then, as COMPOSITE_PD with that coverage as its mask: s = paint times
+ *   coverage, d = operator(s, d), stored in the target's format (any but
+ *   CLUT8; an A8 target keeps only alpha, so a clip mask is drawn as one).
+ *   The operators that change a pixel s = 0 doesn't (CLEAR, SRC, IN,
+ *   IN_REVERSE, OUT, ATOP_REVERSE) act on the whole drawable rectangle, as
+ *   canvas's do; the rest only where the path is.
+ *   work address and work bytes: memory the back end may use while it draws
+ *   (aligned on 4 bytes, not a surface): at least 32 bytes per pixel of the
+ *   target's width, more draws in fewer passes (32 x width x height: one).
+ *   The CPU back end resolves the winding rule per quarter of a pixel's
+ *   height: where two pieces of a path overlap inside a pixel (a
+ *   self-crossing, a stroke's inner join that can't meet, dashes whose caps
+ *   overlap), that pixel may be off by up to a quarter of it. */
+#define OGPU_PATH_MOVE          0
+#define OGPU_PATH_LINE          1
+#define OGPU_PATH_QUAD          2
+#define OGPU_PATH_CUBIC         3
+#define OGPU_PATH_CLOSE         4
+#define OGPU_PATH_EVENODD       0x0100  /* the even-odd rule (else non-zero) */
+#define OGPU_PATH_SLOT          0x0200  /* the paint word is a slot */
+#define OGPU_PATH_GRADIENT      0x0400  /* the paint word is a gradient's address */
+#define OGPU_PATH_REPEAT        0x0800  /* the slot tiles */
+#define OGPU_PATH_MASK          0x1000  /* the mask slot's alpha multiplies the coverage */
+#define OGPU_PATH_PATTERN       0x2000  /* the paint word is a pattern's address */
+/* PATH_STROKE's style word: a cap in bits 0-3, a join in bits 4-7. */
+#define OGPU_CAP_BUTT           0
+#define OGPU_CAP_ROUND          1
+#define OGPU_CAP_SQUARE         2
+#define OGPU_JOIN_MITER         0x00
+#define OGPU_JOIN_ROUND         0x10
+#define OGPU_JOIN_BEVEL         0x20
+
+/* v1.6: a gradient in memory, words: kind and spread (kind in bits 0-7,
+ * spread in 8-15), the stop count n (1 or more), the matrix m00, m01, m02,
+ * m10, m11, m12 (16.16, the gradient's space to the target, as a path's),
+ * six geometry words (16.16, in the gradient's space), then n stops, each
+ * an offset (16.16, 0 to 0x10000, not decreasing) and a premultiplied
+ * ARGB32 colour: 14 + 2n words.
+ *   LINEAR x0, y0, x1, y1: t is how far the point is along (x0, y0)-(x1, y1).
+ *   RADIAL x0, y0, r0, x1, y1, r1: two circles, as canvas's and pixman's: t is
+ *     the largest with the point on the circle between them at t, its radius
+ *     r0 + t (r1 - r0) not negative; no such t (or two equal circles): 0.
+ *   CONIC cx, cy, angle (turns, 0x10000 a whole one): t is the angle from
+ *     the start angle, clockwise (y down) as canvas's createConicGradient, in
+ *     turns; CSS's conic-gradient starts at the top: its angle less a quarter.
+ * The colour at t, spread (PAD, REPEAT, REFLECT) into 0..1: the stops'
+ * colours mixed linearly in premultiplied form, as CSS and canvas say (a stop
+ * before the first is the first colour, after the last the last; two stops at
+ * one offset are a sharp change). */
+#define OGPU_GRAD_LINEAR        1
+#define OGPU_GRAD_RADIAL        2
+#define OGPU_GRAD_CONIC         3
+#define OGPU_SPREAD_PAD         0
+#define OGPU_SPREAD_REPEAT      1
+#define OGPU_SPREAD_REFLECT     2
+#define OGPU_GRAD_WORDS(n)      (14 + 2 * (n))
+
+/* v1.6: a pattern in memory, OGPU_PATTERN_WORDS words: a slot, flags (an
+ * edge in bits 0-1, BILINEAR), its rectangle's xy and wh (wh 0: the whole
+ * slot), the matrix m00, m01, m02, m10, m11, m12 (16.16, the rectangle's
+ * pixels to the target, as a path's), and an alpha (0-255, times every
+ * pixel). A pixel's centre is taken back through the matrix into the
+ * rectangle: nearest, or bilinear between the four round it; a point
+ * outside it is 0 (NONE), the nearest edge pixel (PAD), the picture tiled
+ * (REPEAT) or mirrored (REFLECT). The pixels are premultiplied (XRGB32 and
+ * the 16-bit formats opaque, A8 as alpha). So an image drawn with a
+ * transform and any operator is a PATH_FILL of its rectangle's path, under
+ * the same matrix, painted with its pattern; a tiled background is the area
+ * to fill, with REPEAT. */
+#define OGPU_PATTERN_NONE       0
+#define OGPU_PATTERN_PAD        1
+#define OGPU_PATTERN_REPEAT     2
+#define OGPU_PATTERN_REFLECT    3
+#define OGPU_PATTERN_BILINEAR   0x10
+#define OGPU_PATTERN_WORDS      11
+
+/* WebCore's other compositing operators, as its cairo port draws them:
+ * PlusLighter is OGPU_PD_ADD, PlusDarker OGPU_BLEND_DARKEN, Difference
+ * OGPU_BLEND_DIFFERENCE. A clip stack is A8 masks: each clip path drawn
+ * into the mask with OGPU_PD_IN (PATH_FILL), or a mask composited into
+ * another with OGPU_PD_IN (COMPOSITE_PD), then PATH_MASK or COMPOSITE_PD's
+ * mask when drawing. */
+#define OGPU_PD_PLUS_LIGHTER    OGPU_PD_ADD
+#define OGPU_PD_PLUS_DARKER     OGPU_BLEND_DARKEN
+
+/* v1.6: BLUR. The target's xy, wh (inside the clip) blurred in place, as a
+ * Gaussian of standard deviation radius / 2 (canvas's shadowBlur and CSS's
+ * box-shadow blur radius): three box blurs each way, of the sizes SVG's
+ * feGaussianBlur gives. The radii, x in the top 16 bits and y in the
+ * bottom, are 12.4 pixels. Pixels outside the rectangle count as 0, so a
+ * shadow's rectangle has room round it. A8 or a 32-bit format (each byte
+ * alike: premultiplied ARGB32); work bytes at least 2 x 4 x the larger of w
+ * and h. */
 
 /* v1.2: LINES_BLEND's flags, above its blend mode. */
 #define OGPU_LINES_STRIP        8   /* each point joins the next (else pairs: 0-1, 2-3, ...) */

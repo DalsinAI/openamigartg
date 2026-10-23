@@ -5,8 +5,9 @@
  * The 68k runs it as the CPU back end, the Cradle's runtime runs it behind
  * ACRTG.gpu, and a PiStorm's spare ARM core runs it behind PiStorm.gpu;
  * tests/test_opengpu.c checks it against simple per-pixel references and
- * keeps golden checksums every build must match. Stream v1.4: the 2D
- * commands here; the 3D range (0x0030-0x003F) goes to ogpu_3d.c when the
+ * keeps golden checksums every build must match. Stream v1.6: the 2D
+ * commands here (v1.6's paths, gradients, blur and blend modes in their
+ * own section below, tested by tests/test_vector.c); the 3D range (0x0030-0x003F) goes to ogpu_3d.c when the
  * build links it (OGPU_WITH_3D).
  *
  * Integers only, no C library, pixels read and written byte by byte in the
@@ -1223,7 +1224,126 @@ PX_FN unsigned sat8(unsigned v) { return v > 255 ? 255 : v; }
 PX_FN unsigned pd2(unsigned x, unsigned fa, unsigned y, unsigned fb) {
     return sat8(mul255(x, fa) + mul255(y, fb));
 }
+/* v1.6's helpers that are called per pixel but are too big to copy into
+ * each caller: one copy each keeps the library small. */
+#if defined(__GNUC__)
+#define BIG_FN static __attribute__((noinline))
+#else
+#define BIG_FN static
+#endif
+
+/* ---- v1.6: the W3C blend modes ----------------------------------------------------- */
+
+/* an integer square root, rounded down */
+static ogpu_u32 isqrt64(ogpu_s64 sv) {
+    ogpu_s64 r = 0, bit = (ogpu_s64)1 << 62;
+    if (sv <= 0) return 0;
+    while (bit > sv) bit >>= 2;
+    while (bit) {
+        if (sv >= r + bit) { sv -= r + bit; r = (r >> 1) + bit; }
+        else r >>= 1;
+        bit >>= 2;
+    }
+    return (ogpu_u32)r;
+}
+
+/* Compositing and Blending Level 1 on premultiplied channels, in units of
+ * 1/(255 * 255): T is as ad B(Cd, Cs) for one channel of a separable mode. */
+static long bl_sep(int op, long s, long sa, long d, long da) {
+    long sada = sa * da, cs, cb, b, q;
+    switch (op) {
+    case OGPU_BLEND_MULTIPLY: return s * d;
+    case OGPU_BLEND_SCREEN: return sa * d + da * s - s * d;
+    case OGPU_BLEND_OVERLAY: return 2 * d <= da ? 2 * s * d : sada - 2 * (da - d) * (sa - s);
+    case OGPU_BLEND_DARKEN: return s * da < d * sa ? s * da : d * sa;
+    case OGPU_BLEND_LIGHTEN: return s * da > d * sa ? s * da : d * sa;
+    case OGPU_BLEND_COLOR_DODGE:
+        if (!d) return 0;
+        if (s >= sa) return sada;
+        q = sa * sa * d / (sa - s);
+        return q < sada ? q : sada;
+    case OGPU_BLEND_COLOR_BURN:
+        if (d >= da) return sada;
+        if (!s) return 0;
+        q = sa * sa * (da - d) / s;
+        return q < sada ? sada - q : 0;
+    case OGPU_BLEND_HARD_LIGHT: return 2 * s <= sa ? 2 * s * d : sada - 2 * (da - d) * (sa - s);
+    case OGPU_BLEND_DIFFERENCE: q = s * da - d * sa; return q < 0 ? -q : q;
+    case OGPU_BLEND_EXCLUSION: return sa * d + da * s - 2 * s * d;
+    }
+    /* soft light, on the colours unpremultiplied, 16.16 */
+    if (!sa || !da) return 0;
+    cs = (s << 16) / sa; cb = (d << 16) / da;
+    if (cs <= 0x8000) b = cb - (long)(((ogpu_s64)(0x10000 - 2 * cs) * cb >> 16) * (0x10000 - cb) >> 16);
+    else {
+        q = cb <= 0x4000 ? (long)((((((ogpu_s64)16 * cb - 0xC0000) * cb >> 16) + 0x40000) * cb) >> 16)
+                         : (long)isqrt64((ogpu_s64)cb * 65536);
+        b = cb + (long)((ogpu_s64)(2 * cs - 0x10000) * (q - cb) >> 16);
+    }
+    return (long)(((ogpu_s64)b * sada + 0x8000) >> 16);
+}
+
+/* The non-separable modes' helpers, on three channels scaled by as ad. */
+static long bl_lum(const long *c) { return (30 * c[0] + 59 * c[1] + 11 * c[2]) / 100; }
+static void bl_setlum(long *c, long a, long l) {
+    long n, x;
+    int k;
+    l -= bl_lum(c);
+    for (k = 0; k < 3; k++) c[k] += l;
+    l = bl_lum(c); n = x = c[0];
+    for (k = 1; k < 3; k++) { if (c[k] < n) n = c[k]; if (c[k] > x) x = c[k]; }
+    for (k = 0; k < 3; k++) {       /* ClipColor */
+        if (n < 0) c[k] = l + (long)((ogpu_s64)(c[k] - l) * l / (l - n));
+        if (x > a) c[k] = l + (long)((ogpu_s64)(c[k] - l) * (a - l) / (x - l));
+    }
+}
+static long bl_sat(const long *c) {
+    long n = c[0], x = c[0];
+    int k;
+    for (k = 1; k < 3; k++) { if (c[k] < n) n = c[k]; if (c[k] > x) x = c[k]; }
+    return x - n;
+}
+static void bl_setsat(long *c, long s) {
+    int lo = 0, mid = 1, hi = 2, t;
+    if (c[lo] > c[mid]) { t = lo; lo = mid; mid = t; }
+    if (c[mid] > c[hi]) { t = mid; mid = hi; hi = t; }
+    if (c[lo] > c[mid]) { t = lo; lo = mid; mid = t; }
+    if (c[hi] > c[lo]) { c[mid] = (long)((ogpu_s64)(c[mid] - c[lo]) * s / (c[hi] - c[lo])); c[hi] = s; }
+    else c[mid] = c[hi] = 0;
+    c[lo] = 0;
+}
+
+/* d = the blend mode op of s over d (premultiplied). */
+static void blend_w3c(struct ch *d, const struct ch *s, int op) {
+    long sa = (long)s->a, da = (long)d->a, sc[3], dc[3], t[3], a[3], b[3], v;
+    int k;
+    sc[0] = (long)s->r; sc[1] = (long)s->g; sc[2] = (long)s->b;
+    dc[0] = (long)d->r; dc[1] = (long)d->g; dc[2] = (long)d->b;
+    if (op >= OGPU_BLEND_HUE) {
+        for (k = 0; k < 3; k++) { a[k] = sc[k] * da; b[k] = dc[k] * sa; }
+        switch (op) {
+        case OGPU_BLEND_HUE: bl_setsat(a, bl_sat(b)); bl_setlum(a, sa * da, bl_lum(b)); break;
+        case OGPU_BLEND_SATURATION: v = bl_lum(b); bl_setsat(b, bl_sat(a)); bl_setlum(b, sa * da, v);
+            for (k = 0; k < 3; k++) a[k] = b[k];
+            break;
+        case OGPU_BLEND_COLOR: bl_setlum(a, sa * da, bl_lum(b)); break;
+        default: v = bl_lum(a); for (k = 0; k < 3; k++) a[k] = b[k];
+            bl_setlum(a, sa * da, v); break;                                /* LUMINOSITY */
+        }
+        for (k = 0; k < 3; k++) t[k] = a[k];
+    } else
+        for (k = 0; k < 3; k++) t[k] = bl_sep(op, sc[k], sa, dc[k], da);
+    for (k = 0; k < 3; k++) {
+        v = (sc[k] * (255 - da) + dc[k] * (255 - sa) + t[k] + 127) / 255;
+        sc[k] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+    d->r = (unsigned)sc[0]; d->g = (unsigned)sc[1]; d->b = (unsigned)sc[2];
+    d->a = sat8((unsigned)(sa + da) - mul255((unsigned)sa, (unsigned)da));
+}
+
+
 PX_FN void pd_apply(struct ch *d, const struct ch *s, int op) {
+    if (op >= OGPU_BLEND_MULTIPLY) { blend_w3c(d, s, op); return; }
     unsigned as = s->a, ad = d->a, fa, fb;
     switch (op) {
     case OGPU_PD_CLEAR: d->a = d->r = d->g = d->b = 0; return;
@@ -1264,7 +1384,7 @@ OP_FN op_composite_pd(struct ogpu_core *c, const ogpu_u8 *a) {
     unsigned malpha = 255;
     struct ch solid = { 0, 0, 0, 0 };
     ogpu_u8 *drow;
-    if (op >= OGPU_PD_OPS) return OGPU_ERR_UNSUPPORTED;
+    if (op >= OGPU_PD_OPS && (op < OGPU_BLEND_MULTIPLY || op > OGPU_BLEND_LUMINOSITY)) return OGPU_ERR_UNSUPPORTED;
     if (!is_colour(t->format) && t->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
     if ((of & OGPU_PD_MASK) && (of & OGPU_PD_MASK_SOLID)) return OGPU_ERR_UNSUPPORTED;
     if (of & OGPU_PD_SOLID) ch_of(src, &solid);
@@ -1403,6 +1523,939 @@ OP_FN op_composite_pd(struct ogpu_core *c, const ogpu_u8 *a) {
     return OGPU_OK;
 }
 
+/* v1.6's commands are built for size (GCC): their time is in a few inner
+ * loops, and the rest is set-up once a command. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize ("Os")
+#endif
+
+/* ---- v1.6: anti-aliased paths ------------------------------------------------------ */
+
+/* OpenFont's rasteriser (openamigafont src/of_raster.c, of_raster_a8),
+ * moved here: exact area coverage in integers. Each line adds, to every
+ * cell it crosses, how far it climbs there (cover) and that climb times
+ * twice its mean place across the cell (area); one sweep along each row
+ * then gives each pixel the cover of everything left of it less the part
+ * of its own lines' climb left of them. Coordinates are 24.8 (256
+ * subpixels a pixel). Here it works on a band of rows at a time, in work
+ * memory the command gives, and adds the even-odd rule. Each pixel row is
+ * four rows of cells (64 subpixels high), each swept and its winding rule
+ * applied alone: area alone can't tell where two pieces overlap inside
+ * one pixel (a self-crossing, a stroke's inner join), so a pixel there is
+ * wrong by at most what one sub-row holds of it. */
+#define OGPU_SUBROWS 4
+struct rast {
+    int *cover, *area;      /* the band's cells, w x h x OGPU_SUBROWS */
+    int w, h, eo;           /* eo: the even-odd rule */
+    long ox, oy;            /* the band's corner on the target, 24.8 */
+};
+
+/* A cell's sum, past 32 bits only when some 65536 lines meet in one cell:
+ * even-odd needs only its low bits, so it wraps; non-zero stops at the
+ * largest, keeping its sign (its pixel is then full, or nearly). */
+static int cell_add(int v, int d, int eo) {
+    if (eo) return (int)((unsigned)v + (unsigned)d);
+    if (d > 0 ? v > 0x7FFFFFFF - d : v < -0x7FFFFFFF - d) return d > 0 ? 0x7FFFFFFF : -0x7FFFFFFF;
+    return v + d;
+}
+
+static void cell(struct rast *r, long i, int j, int dy, long fx0, long fx1) {
+    long at;
+    if (i >= r->w || !dy) return;   /* right of the band: covers nothing */
+    at = (long)j * r->w + i;
+    r->cover[at] = cell_add(r->cover[at], dy, r->eo);
+    r->area[at] = cell_add(r->area[at], dy * (int)(fx0 + fx1), r->eo);
+}
+
+/* the part of a line within row j, from xa to xb (0 .. w * 256), climbing dy */
+static void row_piece(struct rast *r, int j, long xa, long xb, int dy) {
+    long ia = xa >> 8, ib = xb >> 8, i, step, x_from, x_to, dx;
+    int done = 0, share, last;
+    if (ia == ib) { cell(r, ia, j, dy, xa - (ia << 8), xb - (ia << 8)); return; }
+    /* the climb shared out by how much of the line's width each column
+     * holds, the remainder kept so the shares add up */
+    dx = xb - xa; step = dx > 0 ? 1 : -1; x_from = xa;
+    for (i = ia;; i += step) {
+        last = i == ib;
+        if (last) { x_to = xb; share = dy - done; }
+        else { x_to = step > 0 ? (i + 1) << 8 : i << 8; share = (int)((long)dy * (x_to - xa) / dx) - done; }
+        cell(r, i, j, share, x_from - (i << 8), x_to - (i << 8));
+        done += share;
+        if (last) break;
+        x_from = x_to;
+    }
+}
+
+static ogpu_s64 floor_div(ogpu_s64 a, ogpu_s64 b) {
+    ogpu_s64 q = a / b;
+    if ((a % b) && ((a < 0) != (b < 0))) q--;
+    return q;
+}
+
+/* a line in the band, x already inside 0 .. w * 256 */
+static void rows(struct rast *r, long x0, long y0, long x1, long y1) {
+    long y, ylim = (long)r->h << 8, t;
+    int sign = 1;
+    if (y0 > y1) { t = x0; x0 = x1; x1 = t; t = y0; y0 = y1; y1 = t; sign = -1; }
+    if (y1 <= 0 || y0 >= ylim) return;
+    for (y = y0 < 0 ? 0 : y0; y < y1 && y < ylim;) {
+        long j = y >> 6, yn = (j + 1) << 6, xa, xb;      /* sub-rows */
+        if (yn > y1) yn = y1;
+        xa = y == y0 ? x0 : x0 + (long)floor_div((ogpu_s64)(x1 - x0) * (y - y0), y1 - y0);
+        xb = yn == y1 ? x1 : x0 + (long)floor_div((ogpu_s64)(x1 - x0) * (yn - y0), y1 - y0);
+        row_piece(r, (int)j, xa, xb, sign * (int)(yn - y));
+        y = yn;
+    }
+}
+
+/* A line on the target (24.8). What lies left of the band climbs in its
+ * first column (as a line down its left edge); what lies right of it
+ * covers nothing there. */
+static void edge_rel(struct rast *r, long x0, long y0, long x1, long y1) {
+    long xl = (long)r->w << 8, yc;
+    if (y0 == y1) return;
+    if ((x0 < 0 && x1 > 0) || (x0 > 0 && x1 < 0)) {
+        yc = y0 + (long)((ogpu_s64)(y1 - y0) * -x0 / (x1 - x0));
+        edge_rel(r, x0, y0, 0, yc); edge_rel(r, 0, yc, x1, y1);
+        return;
+    }
+    if ((x0 < xl && x1 > xl) || (x0 > xl && x1 < xl)) {
+        yc = y0 + (long)((ogpu_s64)(y1 - y0) * (xl - x0) / (x1 - x0));
+        edge_rel(r, x0, y0, xl, yc); edge_rel(r, xl, yc, x1, y1);
+        return;
+    }
+    if (x0 >= xl && x1 >= xl) return;
+    if (x0 < 0 || x1 < 0) x0 = x1 = 0;
+    rows(r, x0, y0, x1, y1);
+}
+static void edge(struct rast *r, long x0, long y0, long x1, long y1) {
+    edge_rel(r, x0 - r->ox, y0 - r->oy, x1 - r->ox, y1 - r->oy);
+}
+
+/* ---- walking a path: filled, or stroked into an outline that is filled -------------- */
+
+struct seg { long ux, uy, nx, ny, len; };   /* direction (16.16, length 1), normal (half the width), length */
+
+struct pctx {
+    struct rast *r;
+    const ogpu_u8 *path;
+    long words;
+    long m[6];                  /* the path's space to the target, 16.16 */
+    long tol;                   /* how far a cut curve may stray, in the space it is cut in */
+    long cx, cy, sx, sy;        /* the current point and the subpath's start */
+    int stroke;
+    /* PATH_STROKE */
+    long hw, miter;             /* half the width (24.8), the miter limit (16.16) */
+    int cap, join;
+    const ogpu_u8 *dash;
+    int ndash, dashing, di, on, active;
+    long doff, rem;             /* the dash offset and what is left of the dash (24.8) */
+    int sn;                     /* segments in the piece being stroked */
+    long ax, ay, px, py;        /* its first point, and its last segment's end */
+    struct seg s0, sp;          /* its first and last segments */
+    long ls[4], lf[4], lc[4];   /* the + and - sides (x, y, x, y): the first segment's starts
+                                   and ends, and where each side's next edge starts */
+    /* a dashed subpath on at its start: 1 while its first piece goes on, 2
+     * once it has ended with that piece's start left to draw (its start, first
+     * segment, sides): joined to the last piece if the subpath closes on */
+    int fp;
+    long fax, fay, fls[4], flf[4];
+    struct seg fs0;
+};
+
+static long sgn32(ogpu_u32 v) {
+    v &= 0xFFFFFFFFUL;
+    return (long)((ogpu_s64)v - (v & 0x80000000UL ? 0x100000000LL : 0));
+}
+static long clampl(ogpu_s64 v, long lim) { return v > lim ? lim : v < -lim ? -lim : (long)v; }
+#define OGPU_COORD_MAX (1L << 29)
+
+/* A point of the path's space on the target, 24.8. */
+static void xform(const struct pctx *c, long x, long y, long *ox, long *oy) {
+    *ox = clampl(((((ogpu_s64)c->m[0] * x + (ogpu_s64)c->m[1] * y) >> 16) + (c->m[2] >> 8)), OGPU_COORD_MAX);
+    *oy = clampl(((((ogpu_s64)c->m[3] * x + (ogpu_s64)c->m[4] * y) >> 16) + (c->m[5] >> 8)), OGPU_COORD_MAX);
+}
+
+/* An edge of a stroke's outline (the path's space). */
+static void out(struct pctx *c, long x0, long y0, long x1, long y1) {
+    long a, b, d, e;
+    xform(c, x0, y0, &a, &b);
+    xform(c, x1, y1, &d, &e);
+    edge(c->r, a, b, d, e);
+}
+
+/* An edge on side sd: the + side runs forward, the - side back, so the
+ * two sides and the caps go round the outline one way. */
+static void side(struct pctx *c, int sd, long x0, long y0, long x1, long y1) {
+    if (sd > 0) out(c, x0, y0, x1, y1); else out(c, x1, y1, x0, y0);
+}
+
+/* The arc round (px, py) from vector v0 to v1 (each half the width long,
+ * at most a quarter turn apart), cut where its chords stray past tol. */
+static void arc(struct pctx *c, int sd, long px, long py, long x0, long y0, long x1, long y1, int depth) {
+    long dx = x1 - x0, dy = y1 - y0, mx = x0 + x1, my = y0 + y1, l;
+    if (depth < 10 && (ogpu_s64)dx * dx + (ogpu_s64)dy * dy > 8 * (ogpu_s64)c->hw * c->tol
+        && (l = (long)isqrt64((ogpu_s64)mx * mx + (ogpu_s64)my * my)) > 0) {
+        mx = (long)((ogpu_s64)mx * c->hw / l); my = (long)((ogpu_s64)my * c->hw / l);
+        arc(c, sd, px, py, x0, y0, mx, my, depth + 1);
+        arc(c, sd, px, py, mx, my, x1, y1, depth + 1);
+        return;
+    }
+    side(c, sd, px + x0, py + y0, px + x1, py + y1);
+}
+
+static int seg_of(const struct pctx *c, long ax, long ay, long bx, long by, struct seg *s) {
+    long dx = bx - ax, dy = by - ay;
+    ogpu_s64 l2 = (ogpu_s64)dx * dx + (ogpu_s64)dy * dy;
+    if (!l2) return 0;
+    s->len = (long)isqrt64(l2);
+    if (!s->len) s->len = 1;
+    s->ux = (long)(((ogpu_s64)dx * 65536) / s->len); s->uy = (long)(((ogpu_s64)dy * 65536) / s->len);
+    s->nx = (long)(-(ogpu_s64)s->uy * c->hw >> 16); s->ny = (long)((ogpu_s64)s->ux * c->hw >> 16);
+    return 1;
+}
+
+/* The join at P between segments a and b. For each side (e, s: x, y of
+ * the + side, then the - side): where a's edge ends and b's starts, and
+ * what lies between drawn. The outer side gets the join; the inner one
+ * meets where its two edges cross, when that is within half of each
+ * segment, or else goes in to P and out again (the part drawn twice is
+ * inside the stroke). */
+static void join(struct pctx *c, long px, long py, const struct seg *a, const struct seg *b, int style, long *e, long *s) {
+    ogpu_s64 cr = (ogpu_s64)a->ux * b->uy - (ogpu_s64)a->uy * b->ux;
+    long co = (long)(((ogpu_s64)a->ux * b->ux + (ogpu_s64)a->uy * b->uy) >> 16), q = 0x10000 + co, l;
+    long sx = a->nx + b->nx, sy = a->ny + b->ny, mx, my, ax, ay, bx, by, t;
+    int k, sd, outer = cr > 0 ? -1 : 1;
+    for (k = 0; k < 4; k += 2) {
+        sd = k ? -1 : 1;
+        ax = px + sd * a->nx; ay = py + sd * a->ny; bx = px + sd * b->nx; by = py + sd * b->ny;
+        e[k] = ax; e[k + 1] = ay; s[k] = bx; s[k + 1] = by;
+        if (!cr && co > 0) { s[k] = ax; s[k + 1] = ay; continue; }   /* straight on */
+        if (sd == outer) {
+            if (style == OGPU_JOIN_ROUND) {
+                mx = sd * sx; my = sd * sy;
+                l = (long)isqrt64((ogpu_s64)mx * mx + (ogpu_s64)my * my);
+                if (l * 8 < c->hw) { mx = (long)((ogpu_s64)a->ux * c->hw >> 16); my = (long)((ogpu_s64)a->uy * c->hw >> 16); }
+                else { mx = (long)((ogpu_s64)mx * c->hw / l); my = (long)((ogpu_s64)my * c->hw / l); }
+                arc(c, sd, px, py, ax - px, ay - py, mx, my, 0);
+                arc(c, sd, px, py, mx, my, bx - px, by - py, 0);
+            } else if (style == OGPU_JOIN_MITER && q > 0
+                       && (ogpu_s64)q * ((c->miter >> 4) * (ogpu_s64)(c->miter >> 4)) >= ((ogpu_s64)1 << 41)) {
+                mx = px + sd * (long)(((ogpu_s64)sx * 65536) / q); my = py + sd * (long)(((ogpu_s64)sy * 65536) / q);
+                side(c, sd, ax, ay, mx, my); side(c, sd, mx, my, bx, by);
+            } else side(c, sd, ax, ay, bx, by);
+            continue;
+        }
+        if (q > 0) {
+            t = (long)(((ogpu_s64)b->nx * a->ux + (ogpu_s64)b->ny * a->uy) >> 16);
+            t = (long)(((ogpu_s64)(t < 0 ? -t : t) * 65536) / q);
+            if (2 * t <= a->len && 2 * t <= b->len) {
+                e[k] = s[k] = px + sd * (long)(((ogpu_s64)sx * 65536) / q);
+                e[k + 1] = s[k + 1] = py + sd * (long)(((ogpu_s64)sy * 65536) / q);
+                continue;
+            }
+        }
+        side(c, sd, ax, ay, px, py); side(c, sd, px, py, bx, by);
+    }
+}
+
+/* A cap at P from +v to -v round h: at a piece's end v is the normal, at
+ * its start the normal turned back (dir -1). */
+static void cap(struct pctx *c, long px, long py, const struct seg *g, int dir) {
+    long vx = dir * g->nx, vy = dir * g->ny;
+    long hx = dir * (long)((ogpu_s64)g->ux * c->hw >> 16), hy = dir * (long)((ogpu_s64)g->uy * c->hw >> 16);
+    if (c->cap == OGPU_CAP_ROUND) {
+        arc(c, 1, px, py, vx, vy, hx, hy, 0);
+        arc(c, 1, px, py, hx, hy, -vx, -vy, 0);
+    } else if (c->cap == OGPU_CAP_SQUARE) {
+        out(c, px + vx, py + vy, px + vx + hx, py + vy + hy);
+        out(c, px + vx + hx, py + vy + hy, px - vx + hx, py - vy + hy);
+        out(c, px - vx + hx, py - vy + hy, px - vx, py - vy);
+    } else out(c, px + vx, py + vy, px - vx, py - vy);
+}
+
+static void stk_begin(struct pctx *c, long x, long y) { c->sn = 0; c->ax = c->px = x; c->ay = c->py = y; }
+
+/* The stroke's next segment, to (x, y); smooth: inside a curve, joined round. */
+static void stk_seg(struct pctx *c, long x, long y, int smooth) {
+    struct seg s;
+    long e[4], st[4];
+    int k;
+    if (!seg_of(c, c->px, c->py, x, y, &s)) return;
+    if (!c->sn) {
+        c->s0 = s;
+        c->ls[0] = c->ax + s.nx; c->ls[1] = c->ay + s.ny; c->ls[2] = c->ax - s.nx; c->ls[3] = c->ay - s.ny;
+    } else {
+        join(c, c->px, c->py, &c->sp, &s, smooth ? OGPU_JOIN_ROUND : c->join, e, st);
+        if (c->sn == 1) for (k = 0; k < 4; k++) c->lf[k] = e[k];       /* the first segment waits for the end */
+        else { side(c, 1, c->lc[0], c->lc[1], e[0], e[1]); side(c, -1, c->lc[2], c->lc[3], e[2], e[3]); }
+        for (k = 0; k < 4; k++) c->lc[k] = st[k];
+    }
+    c->sp = s; c->px = x; c->py = y; c->sn++;
+}
+
+/* Both sides' edges from a to b (x, y, x, y). */
+static void sides(struct pctx *c, const long *a, const long *b) {
+    side(c, 1, a[0], a[1], b[0], b[1]); side(c, -1, a[2], a[3], b[2], b[3]);
+}
+
+/* The end of a piece: closed, a join where it began; open, caps. The first
+ * piece of a dashed subpath on at its start keeps its start for later. */
+static void stk_end(struct pctx *c, int closed) {
+    long e[4], st[4];
+    int k;
+    if (!c->sn) { if (c->fp == 1) c->fp = 0; return; }     /* nothing drawn: no first piece */
+    if (closed && c->sn > 1) {
+        join(c, c->ax, c->ay, &c->sp, &c->s0, c->join, e, st);
+        sides(c, c->lc, e); sides(c, st, c->lf);
+    } else {
+        e[0] = c->px + c->sp.nx; e[1] = c->py + c->sp.ny; e[2] = c->px - c->sp.nx; e[3] = c->py - c->sp.ny;
+        if (c->sn > 1) sides(c, c->lc, e);
+        cap(c, c->px, c->py, &c->sp, 1);
+        if (c->fp == 1) {
+            c->fp = 2; c->fax = c->ax; c->fay = c->ay; c->fs0 = c->s0;
+            for (k = 0; k < 4; k++) { c->fls[k] = c->ls[k]; c->flf[k] = c->sn == 1 ? e[k] : c->lf[k]; }
+        } else {
+            sides(c, c->ls, c->sn == 1 ? e : c->lf);
+            cap(c, c->ax, c->ay, &c->s0, -1);
+        }
+    }
+    c->sn = 0;
+}
+
+/* Dashes: the length of dash i (24.8). */
+static long dash_len(const struct pctx *c, int i) {
+    long v = sgn32(rd32(c->dash + (long)i * 4)) >> 8;
+    return v < 0 ? 0 : v;
+}
+
+/* At each subpath's start: the pattern from the dash offset. */
+static void dash_start(struct pctx *c) {
+    ogpu_s64 total = 0, off;
+    int i;
+    c->dashing = 0; c->active = 0; c->fp = 0;
+    if (!c->ndash) return;
+    for (i = 0; i < c->ndash; i++) total += dash_len(c, i);
+    if (c->ndash & 1) total *= 2;
+    if (total <= 0) return;
+    off = c->doff % total;
+    if (off < 0) off += total;
+    c->dashing = 1; c->di = 0; c->on = 1;
+    while (off >= dash_len(c, c->di)) { off -= dash_len(c, c->di); c->di = (c->di + 1) % c->ndash; c->on ^= 1; }
+    c->rem = dash_len(c, c->di) - (long)off;
+    c->fp = c->on;
+}
+
+/* A line of the path being stroked, cut into dashes. */
+static void dash_seg(struct pctx *c, long x0, long y0, long x1, long y1, int smooth) {
+    long dx = x1 - x0, dy = y1 - y0, len, pos = 0, step;
+    if (!c->dashing) { stk_seg(c, x1, y1, smooth); return; }
+    len = (long)isqrt64((ogpu_s64)dx * dx + (ogpu_s64)dy * dy);
+    while (pos < len) {
+        step = c->rem < len - pos ? c->rem : len - pos;
+        if (c->on) {
+            if (!c->active) {
+                stk_begin(c, x0 + (long)((ogpu_s64)dx * pos / len), y0 + (long)((ogpu_s64)dy * pos / len));
+                c->active = 1; smooth = 0;
+            }
+            stk_seg(c, x0 + (long)((ogpu_s64)dx * (pos + step) / len), y0 + (long)((ogpu_s64)dy * (pos + step) / len), smooth);
+        }
+        pos += step; c->rem -= step;
+        if (!c->rem) {
+            if (c->active) { stk_end(c, 0); c->active = 0; }
+            c->on ^= 1; c->di = (c->di + 1) % c->ndash; c->rem = dash_len(c, c->di);
+        }
+    }
+}
+
+/* The next point of the walk: filled, a line on the target; stroked, a
+ * segment (smooth: inside a curve). */
+static void path_to(struct pctx *c, long x, long y, int smooth) {
+    if (!c->stroke) edge(c->r, c->cx, c->cy, x, y);
+    else dash_seg(c, c->cx, c->cy, x, y, smooth);
+    c->cx = x; c->cy = y;
+}
+
+static void sub_begin(struct pctx *c) {
+    if (!c->stroke) return;
+    dash_start(c);
+    if (!c->dashing) stk_begin(c, c->cx, c->cy);
+}
+
+static void sub_end(struct pctx *c, int closed) {
+    long e[4], st[4];
+    if (!c->stroke) { edge(c->r, c->cx, c->cy, c->sx, c->sy); return; }    /* a fill closes every subpath */
+    if (closed && (c->cx != c->sx || c->cy != c->sy)) path_to(c, c->sx, c->sy, 0);
+    if (!c->dashing) stk_end(c, closed);
+    else if (c->fp == 1) {                  /* one dash all the way: as undashed */
+        c->fp = 0;
+        if (c->active) stk_end(c, closed);
+    } else {
+        if (c->active && closed && c->fp && c->sn) {
+            /* on at both ends of a closed subpath: the last piece joins the first */
+            join(c, c->fax, c->fay, &c->sp, &c->fs0, c->join, e, st);
+            sides(c, c->sn == 1 ? c->ls : c->lc, e); sides(c, st, c->flf);
+            if (c->sn > 1) sides(c, c->ls, c->lf);
+            cap(c, c->ax, c->ay, &c->s0, -1);
+            c->sn = c->fp = 0;
+        } else if (c->active) stk_end(c, 0);
+        if (c->fp) { sides(c, c->fls, c->flf); cap(c, c->fax, c->fay, &c->fs0, -1); c->fp = 0; }
+    }
+    c->active = 0;
+}
+
+/* A curve from the current point (x[0], y[0]) through np - 1 more, cut
+ * into lines: n of them keep each within tol, n by the largest second
+ * difference of its points (de Casteljau at each step, in 64 bits). */
+static void flatten(struct pctx *c, long *x, long *y, int np) {
+    ogpu_s64 dd = 0, v, want;
+    long ax[4], ay[4], t;
+    int k, i, l, n;
+    for (k = 0; k + 2 < np; k++) {
+        v = (ogpu_s64)x[k] - 2 * (ogpu_s64)x[k + 1] + x[k + 2]; if (v < 0) v = -v; if (v > dd) dd = v;
+        v = (ogpu_s64)y[k] - 2 * (ogpu_s64)y[k + 1] + y[k + 2]; if (v < 0) v = -v; if (v > dd) dd = v;
+    }
+    want = dd * (np == 3 ? 2 : 6) / (8 * c->tol) + 1;
+    n = (int)isqrt64(want);
+    if ((ogpu_s64)n * n < want) n++;
+    if (n > 1024) n = 1024;
+    for (k = 1; k <= n; k++) {
+        t = (long)(((ogpu_s64)k * 65536) / n);
+        for (i = 0; i < np; i++) { ax[i] = x[i]; ay[i] = y[i]; }
+        for (l = np - 1; l > 0; l--)
+            for (i = 0; i < l; i++) {
+                ax[i] += (long)(((ogpu_s64)(ax[i + 1] - ax[i]) * t) >> 16);
+                ay[i] += (long)(((ogpu_s64)(ay[i + 1] - ay[i]) * t) >> 16);
+            }
+        if (k == n) { ax[0] = x[np - 1]; ay[0] = y[np - 1]; }
+        path_to(c, ax[0], ay[0], k > 1);
+    }
+}
+
+/* The path, once: filled, its points on the target; stroked, in its own
+ * space (the outline goes to the target edge by edge). */
+static void walk(struct pctx *c) {
+    long at = 0, x[4], y[4];
+    int v, np, k;
+    c->cx = c->sx = c->cy = c->sy = 0;      /* a path starts at (0, 0) */
+    if (!c->stroke) { xform(c, 0, 0, &c->cx, &c->cy); c->sx = c->cx; c->sy = c->cy; }
+    sub_begin(c);
+    while (at < c->words) {
+        v = (int)rd32(c->path + at * 4);
+        np = v == OGPU_PATH_QUAD ? 2 : v == OGPU_PATH_CUBIC ? 3 : v == OGPU_PATH_CLOSE ? 0 : 1;
+        at++;
+        for (k = 1; k <= np; k++, at += 2) {
+            x[k] = clampl(sgn32(rd32(c->path + at * 4)), OGPU_COORD_MAX);
+            y[k] = clampl(sgn32(rd32(c->path + at * 4 + 4)), OGPU_COORD_MAX);
+            if (!c->stroke) xform(c, x[k], y[k], &x[k], &y[k]);
+        }
+        switch (v) {
+        case OGPU_PATH_MOVE:
+            sub_end(c, 0);
+            c->cx = c->sx = x[1]; c->cy = c->sy = y[1];
+            sub_begin(c);
+            break;
+        case OGPU_PATH_LINE: path_to(c, x[1], y[1], 0); break;
+        case OGPU_PATH_CLOSE:
+            sub_end(c, 1);
+            c->cx = c->sx; c->cy = c->sy;
+            sub_begin(c);
+            break;
+        default: x[0] = c->cx; y[0] = c->cy; flatten(c, x, y, np + 1); break;
+        }
+    }
+    sub_end(c, 0);
+}
+
+/* ---- v1.6: paint (a colour, a slot, a gradient) ------------------------------------- */
+
+struct paint {
+    int kind;                   /* 0 a colour, 1 a slot, 2 a gradient, 3 a pattern */
+    struct ch col;
+    const struct ogpu_surface *s;
+    int ox, oy, rep;
+    /* a gradient */
+    const ogpu_u8 *stops;
+    int n, gk, spread, none;
+    ogpu_s64 inv[6];            /* the target to the gradient's space, 16.16 (the move may pass 32 bits) */
+    long g[6];                  /* its geometry, 16.16 */
+    long dx, dy, sh;            /* LINEAR: (x1, y1) - (x0, y0), 24.8 >> sh */
+    ogpu_s64 dd, ga;            /* LINEAR: |d|^2; RADIAL: a */
+    ogpu_s64 t24, dt24;         /* LINEAR: t at the pixel (8.24), and its step */
+    ogpu_s64 gx, gy;            /* the pixel in the gradient's space, 16.16 */
+    long lo, hi;                /* the stops' interval cached */
+    ogpu_u32 rc;
+    struct ch c0, c1;
+    /* a pattern: its slot's rectangle, edges, filter and alpha */
+    int psx, psy, psw, psh, edge, bil;
+    unsigned alpha;
+};
+
+/* The matrix in the 6 words at m (16.16, a space to the target) inverted
+ * into p->inv, as COMPOSITE_AFFINE does; 0 when it is flat. */
+static int set_inv(struct paint *p, const ogpu_u8 *mw) {
+    long m[6];
+    ogpu_s64 det;
+    int k;
+    for (k = 0; k < 6; k++) m[k] = clampl(sgn32(rd32(mw + 4 * k)), 0x3FFFFFFF);
+    det = (ogpu_s64)m[0] * m[4] - (ogpu_s64)m[1] * m[3];
+    if (!det) return 0;
+    p->inv[0] = clampl((ogpu_s64)m[4] * 4294967296LL / det, 0x3FFFFFFF);
+    p->inv[1] = clampl(-((ogpu_s64)m[1] * 4294967296LL) / det, 0x3FFFFFFF);
+    p->inv[3] = clampl(-((ogpu_s64)m[3] * 4294967296LL) / det, 0x3FFFFFFF);
+    p->inv[4] = clampl((ogpu_s64)m[0] * 4294967296LL / det, 0x3FFFFFFF);
+    p->inv[2] = -((p->inv[0] * m[2] + p->inv[1] * m[5]) >> 16);       /* within 2^45 */
+    p->inv[5] = -((p->inv[3] * m[2] + p->inv[4] * m[5]) >> 16);
+    return 1;
+}
+
+/* LINEAR's t (8.24) for a step (dgx, dgy) in the gradient's space (16.16). */
+static ogpu_s64 lin_t24(const struct paint *p, ogpu_s64 dgx, ogpu_s64 dgy) {
+    ogpu_s64 v;
+    if (dgx > 0x3FFFFFFF) dgx = 0x3FFFFFFF;
+    if (dgx < -0x3FFFFFFF) dgx = -0x3FFFFFFF;
+    if (dgy > 0x3FFFFFFF) dgy = 0x3FFFFFFF;
+    if (dgy < -0x3FFFFFFF) dgy = -0x3FFFFFFF;
+    v = dgx * p->dx + dgy * p->dy;
+    v = p->sh <= 16 ? v * ((ogpu_s64)1 << (16 - p->sh)) : v / ((ogpu_s64)1 << (p->sh - 16));
+    return v / p->dd;
+}
+
+static int paint_init(struct ogpu_core *c, struct paint *p, ogpu_u32 fl, ogpu_u32 word, ogpu_u32 xy) {
+    const ogpu_u8 *g;
+    ogpu_s64 v;
+    int k;
+    for (k = 0; k < (int)sizeof *p; k++) ((ogpu_u8 *)p)[k] = 0;
+    if (fl & OGPU_PATH_SLOT) {
+        if (word >= OGPU_MAX_SLOTS || !c->slot[word].pixels) return OGPU_ERR_NOSURFACE;
+        p->s = &c->slot[word];
+        if (!is_colour(p->s->format) && p->s->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
+        p->kind = 1; p->ox = hi_s(xy); p->oy = lo_s(xy); p->rep = (fl & OGPU_PATH_REPEAT) != 0;
+        return OGPU_OK;
+    }
+    if (fl & OGPU_PATH_PATTERN) {
+        ogpu_u32 slot, sxy, swh;
+        if (!(g = c->map(c->user, word, OGPU_PATTERN_WORDS * 4))) return OGPU_ERR_NOMAP;
+        slot = rd32(g); sxy = rd32(g + 8); swh = rd32(g + 12);
+        if (slot >= OGPU_MAX_SLOTS || !c->slot[slot].pixels) return OGPU_ERR_NOSURFACE;
+        p->s = &c->slot[slot];
+        p->edge = (int)(rd32(g + 4) & 3); p->bil = (rd32(g + 4) & OGPU_PATTERN_BILINEAR) != 0;
+        p->psx = hi_s(sxy); p->psy = lo_s(sxy); p->psw = hi_u(swh); p->psh = lo_u(swh);
+        if (!p->psw || !p->psh) { p->psx = p->psy = 0; p->psw = p->s->w; p->psh = p->s->h; }
+        if (!is_colour(p->s->format) && p->s->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
+        if (p->psx < 0 || p->psy < 0 || p->psx + p->psw > p->s->w || p->psy + p->psh > p->s->h) return OGPU_ERR_UNSUPPORTED;
+        p->alpha = (unsigned)(rd32(g + 40) & 255);
+        p->kind = 3;
+        if (!set_inv(p, g + 16)) p->none = 1;
+        return OGPU_OK;
+    }
+    if (!(fl & OGPU_PATH_GRADIENT)) { ch_of(word, &p->col); return OGPU_OK; }
+    if (!(g = c->map(c->user, word, 56))) return OGPU_ERR_NOMAP;
+    p->gk = (int)(rd32(g) & 255); p->spread = (int)((rd32(g) >> 8) & 255);
+    p->n = (int)(rd32(g + 4) > 4096 ? 0 : rd32(g + 4));
+    if (p->gk < OGPU_GRAD_LINEAR || p->gk > OGPU_GRAD_CONIC || p->spread > OGPU_SPREAD_REFLECT || !p->n)
+        return OGPU_ERR_UNSUPPORTED;
+    if (!(g = c->map(c->user, word, (ogpu_u32)OGPU_GRAD_WORDS(p->n) * 4))) return OGPU_ERR_NOMAP;
+    p->kind = 2; p->stops = g + 56; p->lo = 1; p->hi = 0;
+    for (k = 0; k < 6; k++) p->g[k] = sgn32(rd32(g + 32 + 4 * k));
+    if (!set_inv(p, g + 8)) { p->none = 1; return OGPU_OK; }
+    if (p->gk == OGPU_GRAD_LINEAR) {
+        p->dx = (p->g[2] - p->g[0]) >> 8; p->dy = (p->g[3] - p->g[1]) >> 8; p->sh = 0;
+        while (p->dx >= 0x8000 || p->dx <= -0x8000 || p->dy >= 0x8000 || p->dy <= -0x8000) { p->dx >>= 1; p->dy >>= 1; p->sh++; }
+        p->dd = (ogpu_s64)p->dx * p->dx + (ogpu_s64)p->dy * p->dy;
+        if (!p->dd) { p->none = 1; return OGPU_OK; }
+        p->dt24 = lin_t24(p, p->inv[0], p->inv[3]);
+    } else if (p->gk == OGPU_GRAD_RADIAL) {
+        for (k = 0; k < 6; k++) p->g[k] >>= 8;      /* 24.8 */
+        v = (ogpu_s64)(p->g[3] - p->g[0]) * (p->g[3] - p->g[0]) + (ogpu_s64)(p->g[4] - p->g[1]) * (p->g[4] - p->g[1]);
+        p->ga = v - (ogpu_s64)(p->g[5] - p->g[2]) * (p->g[5] - p->g[2]);
+        if (!v && p->g[5] == p->g[2]) p->none = 1;  /* two equal circles: nothing */
+    }
+    return OGPU_OK;
+}
+
+/* At the start of a row: pixel x, y's centre in the gradient's space. */
+static void paint_row(struct paint *p, int x, int y) {
+    ogpu_s64 X = ((ogpu_s64)x * 65536) + 0x8000, Y = ((ogpu_s64)y * 65536) + 0x8000;
+    if (p->kind < 2 || p->none) return;
+    p->gx = ((p->inv[0] * X + p->inv[1] * Y) >> 16) + p->inv[2];
+    p->gy = ((p->inv[3] * X + p->inv[4] * Y) >> 16) + p->inv[5];
+    if (p->kind == 2 && p->gk == OGPU_GRAD_LINEAR) p->t24 = lin_t24(p, p->gx - p->g[0], p->gy - p->g[1]);
+}
+static void paint_step(struct paint *p) {
+    if (p->kind >= 2 && !p->none) { p->gx += p->inv[0]; p->gy += p->inv[3]; p->t24 += p->dt24; }
+}
+
+/* atan(z) in turns for z in 0..1 (16.16): z/8 + z(1-z)(0.03895 + 0.01055 z), within 0.0003 */
+static long atan_turns(long z) {
+    return (z >> 3) + (long)((((ogpu_s64)z * (0x10000 - z)) >> 16) * (2552 + ((692 * z) >> 16)) >> 16);
+}
+
+/* The gradient's t at the pixel (16.16, before the spread); 0 when no
+ * circle reaches it (RADIAL). */
+BIG_FN int grad_t(const struct paint *p, long *t) {
+    ogpu_s64 dx, dy, b, cc, a, m, disc, r1, r2;
+    long sq;
+    int k = 0;
+    if (p->gk == OGPU_GRAD_LINEAR) { *t = clampl(p->t24 >> 8, 0x3FFFFFFFL); return 1; }
+    if (p->gk == OGPU_GRAD_CONIC) {
+        long ax, ay, z, an;
+        dx = p->gx - p->g[0]; dy = p->gy - p->g[1];
+        while (dx >= 0x40000000LL || dx <= -0x40000000LL || dy >= 0x40000000LL || dy <= -0x40000000LL) { dx /= 2; dy /= 2; }
+        ax = (long)(dx < 0 ? -dx : dx); ay = (long)(dy < 0 ? -dy : dy);
+        if (!ax && !ay) an = 0;
+        else {
+            z = (long)(((ogpu_s64)(ax < ay ? ax : ay) * 65536) / (ax < ay ? ay : ax));
+            an = atan_turns(z);
+            if (ay > ax) an = 0x4000 - an;
+            if (dx < 0) an = 0x8000 - an;
+            if (dy < 0) an = 0x10000 - an;
+        }
+        *t = (an - p->g[2]) & 0xFFFF;
+        return 1;
+    }
+    /* RADIAL: the largest t with |p - c(t)| = r(t) >= 0, from a t^2 - 2 b t + c = 0 */
+    dx = (p->gx >> 8) - p->g[0]; dy = (p->gy >> 8) - p->g[1];
+    if (dx > 0x3FFFFFFF) dx = 0x3FFFFFFF;
+    if (dx < -0x3FFFFFFF) dx = -0x3FFFFFFF;
+    if (dy > 0x3FFFFFFF) dy = 0x3FFFFFFF;
+    if (dy < -0x3FFFFFFF) dy = -0x3FFFFFFF;
+    b = dx * (p->g[3] - p->g[0]) + dy * (p->g[4] - p->g[1]) + (ogpu_s64)p->g[2] * (p->g[5] - p->g[2]);
+    cc = dx * dx + dy * dy - (ogpu_s64)p->g[2] * p->g[2];
+    a = p->ga;
+    m = (a < 0 ? -a : a) | (b < 0 ? -b : b) | (cc < 0 ? -cc : cc);
+    while (m >= 0x40000000LL) { m >>= 1; k++; }
+    a >>= k; b >>= k; cc >>= k;     /* the same roots, in 31 bits */
+    if (!a) {
+        if (!b) return 0;
+        r1 = r2 = cc * 32768 / b;
+    } else {
+        disc = b * b - a * cc;
+        if (disc < 0) return 0;
+        sq = (long)isqrt64(disc);
+        r1 = (b + sq) * 65536 / a; r2 = (b - sq) * 65536 / a;
+        if (r2 > r1) { m = r1; r1 = r2; r2 = m; }
+    }
+    r1 = clampl(r1, 0x3FFFFFFFL); r2 = clampl(r2, 0x3FFFFFFFL);
+    if ((ogpu_s64)p->g[2] * 65536 + r1 * (p->g[5] - p->g[2]) >= 0) m = r1;
+    else if ((ogpu_s64)p->g[2] * 65536 + r2 * (p->g[5] - p->g[2]) >= 0) m = r2;
+    else return 0;
+    *t = (long)m;
+    return 1;
+}
+
+/* The stops' colour at t (0 .. 0x10000): premultiplied, mixed linearly. */
+BIG_FN void grad_colour(struct paint *p, long t, struct ch *o) {
+    unsigned long w;
+    if (t < p->lo || t >= p->hi) {
+        long prev = 0, of = 0;
+        int k;
+        for (k = 0; k < p->n; k++) {
+            of = sgn32(rd32(p->stops + 8 * k));
+            if (of < prev) of = prev;
+            if (of > 0x10000) of = 0x10000;
+            if (t < of) break;
+            prev = of;
+        }
+        if (k == 0) { ch_of(rd32(p->stops + 4), &p->c0); p->lo = -0x7FFFFFFFL; p->hi = of; p->rc = 0; }
+        else if (k == p->n) { ch_of(rd32(p->stops + 8 * k - 4), &p->c0); p->lo = prev; p->hi = 0x7FFFFFFFL; p->rc = 0; }
+        else {
+            ch_of(rd32(p->stops + 8 * k - 4), &p->c0); ch_of(rd32(p->stops + 8 * k + 4), &p->c1);
+            p->lo = prev; p->hi = of; p->rc = (ogpu_u32)(0xFFFFFFFFUL / (unsigned long)(of - prev));
+        }
+    }
+    if (!p->rc) { *o = p->c0; return; }
+    w = (((unsigned long)(t - p->lo) * p->rc) & 0xFFFFFFFFUL) >> 16;
+    o->a = (unsigned)((p->c0.a * (0x10000 - w) + p->c1.a * w + 0x8000) >> 16);
+    o->r = (unsigned)((p->c0.r * (0x10000 - w) + p->c1.r * w + 0x8000) >> 16);
+    o->g = (unsigned)((p->c0.g * (0x10000 - w) + p->c1.g * w + 0x8000) >> 16);
+    o->b = (unsigned)((p->c0.b * (0x10000 - w) + p->c1.b * w + 0x8000) >> 16);
+}
+
+/* A pattern's coordinate k on an edge of n pixels: inside it, or -1. */
+static int pat_edge(int k, int n, int e) {
+    if (e == OGPU_PATTERN_PAD) return k < 0 ? 0 : k >= n ? n - 1 : k;
+    if (e == OGPU_PATTERN_REPEAT) return wrap(k, n);
+    if (e == OGPU_PATTERN_REFLECT) { k = wrap(k, 2 * n); return k >= n ? 2 * n - 1 - k : k; }
+    return k < 0 || k >= n ? -1 : k;
+}
+BIG_FN void pat_px(const struct paint *p, int u, int v, struct ch *o) {
+    u = pat_edge(u, p->psw, p->edge); v = pat_edge(v, p->psh, p->edge);
+    if (u < 0 || v < 0) { o->a = o->r = o->g = o->b = 0; return; }
+    ld(row_at(p->s, p->psy + v) + xoff(p->psx + u, fmt_bpp[p->s->format]), p->s->format, o);
+}
+
+/* The paint at pixel x of the row. */
+BIG_FN void paint_px(struct paint *p, int x, int y, struct ch *o) {
+    long t;
+    if (p->kind == 0) { *o = p->col; return; }
+    if (p->kind == 1) {
+        const struct ogpu_surface *s = p->s;
+        int u = x - p->ox, v = y - p->oy;
+        if (p->rep) { u = wrap(u, s->w); v = wrap(v, s->h); }
+        if (u < 0 || v < 0 || u >= s->w || v >= s->h) { o->a = o->r = o->g = o->b = 0; return; }
+        ld(row_at(s, v) + xoff(u, fmt_bpp[s->format]), s->format, o);
+        return;
+    }
+    if (p->kind == 3 && !p->none) {
+        long u = clampl(p->gx, 0x3FFFFFFFL), v = clampl(p->gy, 0x3FFFFFFFL);
+        if (p->bil) {
+            struct ch q[4], t0, t1;
+            int x0, y0;
+            u -= 0x8000; v -= 0x8000;
+            x0 = (int)(u >> 16); y0 = (int)(v >> 16);
+            pat_px(p, x0, y0, &q[0]); pat_px(p, x0 + 1, y0, &q[1]);
+            pat_px(p, x0, y0 + 1, &q[2]); pat_px(p, x0 + 1, y0 + 1, &q[3]);
+            mix(&t0, &q[0], &q[1], (unsigned)(u >> 8) & 255);
+            mix(&t1, &q[2], &q[3], (unsigned)(u >> 8) & 255);
+            mix(o, &t0, &t1, (unsigned)(v >> 8) & 255);
+        } else pat_px(p, (int)(u >> 16), (int)(v >> 16), o);
+        if (p->alpha != 255) { o->a = mul255(o->a, p->alpha); o->r = mul255(o->r, p->alpha); o->g = mul255(o->g, p->alpha); o->b = mul255(o->b, p->alpha); }
+        return;
+    }
+    if (p->none || !grad_t(p, &t)) { o->a = o->r = o->g = o->b = 0; return; }
+    if (p->spread == OGPU_SPREAD_REPEAT) t &= 0xFFFF;
+    else if (p->spread == OGPU_SPREAD_REFLECT) { t &= 0x1FFFF; if (t > 0x10000) t = 0x20000 - t; }
+    else t = t < 0 ? 0 : t > 0x10000 ? 0x10000 : t;
+    grad_colour(p, t, o);
+}
+
+/* s by operator op onto the pixel at dp. */
+BIG_FN void put_op(ogpu_u8 *dp, int f, struct ch *s, int op) {
+    struct ch d;
+    if (op == OGPU_PD_OVER && s->a == 255) { st(dp, f, 255, s->r, s->g, s->b); return; }
+    ld(dp, f, &d);
+    pd_apply(&d, s, op);
+    st(dp, f, d.a, d.r, d.g, d.b);
+}
+
+/* The operators that change a pixel s = 0 doesn't: they act on the whole
+ * drawable rectangle. */
+static int unbounded(int op) {
+    return op == OGPU_PD_CLEAR || op == OGPU_PD_SRC || op == OGPU_PD_IN || op == OGPU_PD_IN_REVERSE
+           || op == OGPU_PD_OUT || op == OGPU_PD_ATOP_REVERSE;
+}
+static int op_ok(int op) {
+    return op < OGPU_PD_OPS || (op >= OGPU_BLEND_MULTIPLY && op <= OGPU_BLEND_LUMINOSITY);
+}
+
+/* PATH_FILL and PATH_STROKE (v1.6). */
+OP_FN op_path(struct ogpu_core *c, const ogpu_u8 *a, int stroke) {
+    ogpu_u32 fl = rd32(a), mslot = rd32(a + 12), mxy = rd32(a + 16), paddr = rd32(a + 20), pwords = rd32(a + 24);
+    ogpu_u32 waddr = rd32(a + 52), wbytes = rd32(a + 56);
+    const struct ogpu_surface *t = &c->slot[c->target], *m = 0;
+    int op = (int)(fl & 255), evenodd = (fl & OGPU_PATH_EVENODD) != 0, mox = hi_s(mxy), moy = lo_s(mxy);
+    int rx0, ry0, rx1, ry1, w, h, bh, band, i, j, dbpp = bytes_per_pixel(t->format), r, bounded = !unbounded(op);
+    long minx = 0x7FFFFFFFL, miny = 0x7FFFFFFFL, maxx = -0x7FFFFFFFL, maxy = -0x7FFFFFFFL, at, x, y, ex, k;
+    struct pctx pc;
+    struct paint pt;
+    struct rast rs;
+    ogpu_u8 *work;
+    if (!op_ok(op) || (!is_colour(t->format) && t->format != OGPU_FMT_A8)) return OGPU_ERR_UNSUPPORTED;
+    if (fl & OGPU_PATH_MASK) {
+        if (mslot >= OGPU_MAX_SLOTS || !c->slot[mslot].pixels) return OGPU_ERR_NOSURFACE;
+        m = &c->slot[mslot];
+        if (!is_colour(m->format) && m->format != OGPU_FMT_A8) return OGPU_ERR_UNSUPPORTED;
+    }
+    if ((r = paint_init(c, &pt, fl, rd32(a + 4), rd32(a + 8))) != OGPU_OK) return r;
+    if (pwords > 0x00FFFFFFUL) return OGPU_ERR_UNSUPPORTED;
+    pc.path = pwords ? c->map(c->user, paddr, pwords * 4) : a;
+    if (!pc.path) return OGPU_ERR_NOMAP;
+    pc.words = (long)pwords; pc.stroke = stroke;
+    for (i = 0; i < 6; i++) pc.m[i] = clampl(sgn32(rd32(a + 28 + 4 * i)), 0x3FFFFFFF);
+    pc.tol = 16;                                    /* 1/16 pixel */
+    if (stroke) {
+        ogpu_u32 dcount = rd32(a + 76);
+        long sc = (pc.m[0] < 0 ? -pc.m[0] : pc.m[0]) + (pc.m[1] < 0 ? -pc.m[1] : pc.m[1]), s2;
+        s2 = (pc.m[3] < 0 ? -pc.m[3] : pc.m[3]) + (pc.m[4] < 0 ? -pc.m[4] : pc.m[4]);
+        if (s2 > sc) sc = s2;
+        pc.hw = clampl(sgn32(rd32(a + 60)) >> 9, OGPU_COORD_MAX);
+        pc.cap = (int)(rd32(a + 64) & 15); pc.join = (int)(rd32(a + 64) & 0xF0);
+        pc.miter = clampl(sgn32(rd32(a + 68)), 0xFFFFFF);
+        pc.ndash = 0; pc.dash = 0; pc.doff = sgn32(rd32(a + 80)) >> 8;
+        if (pc.cap > OGPU_CAP_SQUARE || pc.join > OGPU_JOIN_BEVEL) return OGPU_ERR_UNSUPPORTED;
+        if (pc.hw <= 0) return OGPU_OK;
+        if (dcount) {
+            if (dcount > 0xFFFF) return OGPU_ERR_UNSUPPORTED;
+            if (!(pc.dash = c->map(c->user, rd32(a + 72), dcount * 4))) return OGPU_ERR_NOMAP;
+            pc.ndash = (int)dcount;
+        }
+        /* cut in the path's space: the target's 1/16 pixel there */
+        pc.tol = sc > 0 ? (long)(((ogpu_s64)16 * 65536) / sc) : 16;
+        if (pc.tol < 1) pc.tol = 1;
+    }
+    /* the path checked, and its control box: (0, 0) too when it doesn't
+     * start with MOVE, as it starts there */
+    if (pc.words && rd32(pc.path) != OGPU_PATH_MOVE) minx = maxx = miny = maxy = 0;
+    for (at = 0; at < pc.words;) {
+        ogpu_u32 v = rd32(pc.path + at * 4);
+        int np = v == OGPU_PATH_QUAD ? 2 : v == OGPU_PATH_CUBIC ? 3 : v == OGPU_PATH_CLOSE ? 0 : 1;
+        if (v > OGPU_PATH_CLOSE || at + 1 + 2 * np > pc.words) return OGPU_ERR_UNSUPPORTED;
+        for (at++, k = 0; k < np; k++, at += 2) {
+            x = clampl(sgn32(rd32(pc.path + at * 4)), OGPU_COORD_MAX); y = clampl(sgn32(rd32(pc.path + at * 4 + 4)), OGPU_COORD_MAX);
+            if (x < minx) minx = x;
+            if (x > maxx) maxx = x;
+            if (y < miny) miny = y;
+            if (y > maxy) maxy = y;
+        }
+    }
+    if (minx > maxx && bounded) return OGPU_OK;
+    if (stroke && minx <= maxx) {                   /* room for joins and caps */
+        ex = clampl((ogpu_s64)(pc.join == OGPU_JOIN_MITER ? (pc.miter >> 16) + 2 : 2) * pc.hw, OGPU_COORD_MAX);
+        minx = clampl((ogpu_s64)minx - ex, OGPU_COORD_MAX); miny = clampl((ogpu_s64)miny - ex, OGPU_COORD_MAX);
+        maxx = clampl((ogpu_s64)maxx + ex, OGPU_COORD_MAX); maxy = clampl((ogpu_s64)maxy + ex, OGPU_COORD_MAX);
+    }
+    bounds(c, &rx0, &ry0, &rx1, &ry1);
+    if (bounded) {
+        long bx0 = 0x7FFFFFFFL, by0 = 0x7FFFFFFFL, bx1 = -0x7FFFFFFFL, by1 = -0x7FFFFFFFL;
+        for (i = 0; i < 4; i++) {
+            xform(&pc, i & 1 ? maxx : minx, i & 2 ? maxy : miny, &x, &y);
+            if (x < bx0) bx0 = x;
+            if (x > bx1) bx1 = x;
+            if (y < by0) by0 = y;
+            if (y > by1) by1 = y;
+        }
+        if ((bx0 >> 8) - 1 > rx0) rx0 = (int)(bx0 >> 8) - 1;
+        if ((by0 >> 8) - 1 > ry0) ry0 = (int)(by0 >> 8) - 1;
+        if ((bx1 >> 8) + 2 < rx1) rx1 = (int)(bx1 >> 8) + 2;
+        if ((by1 >> 8) + 2 < ry1) ry1 = (int)(by1 >> 8) + 2;
+    }
+    if (rx1 <= rx0 || ry1 <= ry0) return OGPU_OK;
+    w = rx1 - rx0; h = ry1 - ry0;
+    if (wbytes < (ogpu_u32)w * 8 * OGPU_SUBROWS) return OGPU_ERR_UNSUPPORTED;
+    wbytes /= (ogpu_u32)w * 8 * OGPU_SUBROWS;      /* the rows it holds (w x 32 x h may pass 32 bits) */
+    bh = wbytes < (ogpu_u32)h ? (int)wbytes : h;
+    if (!(work = c->map(c->user, waddr, (ogpu_u32)bh * w * 8 * OGPU_SUBROWS))) return OGPU_ERR_NOMAP;
+    if (!aligned4(work)) return OGPU_ERR_UNSUPPORTED;
+    rs.cover = (int *)(void *)work; rs.area = rs.cover + (long)w * bh * OGPU_SUBROWS; rs.w = w; rs.eo = evenodd;
+    pc.r = &rs;
+    for (band = ry0; band < ry1; band += bh) {
+        rs.h = ry1 - band < bh ? ry1 - band : bh;
+        rs.ox = (long)rx0 * 256; rs.oy = (long)band * 256;
+        for (at = 0; at < (long)w * rs.h * OGPU_SUBROWS; at++) rs.cover[at] = rs.area[at] = 0;
+        walk(&pc);
+        /* the sweep, and each pixel drawn */
+        for (j = 0; j < rs.h; j++) {
+            const int *cv = rs.cover + (long)j * OGPU_SUBROWS * w, *ar = rs.area + (long)j * OGPU_SUBROWS * w;
+            const ogpu_u8 *mrow = 0;
+            ogpu_u8 *dp = px_at(t, rx0, band + j);
+            long acc[OGPU_SUBROWS], cov, sub;
+            int q;
+            for (q = 0; q < OGPU_SUBROWS; q++) acc[q] = 0;
+            y = band + j;
+            if (m && y - moy >= 0 && y - moy < m->h) mrow = row_at(m, (int)(y - moy));
+            paint_row(&pt, rx0, (int)y);
+            for (i = 0; i < w; i++, dp += dbpp, paint_step(&pt)) {
+                struct ch s;
+                unsigned al;
+                /* each sub-row's coverage, 0 .. 0x4000 (256 x 64 subpixels) */
+                for (cov = 0, q = 0; q < OGPU_SUBROWS; q++) {
+                    long at = (long)q * w + i;
+                    acc[q] += cv[at];
+                    /* in 32 bits: even-odd wants it modulo 0x8000 (so its
+                     * cells may wrap); non-zero past 0x4000 is full, and is
+                     * taken as full from acc * 256 = 2^30 (a winding of some
+                     * 65536; area / 2 is under 2^30, and near it only with
+                     * some 65536 lines in one cell) */
+                    if (evenodd) {
+                        sub = (long)((((unsigned long)acc[q] << 8) - (unsigned long)(ar[at] / 2)) & 0x7FFF);
+                        if (sub > 0x4000) sub = 0x8000 - sub;
+                    } else if (acc[q] >= 0x400000L || acc[q] <= -0x400000L) sub = 0x4000;
+                    else {
+                        sub = acc[q] * 256 - ar[at] / 2;
+                        if (sub < 0) sub = -sub;
+                        if (sub > 0x4000) sub = 0x4000;
+                    }
+                    cov += sub;
+                }
+                al = (unsigned)((cov * 255 + 0x8000) >> 16);
+                if (m) {
+                    int mx = rx0 + i - mox;
+                    struct ch mp;
+                    if (mrow && mx >= 0 && mx < m->w) { ld(mrow + xoff(mx, fmt_bpp[m->format]), m->format, &mp); al = mul255(al, mp.a); }
+                    else al = 0;
+                }
+                if (!al && bounded) continue;
+                paint_px(&pt, rx0 + i, (int)y, &s);
+                if (al != 255) { s.a = mul255(s.a, al); s.r = mul255(s.r, al); s.g = mul255(s.g, al); s.b = mul255(s.b, al); }
+                put_op(dp, t->format, &s, op);
+            }
+        }
+    }
+    return OGPU_OK;
+}
+
+/* ---- v1.6: BLUR ------------------------------------------------------------------------ */
+
+/* One box blur along n pixels of nch bytes: each the mean of lo before it,
+ * itself and hi after it (0 outside). */
+static void box1(const ogpu_u8 *src, ogpu_u8 *dst, int n, int nch, int lo, int hi) {
+    unsigned long d = (unsigned long)(lo + hi + 1), rc = ((1UL << 24) + d / 2) / d, sum;
+    int i, k;
+    for (k = 0; k < nch; k++) {
+        for (sum = 0, i = 0; i < hi && i < n; i++) sum += src[i * nch + k];
+        for (i = 0; i < n; i++) {
+            if (i + hi < n) sum += src[(i + hi) * nch + k];
+            if (i - lo - 1 >= 0) sum -= src[(i - lo - 1) * nch + k];
+            dst[i * nch + k] = (ogpu_u8)(((sum * rc + (1UL << 23)) & 0xFFFFFFFFUL) >> 24);
+        }
+    }
+}
+
+/* Three boxes of size d (feGaussianBlur's): odd, three centred; even, two
+ * of d either side of the pixel and one of d + 1. a holds the line; the
+ * result is in a again (b is scratch). */
+static void box3(ogpu_u8 *a, ogpu_u8 *b, int n, int nch, int d) {
+    if (d & 1) {
+        box1(a, b, n, nch, d / 2, d / 2); box1(b, a, n, nch, d / 2, d / 2);
+        box1(a, b, n, nch, d / 2, d / 2);
+    } else {
+        box1(a, b, n, nch, d / 2, d / 2 - 1); box1(b, a, n, nch, d / 2 - 1, d / 2);
+        box1(a, b, n, nch, d / 2, d / 2);
+    }
+    copy_fwd(a, b, n * nch);
+}
+
+/* The box size for a blur radius (12.4): sigma = radius / 2, d = sigma
+ * 3 sqrt(2 pi) / 4 + 1/2, rounded down. */
+static int box_size(int r) {
+    return (int)((((ogpu_s64)r << 11) * 123207 + 0x80000000LL) >> 32);
+}
+
+OP_FN op_blur(struct ogpu_core *c, const ogpu_u8 *a) {
+    ogpu_u32 xy = rd32(a), wh = rd32(a + 4), rad = rd32(a + 8), waddr = rd32(a + 12), wbytes = rd32(a + 16);
+    const struct ogpu_surface *t = &c->slot[c->target];
+    int x = hi_s(xy), y = lo_s(xy), w = hi_u(wh), h = lo_u(wh), ox, oy, i, j, bpp = bytes_per_pixel(t->format);
+    int dx = box_size(hi_u(rad)), dy = box_size(lo_u(rad)), n;
+    ogpu_u8 *work, *b;
+    if (t->format != OGPU_FMT_A8 && bpp != 4) return OGPU_ERR_UNSUPPORTED;
+    if (!clip_rect(c, &x, &y, &w, &h, &ox, &oy) || (dx < 2 && dy < 2)) return OGPU_OK;
+    n = (w > h ? w : h) * bpp;
+    if (wbytes < (ogpu_u32)n * 2) return OGPU_ERR_UNSUPPORTED;
+    if (!(work = c->map(c->user, waddr, (ogpu_u32)n * 2))) return OGPU_ERR_NOMAP;
+    b = work + n;
+    if (dx >= 2)
+        for (j = 0; j < h; j++) {
+            ogpu_u8 *row = px_at(t, x, y + j);
+            copy_fwd(work, row, w * bpp);
+            box3(work, b, w, bpp, dx);
+            copy_fwd(row, work, w * bpp);
+        }
+    if (dy >= 2)
+        for (i = 0; i < w; i++) {
+            ogpu_u8 *col = px_at(t, x + i, y), *p;
+            for (j = 0, p = col; j < h; j++, p += t->bpr) put_raw(work + j * bpp, bpp, p);
+            box3(work, b, h, bpp, dy);
+            for (j = 0, p = col; j < h; j++, p += t->bpr) put_raw(p, bpp, work + j * bpp);
+        }
+    return OGPU_OK;
+}
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
+
 /* ---- the run ---------------------------------------------------------------------- */
 
 void ogpu_core_init(struct ogpu_core *c) {
@@ -1437,6 +2490,9 @@ static int args_for(int op) {
     case OGPU_OP_YUV: return 9;
     case OGPU_OP_YUV_SCALED: return 12;
     case OGPU_OP_COMPOSITE_PD: return 7;
+    case OGPU_OP_PATH_FILL: return 15;
+    case OGPU_OP_PATH_STROKE: return 21;
+    case OGPU_OP_BLUR: return 5;
     case OGPU_OP_FENCE: return 1;
     }
 #ifdef OGPU_WITH_3D
@@ -1503,6 +2559,9 @@ long ogpu_core_run(struct ogpu_core *c, const ogpu_u8 *stream, long words) {
         case OGPU_OP_YUV: r = op_yuv(c, a); break;
         case OGPU_OP_YUV_SCALED: r = op_yuv_scaled(c, a); break;
         case OGPU_OP_COMPOSITE_PD: r = op_composite_pd(c, a); break;
+        case OGPU_OP_PATH_FILL: r = op_path(c, a, 0); break;
+        case OGPU_OP_PATH_STROKE: r = op_path(c, a, 1); break;
+        case OGPU_OP_BLUR: r = op_blur(c, a); break;
         case OGPU_OP_FENCE: if (c->fence) c->fence(c->user, rd32(a)); break;
         }
         if (r != OGPU_OK && c->last_error == OGPU_OK) { c->last_error = r; c->error_word = at; }
@@ -1526,7 +2585,10 @@ int ogpu_core_supports(int op, int format) {
     case OGPU_OP_PIXELS:    /* pens only on CLUT8, coverage only on A8 */
         return format == OGPU_FMT_CLUT8 || format == OGPU_FMT_A8 ? OGPU_PARTIAL : OGPU_FULL;
     case OGPU_OP_COMPOSITE: case OGPU_OP_MASK: case OGPU_OP_COMPOSITE_PD:
+    case OGPU_OP_PATH_FILL: case OGPU_OP_PATH_STROKE:
         return format == OGPU_FMT_CLUT8 ? OGPU_NONE : OGPU_FULL;
+    case OGPU_OP_BLUR:      /* coverage, or 32-bit pixels */
+        return format == OGPU_FMT_A8 || bytes_per_pixel(format) == 4 ? OGPU_FULL : OGPU_NONE;
     case OGPU_OP_FILL_BLEND: case OGPU_OP_LINES_BLEND: case OGPU_OP_POINTS_BLEND:
     case OGPU_OP_COMPOSITE_AFFINE: case OGPU_OP_YUV: case OGPU_OP_YUV_SCALED:
         return colour ? OGPU_FULL : OGPU_NONE;

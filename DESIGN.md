@@ -694,6 +694,17 @@ uses the host's driver through Vulkan:
   row in 32, and the host leaves anything that could overflow to the core)
   and YUV, each as `ogpu_core.c` does it. LINES_BLEND and POINTS_BLEND stay
   on the core.
+- **Stream v1.6: vectors on the core** (23 October 2026; openamigabrowser
+  PLAN.md step 6, "Drawing is OpenGfx and OpenGPU": opengpu.library is the
+  one home for a browser's pixel work). PATH_FILL (non-zero and even-odd)
+  and PATH_STROKE (caps, joins, miter limit, dashes) with OpenFont's area
+  rasteriser (`of_raster_a8`, moved into `ogpu_core.c`, even-odd added,
+  four sub-rows a pixel), drawn at device pixels with no larger picture
+  scaled down; gradients (linear, two-circle radial, conic) and pictures
+  under a matrix as paint; any Porter-Duff operator or W3C blend mode
+  (also in COMPOSITE_PD); an A8 mask as the clip; BLUR (three box blurs,
+  SVG's sizes). Integers only. `tests/test_vector.c` checks each against a
+  reference in doubles. The Vulkan back end runs them on its core.
 - **TRIANGLES on the GPU** (17 October 2026): a second compute shader,
   `host/vulkan/ogpu3d.comp`, colours the pixels of the triangles
   `ogpu_3d.c` has set up, in `ogpu_3d.c`'s own integer steps, so the GPU's
@@ -828,7 +839,7 @@ Warp3D and SDL need no LVOs of their own. They build stream batches (0x0030–0x
 ##### include/: the one include tree for programs
 
 - `opengpu/`:
-  - library owner: `opengpu.h`, `stream.h` (v1.3), `build.h` (batch builders), `driver.h`, `module.h`, `virgl.h` (the ACVirgl request format);
+  - library owner: `opengpu.h`, `stream.h` (v1.6), `build.h` (batch builders), `driver.h`, `module.h`, `virgl.h` (the ACVirgl request format);
   - Warp3D helper: `stream3d.h`, plus `build3d.h` with `ogpu_build3d.c` for its builders;
   - `gfx.h`: the OpenGfx fork's public calls.
 - `proto/`, `inline/`: `opengpu.h`.

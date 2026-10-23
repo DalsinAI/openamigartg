@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * Building an OGPU stream v1.2 (stream.h) in memory. Link library code: the
+ * Building an OGPU stream v1.6 (stream.h) in memory. Link library code: the
  * calls write words into the caller's buffer and never call opengpu.library,
  * so building a batch costs no library calls; OGPU_Submit sends it.
  * A batch that runs out of room sets `overflow` and stops growing. */
@@ -62,5 +62,38 @@ void ogpu_yuv(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr,
 void ogpu_yuv_scaled(struct OGPUBatch *b, unsigned long y_address, unsigned long y_bpr, unsigned long u_address,
                      unsigned long u_bpr, unsigned long v_address, unsigned long v_bpr, int w, int h,
                      unsigned long format, int sx, int sy, int sw, int sh, int x, int y, int dw, int dh);
+/* v1.6: paths, gradients and blur (stream.h). Ask OGPU_Query(OGPU_OP_PATH_FILL)
+ * first. flags: an operator (OGPU_PD_ or OGPU_BLEND_) and OGPU_PATH_ flags;
+ * paint: a colour, a slot or a gradient's address; m: m00, m01, m02, m10,
+ * m11, m12, 16.16 (the path's space to the target); work: memory the back
+ * end may use, at least 32 bytes per pixel of the target's width. */
+void ogpu_path_fill(struct OGPUBatch *b, unsigned long flags, unsigned long paint, int px, int py,
+                    int mask_slot, int mx, int my, unsigned long path, unsigned long path_words, const long m[6],
+                    unsigned long work, unsigned long work_bytes);
+/* width, miter (16.16), style (OGPU_CAP_ | OGPU_JOIN_), dashes: count
+ * 16.16 lengths at dash, from dash_offset (16.16). */
+void ogpu_path_stroke(struct OGPUBatch *b, unsigned long flags, unsigned long paint, int px, int py,
+                      int mask_slot, int mx, int my, unsigned long path, unsigned long path_words, const long m[6],
+                      unsigned long work, unsigned long work_bytes, long width, unsigned long style, long miter,
+                      unsigned long dash, unsigned long dash_count, long dash_offset);
+/* rx, ry: the blur radii, 12.4 pixels (16 = 1 pixel) */
+void ogpu_blur(struct OGPUBatch *b, int x, int y, int w, int h, int rx, int ry, unsigned long work,
+               unsigned long work_bytes);
+/* A path is built in an OGPUBatch of its own (its words are the path's;
+ * give its buffer's address and words to ogpu_path_fill). Points 24.8. */
+void ogpu_path_move(struct OGPUBatch *p, long x, long y);
+void ogpu_path_line(struct OGPUBatch *p, long x, long y);
+void ogpu_path_quad(struct OGPUBatch *p, long x1, long y1, long x, long y);
+void ogpu_path_cubic(struct OGPUBatch *p, long x1, long y1, long x2, long y2, long x, long y);
+void ogpu_path_close(struct OGPUBatch *p);
+/* A gradient, likewise: kind (OGPU_GRAD_), spread (OGPU_SPREAD_), the
+ * matrix and six geometry words (16.16), then ogpu_gradient_stop for each
+ * stop, n of them. */
+void ogpu_gradient(struct OGPUBatch *g, int kind, int spread, int n, const long m[6], const long geometry[6]);
+void ogpu_gradient_stop(struct OGPUBatch *g, long offset, unsigned long argb);
+/* A pattern (OGPU_PATH_PATTERN), likewise: slot, flags (OGPU_PATTERN_),
+ * its rectangle, the matrix (16.16) and an alpha. */
+void ogpu_image_paint(struct OGPUBatch *g, int slot, unsigned long flags, int sx, int sy, int sw, int sh,
+                      const long m[6], int alpha);
 
 #endif

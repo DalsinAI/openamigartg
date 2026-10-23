@@ -20,6 +20,10 @@ cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanit
 cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined \
     -o "$OUT/test_composite_pd" "$HERE/test_composite_pd.c" "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c"
 "$OUT/test_composite_pd"
+# Stream v1.6 (paths, strokes, gradients, patterns, blur, blend modes) against its references.
+cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+    -o "$OUT/test_vector" "$HERE/test_vector.c" "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c" -lm
+"$OUT/test_vector"
 # The Vulkan back end against the core, when Vulkan's loader and headers are there
 # (it skips itself when no device is found; lavapipe will do). Built with the 3D
 # range (OGPU_WITH_3D), as the runtime is: TRIANGLES on the 3D shader, the rest
