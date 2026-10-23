@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 AmigaChrome Team. OpenRTG, MIT licence (LICENSE).
  * SPDX-License-Identifier: MIT
  *
- * OGPU stream v1.3: the bytes every OpenGPU back end receives (DESIGN.md
+ * OGPU stream v1.5: the bytes every OpenGPU back end receives (DESIGN.md
  * section 5). v1.1 added A8 coverage masks for anti-aliased text and clip
  * paths (OpenGfx): the A8 format, MASK, and COMPOSITE's MASK, ADD and IN
  * flags. v1.2 (8 October 2026) adds what SDL 2's renderer and Warp3D need:
@@ -19,6 +19,9 @@
  * pixman.library hands its composites to OpenGPU. The 68k's own CPU back end, ACRTG.gpu on the Cradle and
  * PiStorm.gpu on a spare ARM core all read exactly this, so they draw the
  * same pixels.
+ * v1.5 (22 October 2026) adds YUV_SCALED: a part of a YUV picture converted
+ * straight into a destination rect of any size (nearest), so a video frame
+ * reaches the target in one pass.
  *
  * A stream is 32-bit words, big-endian (the Amiga's order) wherever it is
  * read. Each command starts with a header word: the opcode in the top 16
@@ -40,7 +43,7 @@
 #define OPENGPU_STREAM_H
 
 #define OGPU_STREAM_VERSION 1
-#define OGPU_STREAM_MINOR   4
+#define OGPU_STREAM_MINOR   5
 
 #define OGPU_HDR(op, words)     (((unsigned long)(op) << 16) | ((unsigned long)(words) & 0xFFFFUL))
 #define OGPU_HDR_OP(w)          ((unsigned)((w) >> 16))
@@ -104,6 +107,9 @@
 #define OGPU_OP_COMPOSITE_PD    0x0023  /* v1.4: operator and flags, source (slot or
                                            colour), source xy, mask (slot or alpha),
                                            mask xy, xy, wh                               8  */
+#define OGPU_OP_YUV_SCALED      0x0024  /* v1.5: YUV's six plane words, the picture's
+                                           wh, format, then the part's source xy and
+                                           wh, and the destination xy and wh (nearest)  13 */
 /* 0x0030-0x003F: 3D (TRIANGLES, RENDER3D, TEXENV, TEXTURE, DEPTH, CLEAR3D):
  * include/opengpu/stream3d.h. */
 #define OGPU_OP_FENCE           0x00F0  /* id: reported when everything before is done   2  */

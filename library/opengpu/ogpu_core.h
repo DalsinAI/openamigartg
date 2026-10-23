@@ -22,6 +22,7 @@ struct ogpu_surface {
 };
 
 struct ogpu3d;                      /* ogpu_3d.h: 3D state for one batch */
+#define OGPU_CORE_FAST 4            /* Fast RAM ranges a core keeps for MOVE16 */
 #define OGPU_CORE_HAS_D3 1
 
 struct ogpu_core {
@@ -45,6 +46,12 @@ struct ogpu_core {
      * ogpu_core_init sets it to 0. */
     struct ogpu3d *d3;
     long error_word;        /* and where: the word index of its command */
+    /* The 68k CPU back end: Fast RAM on the CPU's own bus, fast_lo[i] <=
+     * address < fast_hi[i], where COPY moves rows with MOVE16 when source
+     * and destination line up on 16 bytes (a 68040 or 68060 only; the
+     * library fills them). ogpu_core_init sets nfast to 0: never. */
+    int nfast;
+    ogpu_u32 fast_lo[OGPU_CORE_FAST], fast_hi[OGPU_CORE_FAST];
 };
 
 void ogpu_core_init(struct ogpu_core *c);
