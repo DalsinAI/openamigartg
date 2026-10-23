@@ -464,6 +464,11 @@ static int driver_takes(struct OpenGPUBase *base, const UBYTE *s, ULONG words)
             ULONG f = (ULONG)s[(at + 5) * 4] << 24 | (ULONG)s[(at + 5) * 4 + 1] << 16 | (ULONG)s[(at + 5) * 4 + 2] << 8 | s[(at + 5) * 4 + 3];
             if (f > 0 && f < OGPU_FMT_COUNT && !base->drv_fmt[f]) return 0;
         }
+        /* v1.6's blend modes as COMPOSITE_PD's operator: a driver that
+         * answers PATH_FILL takes all of v1.6 (stream.h); an older one
+         * would refuse that command alone, so the CPU draws the batch. */
+        if (op == OGPU_OP_COMPOSITE_PD && len >= 2 && at + 1 < words
+            && s[(at + 1) * 4 + 3] >= OGPU_PD_OPS && !base->drv_ok[OGPU_OP_PATH_FILL]) return 0;
         at += len;
     }
     return 1;
