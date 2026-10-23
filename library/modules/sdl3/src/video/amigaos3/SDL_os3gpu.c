@@ -381,9 +381,11 @@ bool SDL_OS3_GPU_Present(SDL_Window *window, SDL_Surface *surface, const SDL_Rec
         return false;
     }
     if (!b.overflow && OGPU_Submit(gw->stream, (ULONG)b.words, &fence) == OGPU_OK) {
-        OGPU_Wait(fence); /* done before the bitmap and layer are let go */
+        /* done before the bitmap and layer are let go; an error there and
+           the caller shows the window on the CPU */
+        const LONG done = OGPU_Wait(fence);
         SDL_OS3_GPU_PresentEnd(&p);
-        return true;
+        return done == OGPU_OK;
     }
     /* not sent: the CPU draws the window */
     SDL_OS3_GPU_Abandon(&p);

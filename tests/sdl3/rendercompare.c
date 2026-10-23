@@ -36,6 +36,9 @@ typedef struct Textures
     SDL_Texture *yuy2;
     SDL_Texture *tile;     /* 16x16 checks, for wrapping */
     SDL_Texture *xrgb, *bgra, *rgb565, *xrgb1555; /* the sprite in the other listed formats */
+    SDL_Texture *white;    /* 1x1 */
+    SDL_Texture *nv12full; /* NV12 in BT.709's full range (stream v1.7; SDL converts it before) */
+    SDL_Texture *odd;      /* I420, 64x47, filled through a lock in SDL's layout */
 } Textures;
 
 static Uint32 sprite_px[64 * 48];
@@ -153,6 +156,51 @@ static void make_textures(SDL_Renderer *r, Textures *t)
         }
         SDL_UpdateTexture(t->yuy2, NULL, packed, 64 * 2);
     }
+    {
+        static const Uint32 one = 0xFFFFFFFFu;
+        t->white = texture_of(r, SDL_PIXELFORMAT_ARGB8888, &one, 1, 1);
+    }
+    {
+        SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER, SDL_PIXELFORMAT_NV12);
+        SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_ACCESS_NUMBER, SDL_TEXTUREACCESS_STATIC);
+        SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_WIDTH_NUMBER, 64);
+        SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_HEIGHT_NUMBER, 48);
+        SDL_SetNumberProperty(props, SDL_PROP_TEXTURE_CREATE_COLORSPACE_NUMBER, SDL_COLORSPACE_BT709_FULL);
+        t->nv12full = SDL_CreateTextureWithProperties(r, props);
+        SDL_DestroyProperties(props);
+        if (t->nv12full) {
+            Uint8 uv[32 * 24 * 2];
+            for (y = 0; y < 24; y++) {
+                for (x = 0; x < 32; x++) {
+                    uv[(y * 32 + x) * 2] = (Uint8)(80 + x * 4);
+                    uv[(y * 32 + x) * 2 + 1] = (Uint8)(200 - y * 4);
+                }
+            }
+            SDL_UpdateNVTexture(t->nv12full, NULL, planes, 64, uv, 64);
+        }
+    }
+    t->odd = SDL_CreateTexture(r, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, 64, 47);
+    if (t->odd) {
+        void *px;
+        int pitch;
+        if (SDL_LockTexture(t->odd, NULL, &px, &pitch)) {
+            /* SDL's layout: Y at pitch, then U and V at half of it, (h + 1) / 2 rows each */
+            Uint8 *yp = (Uint8 *)px, *up = yp + pitch * 47, *vp = up + ((pitch + 1) / 2) * 24;
+            for (y = 0; y < 47; y++) {
+                for (x = 0; x < 64; x++) {
+                    yp[y * pitch + x] = (Uint8)(30 + (x + y) * 2);
+                }
+            }
+            for (y = 0; y < 24; y++) {
+                for (x = 0; x < 32; x++) {
+                    up[y * ((pitch + 1) / 2) + x] = (Uint8)(90 + y * 4);
+                    vp[y * ((pitch + 1) / 2) + x] = (Uint8)(200 - x * 3);
+                }
+            }
+            SDL_UnlockTexture(t->odd);
+        }
+    }
     t->xrgb = texture_of(r, SDL_PIXELFORMAT_XRGB8888, sprite_px, 64, 48);
     t->bgra = texture_of(r, SDL_PIXELFORMAT_BGRA8888, sprite_px, 64, 48);
     t->rgb565 = texture_of(r, SDL_PIXELFORMAT_RGB565, sprite_px, 64, 48);
@@ -173,7 +221,7 @@ static void make_textures(SDL_Renderer *r, Textures *t)
 static void free_textures(Textures *t)
 {
     SDL_Texture *all[] = { t->sprite, t->premul, t->rgba, t->abgr, t->pal, t->yuv, t->nv12, t->yuy2, t->tile,
-                           t->xrgb, t->bgra, t->rgb565, t->xrgb1555 };
+                           t->xrgb, t->bgra, t->rgb565, t->xrgb1555, t->white, t->nv12full, t->odd };
     size_t i;
     for (i = 0; i < SDL_arraysize(all); i++) {
         if (all[i]) {
@@ -206,6 +254,8 @@ static const Scene scenes[] = {
     { "viewport and clip", EDGE_SHARE },
     { "render scale", 4.0 },
     { "XRGB8888, BGRA8888, RGB565, XRGB1555 textures", EDGE_SHARE },
+    { "a 1x1 stretched, lines of one point, tiling", 6.0 }, /* tiles: nearest in software */
+    { "YUV: BT.709 full range, an odd height locked", EDGE_SHARE },
 };
 #define NSCENES ((int)SDL_arraysize(scenes))
 
@@ -539,6 +589,61 @@ static void draw(SDL_Renderer *r, int scene, Textures *t)
         }
         break;
     }
+    case 16:
+        /* a 1x1 tinted and stretched 200 times (past COMPOSITE_AFFINE's 127) */
+        if (t->white) {
+            SDL_SetTextureColorMod(t->white, 255, 60, 30);
+            fr.x = 20;
+            fr.y = 10;
+            fr.w = 200;
+            fr.h = 30;
+            SDL_RenderTexture(r, t->white, NULL, &fr);
+            SDL_SetTextureColorMod(t->white, 255, 255, 255);
+        }
+        /* lines of one point, and 1x1 outlines, in both draw modes */
+        for (i = 0; i < 2; i++) {
+            SDL_SetRenderDrawBlendMode(r, i ? SDL_BLENDMODE_BLEND : SDL_BLENDMODE_NONE);
+            SDL_SetRenderDrawColor(r, 250, 250, 60, 200);
+            SDL_RenderLine(r, (float)(30 + i * 10), 50, (float)(30 + i * 10), 50);
+            fr.x = (float)(60 + i * 10);
+            fr.y = 50;
+            fr.w = 1;
+            fr.h = 1;
+            SDL_RenderRect(r, &fr);
+        }
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+        /* tiling: 64 repeats across, then 256 (past the core's 128) */
+        if (t->tile) {
+            fr.x = 0;
+            fr.y = 60;
+            fr.w = W;
+            fr.h = 60;
+            SDL_RenderTextureTiled(r, t->tile, NULL, 0.25f, &fr);
+            fr.y = 130;
+            SDL_RenderTextureTiled(r, t->tile, NULL, 0.0625f, &fr);
+        }
+        break;
+    case 17:
+        fr.x = 20;
+        fr.y = 20;
+        fr.w = 96;
+        fr.h = 72;
+        if (t->nv12full) {
+            SDL_RenderTexture(r, t->nv12full, NULL, &fr);
+        }
+        fr.x = 140;
+        fr.w = 64;
+        fr.h = 47;
+        if (t->odd) {
+            SDL_RenderTexture(r, t->odd, NULL, &fr);
+        }
+        fr.y = 100;
+        fr.w = 96;
+        fr.h = 70;
+        if (t->odd) {
+            SDL_RenderTexture(r, t->odd, NULL, &fr);
+        }
+        break;
     }
 }
 

@@ -150,9 +150,11 @@ static unsigned long be32(const ogpu_u8 *p)
     return (unsigned long)p[0] << 24 | (unsigned long)p[1] << 16 | (unsigned long)p[2] << 8 | p[3];
 }
 
-/* The commands in a stream that carry anything of v1.7. */
+/* The commands in a stream that carry anything of v1.7, or that 0.18 drew
+   wrong: TRIANGLES read only ARGB32, RGB565, A8 and CLUT8 slots before. */
 static void scan_v17(const ogpu_u8 *s, long words)
 {
+    unsigned long slot_fmt[OGPU_MAX_SLOTS] = { 0 };
     long i = 0;
     while (i < words) {
         const unsigned long h = be32(s + i * 4), op = h >> 16, len = h & 0xFFFF;
@@ -164,7 +166,12 @@ static void scan_v17(const ogpu_u8 *s, long words)
 #define ARG(n) ((long)(n) < (long)len - 1 ? be32(a + (n) * 4) : 0UL)
         switch (op) {
         case OGPU_OP_PALETTE: bad = 1; break;
-        case OGPU_OP_SURFACE: bad = v17_format(ARG(4)); break;
+        case OGPU_OP_SURFACE:
+            bad = v17_format(ARG(4));
+            if (ARG(0) < OGPU_MAX_SLOTS) {
+                slot_fmt[ARG(0)] = ARG(4);
+            }
+            break;
         case OGPU_OP_FILL_BLEND: case OGPU_OP_LINES_BLEND: case OGPU_OP_POINTS_BLEND:
             bad = (ARG(3) & OGPU_BLEND_MASK) > OGPU_BLEND_MUL; break;
         case OGPU_OP_COMPOSITE:
@@ -176,9 +183,13 @@ static void scan_v17(const ogpu_u8 *s, long words)
             bad = (f & 255) == OGPU_YUV_P010 || ((f >> 8) & 255) > OGPU_YUV_JPEG;
             break;
         }
-        case OGPU_OP_TRIANGLES:
+        case OGPU_OP_TRIANGLES: {
+            const unsigned long tex = ARG(6), f = tex < OGPU_MAX_SLOTS ? slot_fmt[tex] : OGPU_FMT_ARGB32;
             bad = (ARG(7) & OGPU_TRI_BLEND_MASK) > OGPU_TRI_BLEND_MUL ||
-                  (ARG(7) & (OGPU_TRI_PIXELART | OGPU_TRI_CLAMP_U | OGPU_TRI_CLAMP_V)); break;
+                  (ARG(7) & (OGPU_TRI_PIXELART | OGPU_TRI_CLAMP_U | OGPU_TRI_CLAMP_V)) ||
+                  (f != OGPU_FMT_ARGB32 && f != OGPU_FMT_RGB565 && f != OGPU_FMT_A8 && f != OGPU_FMT_CLUT8);
+            break;
+        }
         default: break;
         }
 #undef ARG
