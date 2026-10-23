@@ -56,6 +56,17 @@ if [ -n "${ACVIRGL_LIB:-}" ] && [ -f "${VIRGL_SRC:-/nonexistent}/virgl_protocol.
 else
     echo "no ACVIRGL_LIB and VIRGL_SRC; the virgl run is skipped"
 fi
+# libSDL3.a's stub with no SDL3.module (tests/sdl3/stub_nomodule.c), when SDL3_SRC
+# names SDL 3.4.14's tree (the tarball, or library/modules/sdl3/build.sh's).
+if [ -f "${SDL3_SRC:-/nonexistent}/src/dynapi/SDL_dynapi_procs.h" ]; then
+    cc -std=c99 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+        -I"$HERE/sdl3/host" -I"$HERE/host-include" -I"$HERE/../include" -I"$HERE/../stubs/sdl3" \
+        -I"$SDL3_SRC/include" -I"$SDL3_SRC/src/dynapi" -I"$SDL3_SRC/src" \
+        -o "$OUT/stub_nomodule" "$HERE/sdl3/stub_nomodule.c"
+    "$OUT/stub_nomodule"
+else
+    echo "no SDL3_SRC; the SDL 3 stub test is skipped"
+fi
 # The same tests big-endian on a 68040, when a Linux m68k compiler and qemu are installed.
 if command -v m68k-linux-gnu-gcc >/dev/null && command -v qemu-m68k >/dev/null; then
     m68k-linux-gnu-gcc -std=c99 -O2 -fno-delete-null-pointer-checks -m68040 -static -Wall -Wextra -Werror \

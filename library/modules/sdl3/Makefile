@@ -210,3 +210,10 @@ $(STATIC_TESTS): $(TEST_DIR)/%: $(TEST_DIR)/obj/%.o $(TEST_RUN) $(OUT)/libSDL3_s
 	$(CC) $(CPU) -noixemul -o $@ $< $(TEST_RUN) -L$(OUT) -lSDL3_test -lSDL3_static -lm -lamiga
 $(MODULE_TESTS): $(TEST_DIR)/%.m: $(TEST_DIR)/obj/%.o $(TEST_RUN) $(OUT)/libSDL3.a $(OUT)/libSDL3_test.a
 	$(CC) $(CPU) -noixemul -o $@ $< $(TEST_RUN) -L$(OUT) -lSDL3_test -lSDL3 -lm -lamiga
+
+# nomodule.m: that a program ends when SDL3.module isn't there
+# (tests/sdl3/nomodule.c, run with the module renamed away).
+tests: $(TEST_DIR)/nomodule.m
+$(TEST_DIR)/nomodule.m: $(ROOT)/tests/sdl3/nomodule.c $(OUT)/libSDL3.a
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_BASE) -o $@ $< -L$(OUT) -lSDL3 -lm -lamiga
