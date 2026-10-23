@@ -66,15 +66,35 @@ int SDL3Stub_ready = 0;
 APTR SDL3Stub_a4 = NULL;
 static BPTR SDL3Stub_seg = 0;
 static struct SDL3ModuleTable *SDL3Stub_module = NULL;
+static int SDL3Stub_failed = 0;
 
+/* Every call once the module couldn't be loaded: nothing, and 0. */
+typedef long (*SDL3StubFn)(void);
+static long SDL3Stub_None(void)
+{
+    return 0;
+}
+
+/* The program ends here, once. exit() runs libnix's exit list, and an SDL
+   call from it (SDL_Quit from atexit or a destructor) must not load the
+   module again and call exit() again: libnix then runs that part of the
+   list again, and a destructor that comes back here loops for ever. So
+   every call goes to SDL3Stub_None from now on. */
 static void SDL3Stub_Fail(const char *why)
 {
+    SDL3StubFn *fn = (SDL3StubFn *)(void *)&SDL3Stub_jump_table;
+    ULONG i;
     BPTR out = Output();
     if (out) {
         FPuts(out, (CONST_STRPTR) "SDL 3: ");
         FPuts(out, (CONST_STRPTR)why);
         FPuts(out, (CONST_STRPTR) "\n");
     }
+    for (i = 0; i < sizeof(SDL3Stub_jump_table) / sizeof(*fn); i++) {
+        fn[i] = SDL3Stub_None;
+    }
+    SDL3Stub_failed = 1;
+    SDL3Stub_ready = 1;
     exit(20);
 }
 
@@ -145,7 +165,7 @@ static void __attribute__((destructor)) SDL3Stub_Close(void)
         CloseLibrary(SDL3Stub_OpenGPUBase);
         SDL3Stub_OpenGPUBase = NULL;
     }
-    SDL3Stub_ready = 0;
+    SDL3Stub_ready = SDL3Stub_failed;   /* after a failure, later calls still do nothing */
 }
 
 /* Every function except the varargs ones. */

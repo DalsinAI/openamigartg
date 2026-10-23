@@ -23,7 +23,7 @@ third-party is committed; the Team's work is in:
 | `include/SDL_build_config_amigaos3.h` | SDL's configuration for the Amiga. |
 | `module/sdl3_module.c` | The module's table (`stubs/sdl3/sdl3_module.h`). |
 | `../../../stubs/sdl3` | `libSDL3.a`, the link library. |
-| `../../../tests/sdl3` | The runner for SDL's own tests. |
+| `../../../tests/sdl3` | The runner for SDL's own tests; `nomodule.c` and the stub's host test, `stub_nomodule.c` (no SDL3.module). |
 
 ## What is built
 
@@ -36,7 +36,7 @@ stove:
 | `libSDL3.a` | The link library programs use. |
 | `include/SDL3/` | SDL's headers, for programs. |
 | `libSDL3_static.a`, `libSDL3_test.a` | All of SDL inside the program, with no module; SDL's test framework. |
-| `tests/sdl3/` | SDL's `testsprite` and `testrendercopyex`, static and on the module (`.m`). |
+| `tests/sdl3/` | SDL's `testsprite` and `testrendercopyex`, static and on the module (`.m`); `nomodule.m`, run with the module renamed away: one line saying it isn't installed, and return code 20. |
 
 Build a program the usual way:
 
