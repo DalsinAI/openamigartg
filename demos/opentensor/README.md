@@ -16,8 +16,8 @@ The 164-second loop is split into eleven scenes.
 ### Act I — First Light
 
 1. **The Noise** — a star field resolves from darkness.
-2. **The Field** — a subtle Amiga-blue and warm-grey checkerboard landscape.
-3. **The Boing Event** — a red-and-white sphere falls and sends rings across the field.
+2. **The Field** — a blue enamel checkerboard landscape with luminous bevels, a light pool and distance haze.
+3. **The Boing Event** — a glossy red-and-white sphere falls above a soft contact shadow and planar reflection, sending rings across the field.
 4. **Tensor Storm** — additive stars and a geometric tunnel.
 5. **First Light** — `OPENTENSOR`, `FIRST LIGHT`, and `AND THUS THE FIRST TENSOR WAS BORN`.
 
@@ -30,7 +30,27 @@ The 164-second loop is split into eleven scenes.
 10. **Beyond First Light** — five orbiting Boing forms surround the tensor core and the full Open stack is named.
 11. **The Stack Is Open** — Mesa, OpenRTG, OpenGPU, AHI and AC090 resolve to one final point before the loop begins again.
 
-The soundtrack is generated in real time as 16-bit stereo PCM and streamed to `ahi.device` using linked double buffers. It is deliberately tracker-like: square arpeggio, triangle bass, saw pad, kick and noise hat. Act II rearranges that same tiny synthesiser rather than streaming a pre-rendered soundtrack.
+The original soundtrack is generated as 16-bit stereo PCM and streamed to
+`ahi.device` using linked double buffers. Version 0.3.0 replaces the harsh
+square/saw loop with a 128 BPM arrangement: A minor / F / C / G chords,
+a bell-like lead, harmonic bass, filtered pads, kick/snare/hat and a cross-fed
+stereo echo. The opening, timecode break and ending change the arrangement.
+Oscillator tables are built once; the audio pump uses integer mixing. Each
+buffer now holds 8192 frames to absorb rendering spikes.
+
+## Visual polish (0.3.0 preview)
+
+- Smooth sphere normals, warm key/cool fill lighting and white specular
+  highlights give the Boing forms a studio-rendered appearance in every act.
+- The Boing Event adds a soft height-dependent contact shadow and a restrained
+  planar reflection. These are rasterised approximations, not runtime ray tracing.
+- The field has bevel accents, a baked light pool and distance haze.
+- 1200 warm/cool stars move in three depth/speed layers with sparse diffraction
+  glints, over a dark blue sky gradient. Point draws are batched by layer.
+
+The higher-detail meshes and lighting have a performance cost. See
+[POLISH_RESULT.md](POLISH_RESULT.md) for exact build and target-test limits.
+
 
 ## Build
 
@@ -42,7 +62,7 @@ STOVE=~/AmigaChrome/stoves/os32-gcc16 \
 Output:
 
 ```text
-build/opentensor/OpenTensor-Beyond-First-Light-0.2.0.zip
+build/opentensor/OpenTensor-Beyond-First-Light-0.3.0.zip
 ```
 
 ## Run

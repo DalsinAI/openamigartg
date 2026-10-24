@@ -12,6 +12,8 @@ static void ot_render(struct Demo *d, float t)
         glClearColor(0.008f, 0.012f, 0.028f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     ot_set_perspective(d);
+    ot_studio_lights();
+    ot_draw_sky();
 
     switch (scene) {
     case 0: ot_scene_intro(d, local); break;

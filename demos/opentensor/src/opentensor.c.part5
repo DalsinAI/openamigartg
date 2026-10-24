@@ -73,7 +73,7 @@ static void ot_scene_timecode(struct Demo *d, float t)
     glTranslatef(0.0f, 0.0f, -2.5f + 0.08f * t);
     glRotatef(t * 2.0f, 0.0f, 0.0f, 1.0f);
     glPointSize(1.0f + 0.15f * ot_absf(ot_sin(t * 2.5f)));
-    ot_draw_mesh(&d->stars);
+    ot_draw_stars(d, t);
 
     ot_format_timecode(64.0f + t, tc);
     ot_overlay_begin(d);
@@ -174,7 +174,7 @@ static void ot_scene_streams(struct Demo *d, float t)
     glPushMatrix();
     glTranslatef(0.0f, 3.0f, -9.0f);
     glPointSize(1.4f);
-    ot_draw_mesh(&d->stars);
+    ot_draw_stars(d, t);
     glPopMatrix();
     if (t > 2.0f)
         ot_caption(d, "THE TENSORS WERE MOVED ACROSS THE FIELD", 0.82f,
@@ -261,7 +261,7 @@ static void ot_scene_form(struct Demo *d, float t)
     if (solid > 0.0f) {
         glPushMatrix();
         glScalef(0.35f + solid * 2.65f, 0.35f + solid * 2.65f, 0.35f + solid * 2.65f);
-        ot_draw_mesh(&d->ball);
+        ot_draw_ball(&d->ball);
         glPopMatrix();
     }
 
@@ -409,7 +409,7 @@ static void ot_scene_breakout(struct Demo *d, float t)
     glTranslatef(0.0f, 0.0f, -10.0f);
     glRotatef(t * 42.0f, 0.7f, 1.0f, 0.2f);
     glScalef(2.3f, 2.3f, 2.3f);
-    ot_draw_mesh(&d->ball);
+    ot_draw_ball(&d->ball);
 
     ot_overlay_begin(d);
     ot_draw_text(18.0f, d->height - 52.0f, OT_MAX(0.8f, d->width / 720.0f),
@@ -453,14 +453,14 @@ static void ot_scene_beyond(struct Demo *d, float t)
         glTranslatef(x, y, z);
         glRotatef(t * (45.0f + i * 7.0f), 0.4f, 1.0f, 0.2f);
         glScalef(0.72f, 0.72f, 0.72f);
-        ot_draw_mesh(&d->ball);
+        ot_draw_ball(&d->ball);
         glPopMatrix();
     }
 
     glPushMatrix();
     glRotatef(t * 28.0f, 0.4f, 1.0f, 0.2f);
     glScalef(2.0f, 2.0f, 2.0f);
-    ot_draw_mesh(&d->ball);
+    ot_draw_ball(&d->ball);
     glPopMatrix();
 
     ot_caption(d, "BEYOND FIRST LIGHT", 0.20f, ot_smooth(t / 2.0f));
@@ -485,7 +485,7 @@ static void ot_scene_stack(struct Demo *d, float t)
     glLoadIdentity();
     glPointSize(1.0f + 2.0f * fade);
     glRotatef(t * 1.2f, 0, 0, 1);
-    ot_draw_mesh(&d->stars);
+    ot_draw_stars(d, t);
 
     ot_overlay_begin(d);
     for (i = 0; i < 6; i++) {
