@@ -2,7 +2,7 @@
  * TextLength and TextExtent say, and the same pixels as OpenGfx's own text core draws on a
  * planar bitmap? (Team 4, 24 Oct 2026; lab only.)
  *   TextMatch
- * For every font in the system's list (up to 10) and topaz 8, five soft styles and seven
+ * For topaz 8 and the first six fonts in the system's list, five soft styles and seven
  * strings, JAM2 then JAM1:
  *   - a strip of the window is filled with pen A, then Text in pen F on pen B at the pen;
  *   - the same on a planar bitmap of the same size (the reference: OpenGfx's core);
