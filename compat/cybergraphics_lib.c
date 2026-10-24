@@ -474,6 +474,9 @@ static APTR LockBitMapTagList(REG(a0, struct BitMap *bm), REG(a1, struct TagItem
     struct OpenRTGBitMapInfo i;
     struct TagItem *t, *state = tags;
     if (!bm || !ortg_info(bm, &i)) return NULL;
+    /* OpenRTG 0.20: a bitmap in video RAM's card part gives no address: the
+     * CPU reads it at a crawl, so the program draws through graphics calls */
+    if (i.flags & ORTG_BMI_CARD) return NULL;
     while ((t = NextTagItem(&state))) {
         ULONG *p = (ULONG *)t->ti_Data;
         if (!p) continue;

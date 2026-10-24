@@ -140,6 +140,8 @@ static void trace_big(const char *what, LONG a, LONG b, LONG c, LONG d, LONG w, 
 #define R_RING_BASE 0xB0
 #define R_RING_SIZE 0xB4
 #define R_GPU_INFO 0xD0
+#define R_CARD_AT 0xF8      /* acrtg-v7: where video RAM's card part starts, or 0 */
+#define R_CARD_SIZE 0xFC    /* acrtg-v7: its bytes once the host has made it the card's memory, else 0 */
 #define RING_RESERVE 0x00040000UL   /* as acrtg.card 2.3: the top 256 KiB of video RAM for OpenGPU's ring */
 #define RING_BYTES   0x00010000UL
 #define C_MODE 1
@@ -209,6 +211,7 @@ struct scr_g {
     /* Each board's size sets where its video RAM ends and its register page lies (the page at its end). */
     ULONG board_size[ORTG_MAX_MONITORS + 1], regs_at[ORTG_MAX_MONITORS + 1], vram_size[ORTG_MAX_MONITORS + 1];
     ULONG vram_limit[ORTG_MAX_MONITORS + 1];            /* the video RAM bitmaps may use on each board */
+    ULONG card_at[ORTG_MAX_MONITORS + 1];               /* 0.20: where each board's card part starts (acrtg-v7), or 0: none */
     struct ortg_shown shown[ORTG_MAX_MONITORS + 1];     /* what each monitor shows now */
     struct ortg_blk blk[BLOCKS];
     int nblk;
@@ -275,6 +278,7 @@ ULONG ortg_screens_size(void) { return sizeof(struct scr_g); }
 #define regs_at (SC->regs_at)
 #define vram_size (SC->vram_size)
 #define vram_limit (SC->vram_limit)
+#define card_at (SC->card_at)
 #define shown (SC->shown)
 #define nblk (SC->nblk)
 #define ogpu_off (SC->ogpu_off)
@@ -350,6 +354,29 @@ static void ring_reserve(int n)
     vram_limit[n] = vram_size[n] - RING_RESERVE;
 }
 
+/* 0.20: video RAM's card part (acrtg-v7). On a PC with a graphics card the
+ * host can make video RAM from CARD_AT up the card's own memory: its GPU
+ * draws and composes there at full speed, but the host's CPU reads it very
+ * slowly. So screens (the display reads them), displayable friends (SDL's
+ * software paths read them), what programs lock and the ring (in the top
+ * 256 KiB, which the host keeps out of the card part) go below CARD_AT, and
+ * only bitmaps asked for with ORTG_BMA_CARD (layers' window surfaces) go
+ * from it. CARD_AT is there from power-on; CARD_SIZE only once the host has
+ * made the part, at the ring's first use. */
+static void card_part(int n)
+{
+    ULONG at = rreg(n, R_VERSION) >= 7 ? rreg(n, R_CARD_AT) : 0;
+    ULONG top = vram_limit[n] ? vram_limit[n] : vram_size[n];
+    card_at[n] = at && !(at & 0xFFFFUL) && at < top ? at : 0;
+}
+
+/* 1 when o is in a card part the host has made: the CPU reads it at a crawl. */
+int ortg_in_card(const struct ortg_bitmap *o)
+{
+    int n = o ? o->monitor : 0;
+    return n && card_at[n] && o->vram_off + o->stride * o->height > card_at[n] && rreg(n, R_CARD_SIZE) != 0;
+}
+
 
 /* Pen colours for 16 and 32-bit bitmaps. Tables 0 to ORTG_MAX_MONITORS are
  * each monitor's shared one ([0] for the rest); the others belong to one
@@ -372,12 +399,12 @@ static void own_pens(struct ortg_bitmap *o)
 /* ---- video RAM: first fit in fixed blocks ------------------------------------------- */
 
 
-static LONG vram_alloc(int monitor, ULONG size)
+/* The lowest gap from lo, ending by hi, on this monitor's board that fits
+ * size bytes (a multiple of 64), or -1. */
+static LONG vram_fit(int monitor, ULONG size, ULONG lo, ULONG hi)
 {
     int i;
-    ULONG off = 0;
-    size = (size + 63) & ~63UL;
-    /* the lowest gap on this monitor's board that fits */
+    ULONG off = lo;
     for (;;) {
         int clash = -1;
         for (i = 0; i < nblk; i++)
@@ -385,7 +412,23 @@ static LONG vram_alloc(int monitor, ULONG size)
         if (clash < 0) break;
         off = SC->blk[clash].off + SC->blk[clash].size;
     }
-    if (off + size > (vram_limit[monitor] ? vram_limit[monitor] : vram_size[monitor])) return -1;
+    return off + size > hi ? -1 : (LONG)off;
+}
+
+/* 0.20: with a card part, a bitmap for the card (layers' surfaces) goes in
+ * it, then below it; any other below it, then in it as a last resort (a
+ * screen there still shows, slowly). */
+static LONG vram_alloc(int monitor, ULONG size, int card)
+{
+    int i;
+    ULONG top = vram_limit[monitor] ? vram_limit[monitor] : vram_size[monitor], split = card_at[monitor];
+    LONG at;
+    size = (size + 63) & ~63UL;
+    if (!split) at = vram_fit(monitor, size, 0, top);
+    else if (card) { if ((at = vram_fit(monitor, size, split, top)) < 0) at = vram_fit(monitor, size, 0, split); }
+    else if ((at = vram_fit(monitor, size, 0, split)) < 0) at = vram_fit(monitor, size, split, top);
+    if (at < 0) return -1;
+    ULONG off = (ULONG)at;
     for (i = 0; i < BLOCKS; i++)
         if (!SC->blk[i].used) {
             SC->blk[i].off = off; SC->blk[i].size = size; SC->blk[i].used = 1; SC->blk[i].monitor = (UBYTE)monitor;
@@ -435,11 +478,12 @@ static int displayable_room(int monitor, ULONG w, ULONG h, ULONG bpp)
 {
     ULONG used = 0, limit = vram_limit[monitor] ? vram_limit[monitor] : vram_size[monitor];
     ULONG want = vram_need(w, h, bpp), screen = largest_screen(monitor);
+    if (card_at[monitor]) limit = card_at[monitor];      /* 0.20: they share the part below the card part */
     ULONG share = limit / 2;
     if (screen >= limit) return 0;
     if (limit - screen < share) share = limit - screen;
     for (int i = 0; i < nblk; i++)
-        if (SC->blk[i].used && SC->blk[i].monitor == monitor && SC->blk[i].displayable) used += SC->blk[i].size;
+        if (SC->blk[i].used && SC->blk[i].monitor == monitor && SC->blk[i].displayable && SC->blk[i].off < limit) used += SC->blk[i].size;
     return used + want <= share;
 }
 
@@ -503,8 +547,10 @@ static void clear_new(struct ortg_bitmap *o)
 }
 
 /* A chunky bitmap of a format: in monitor's video RAM when monitor > 0 (and
- * it fits), else in fast RAM. Its pens use monitor's table (0: the first's). */
-struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear, int format)
+ * it fits), else in fast RAM. Its pens use monitor's table (0: the first's).
+ * card (0.20): in the board's card part first, for a bitmap only drawing
+ * commands read. */
+struct ortg_bitmap *ortg_alloc_card(int monitor, ULONG w, ULONG h, int clear, int format, int card)
 {
     struct ortg_bitmap *o = AllocVec(sizeof *o, MEMF_ANY | MEMF_CLEAR);
     ULONG bpp = format == ORTG_ARGB32 ? 4 : format == ORTG_RGB16 ? 2 : 1;
@@ -515,7 +561,7 @@ struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear, int for
     o->pal_index = (UBYTE)(monitor > 0 && monitor <= ORTG_MAX_MONITORS ? monitor : 1);
     o->width = (UWORD)w; o->height = (UWORD)h; o->stride = stride;
     if (monitor > 0 && monitor <= ORTG_MAX_MONITORS && board[monitor]) {
-        LONG off = vram_alloc(monitor, ORTG_HEAD + stride * h);
+        LONG off = vram_alloc(monitor, ORTG_HEAD + stride * h, card);
         if (off >= 0) {
             o->monitor = (UBYTE)monitor; o->vram_block = (ULONG)off; o->vram_off = (ULONG)off + ORTG_HEAD;
             o->mem = board[monitor] + VRAM_AT + o->vram_off;
@@ -537,6 +583,11 @@ struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear, int for
     for (int p = 0; p < 8; p++) o->bm.Planes[p] = o->mem;
     if (clear) clear_new(o);
     return o;
+}
+
+struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear, int format)
+{
+    return ortg_alloc_card(monitor, w, h, clear, format, 0);
 }
 
 void ortg_free(struct ortg_bitmap *o)
@@ -1953,7 +2004,7 @@ static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, UL
     struct BitMap *fr = friend;
     /* 0.19.2: with tags, BMATags_Displayable and BMATags_Clear say so, the
      * flags only giving their defaults */
-    ULONG displayable = (flags & BMF_DISPLAYABLE) != 0, clear = (flags & BMF_CLEAR) != 0;
+    ULONG displayable = (flags & BMF_DISPLAYABLE) != 0, clear = (flags & BMF_CLEAR) != 0, card = 0;
     if (BITMAPFLAGS_ARE_EXTENDED(flags)) {
         /* OS 3.2's intuition asks for a screen's bitmap with tags: its
          * ModeID says whether it is an OpenRTG screen */
@@ -1977,6 +2028,7 @@ static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, UL
         fr = (struct BitMap *)GetTagData(BMATags_Friend, 0, tags);
         displayable = GetTagData(BMATags_Displayable, displayable, tags) != 0;
         clear = GetTagData(BMATags_Clear, clear, tags) != 0;
+        card = GetTagData(ORTG_BMA_CARD, 0, tags) != 0;       /* 0.20: only drawing commands read it */
     }
     /* a bitmap like an OpenRTG one (layers' backing store, double buffers,
      * a program's off-screen picture) is one, in fast RAM */
@@ -1991,9 +2043,11 @@ static struct BitMap *allocbm_patch(REG(d0, WORD w), REG(d1, WORD h), REG(d2, UL
              * and textures ask so, and OpenGPU's GPU then draws in them
              * (amigachrome's Design-OpenGPU-2D-On-The-GPU 5.4 B). Every other
              * friend stays in fast RAM, as before. */
-            int n = displayable && f->monitor && displayable_room(f->monitor, (UWORD)w, (UWORD)h, f->bpp)
+            /* 0.20: one for the card part (ORTG_BMA_CARD) goes there first, not counted in the share */
+            int to_card = card && displayable && f->monitor && card_at[f->monitor];
+            int n = to_card || (displayable && f->monitor && displayable_room(f->monitor, (UWORD)w, (UWORD)h, f->bpp))
                     ? f->monitor : 0;
-            struct ortg_bitmap *o = ortg_alloc(n, (UWORD)w, (UWORD)h, clear, f->format);
+            struct ortg_bitmap *o = ortg_alloc_card(n, (UWORD)w, (UWORD)h, clear, f->format, to_card);
             if (o) {
                 o->pal_index = f->pal_index;
                 if (o->monitor) vram_mark_displayable(o->monitor, o->vram_block);
@@ -2774,6 +2828,7 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
             regs_at[n] = board_size[n] - PAGE_64K;
             vram_size[n] = board_size[n] - 2 * PAGE_64K;
             ring_reserve(n);
+            card_part(n);
         }
 
     /* OpenGPU v1.0/G1 is optional at boot (from the ROM, before DOS, it isn't there: late_opengpu()). When present, the common RTG

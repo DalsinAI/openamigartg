@@ -79,6 +79,8 @@ UBYTE ortg_px_pen(const struct ortg_bitmap *o, ULONG px);
 
 int ortg_is(struct BitMap *bm);
 struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear, int format);
+struct ortg_bitmap *ortg_alloc_card(int monitor, ULONG w, ULONG h, int clear, int format, int card);
+int ortg_in_card(const struct ortg_bitmap *o);
 void ortg_free(struct ortg_bitmap *o);
 
 /* For pixels.c: the OpenRTG bitmap a BitMap is (or NULL); every visible

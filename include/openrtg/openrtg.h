@@ -73,8 +73,19 @@ struct OpenRTGBitMapInfo {
     unsigned char  depth;           /* 8 */
     unsigned char  format;          /* as OpenRTGMode's */
     unsigned char  monitor;         /* 1-4: in that board's video RAM; 0: fast RAM */
-    unsigned char  pad;
+    unsigned char  flags;           /* 0.20: ORTG_BMI_CARD; 0 before */
 };
+/* 0.20: in video RAM's card part (acrtg-v7), the PC graphics card's own
+ * memory: its GPU draws there at full speed, the CPU reads it at a crawl.
+ * cybergraphics.library's LockBitMapTags gives no address for it. */
+#define ORTG_BMI_CARD     0x01
+
+/* 0.20: AllocBitMap's tags (BMATags_*, OS 3.2's extended form): ti_Data TRUE
+ * asks for a displayable friend that only drawing commands will read (no
+ * program locks it, the display never shows it): layers' window surfaces.
+ * On a board with a card part it goes there, then below it, then in fast
+ * RAM. Other graphics libraries ignore it. */
+#define ORTG_BMA_CARD     0x804F5201UL
 
 /* A frame the host's GPU rendered through ACVirgl, for ORTG_PresentVirgl
  * (0.15). The host copies the resource's damage box straight into the

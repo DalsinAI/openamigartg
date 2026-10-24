@@ -591,6 +591,7 @@ BOOL ortg_bitmap_info(struct BitMap *bm, struct OpenRTGBitMapInfo *info)
     info->memory = o->mem;
     info->bytes_per_row = o->stride;
     info->width = o->width; info->height = o->height;
-    info->depth = o->bpp == 4 ? 32 : o->bpp == 2 ? 16 : 8; info->format = o->format; info->monitor = o->monitor; info->pad = 0;
+    info->depth = o->bpp == 4 ? 32 : o->bpp == 2 ? 16 : 8; info->format = o->format; info->monitor = o->monitor;
+    info->flags = ortg_in_card(o) ? ORTG_BMI_CARD : 0;                    /* 0.20 */
     return TRUE;
 }
