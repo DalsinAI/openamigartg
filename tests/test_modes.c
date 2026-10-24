@@ -178,6 +178,20 @@ int main(void) {
     CHECK(by_size(&small, 1024, 768, 16) != 0 && by_size(&small, 1024, 768, 32) == 0);
     CHECK(ortg_build_modes(&small, 5, &tiny, 0) == -1 && ortg_build_modes(&small, 0, &tiny, 0) == -1);
 
+    /* ACRTG's 256 MiB board (0.19.4) as openrtg_lib.c sets it up: the same 1920 x 1200 limit as the 64 MiB
+     * board, so the same modes, Standard and All; the room is for bitmaps, not bigger screens. */
+    {
+        static struct ortg_mode_table t64, t256;
+        struct ortg_caps a64 = { .vram_bytes = 0x04000000u - 0x20000u, .max_width = 1920, .max_height = 1200, .formats = 7 },
+                         a256 = { .vram_bytes = 0x10000000u - 0x20000u, .max_width = 1920, .max_height = 1200, .formats = 7 };
+        for (int all = 0; all <= 1; all++) {
+            int n64 = ortg_build_modes(&t64, 1, &a64, all), n256 = ortg_build_modes(&t256, 1, &a256, all);
+            CHECK(n64 > 0 && n256 == n64 && t256.full_count == t64.full_count);
+            CHECK(memcmp(t256.modes, t64.modes, sizeof t64.modes[0] * (size_t)(n64 > 0 ? n64 : 0)) == 0);
+        }
+        CHECK(by_size(&t256, 1920, 1200, 32) != 0 && by_size(&t256, 2560, 1440, 32) == 0);
+    }
+
     native_checks();
     preferred_checks();
 

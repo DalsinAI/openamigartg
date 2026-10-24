@@ -114,7 +114,7 @@ static void trace_big(const char *what, LONG a, LONG b, LONG c, LONG d, LONG w, 
 /* ---- the boards ----------------------------------------------------------------------- */
 
 #define VRAM_AT   0x00010000UL
-#define VRAM_SIZE 0x00FE0000UL          /* the 16 MiB board's; a 64 MiB board's is in vram_size[] (the board's size less its two 64 KiB pages) */
+#define VRAM_SIZE 0x00FE0000UL          /* the 16 MiB board's; a 64 or 256 MiB board's is in vram_size[] (the board's size less its two 64 KiB pages) */
 #define PAGE_64K  0x00010000UL
 #define R_WIDTH 0x10
 #define R_HEIGHT 0x14
