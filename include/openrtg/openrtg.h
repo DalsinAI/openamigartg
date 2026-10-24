@@ -93,9 +93,10 @@ struct OpenRTGBitMapInfo {
  * wrote into an OpenRTG bitmap in video RAM by address since the last
  * call, a row's piece at a time; never what OpenGPU or the board drew.
  * - The first call for a bitmap asks the board to watch it, and answers 0.
- *   A board watches one bitmap: a call for another moves the watch, but
- *   not off a bitmap a monitor shows to one it doesn't. A board that can't
- *   watch (before acrtg-v9, or a runtime not asked to) answers 0 always.
+ *   A board watches one bitmap: a call for another moves the watch when
+ *   it is free (its bitmap freed) or when the other is the one a monitor
+ *   shows. A board that can't watch (before acrtg-v9, or a runtime not
+ *   asked to) answers 0 always, and is not asked again.
  * - It answers how many spans it put in buf, max at most. When it answers
  *   max, call again for the rest: nothing is lost between calls.
  * - buf NULL: the watch is set as above, and the answer is the address of

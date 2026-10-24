@@ -209,9 +209,9 @@ typedef void (*waittof_fn)(REG(a6, struct GfxBase *));
 #define STAGE_PART (STAGE_BYTES / STAGE_PARTS)
 #define STAGE_MAX 4096          /* a source up to this is copied; a bigger one is waited for */
 struct ortg_shown { struct ortg_bitmap *bm; UWORD w, h; UBYTE fmt; };
-/* 0.23: a board's watch: the bitmap it was asked for (on: the board took it); the runs WRITTEN readied
- * and not yet read (left), and the one being cut into rows, [at, end) */
-struct ortg_watch { struct ortg_bitmap *bm; ULONG left, at, end; UBYTE on; };
+/* 0.23: a board's watch: the bitmap it was asked for (on: the board took it; no: it can't, so never
+ * asked again); the runs WRITTEN readied and not yet read (left), and the one being cut into rows, [at, end) */
+struct ortg_watch { struct ortg_bitmap *bm; ULONG left, at, end; UBYTE on, no; };
 struct ortg_blk { ULONG off, size; UBYTE used, monitor, displayable; };
 struct ortg_font { const UBYTE *rom; UBYTE *ram; };
 
@@ -577,8 +577,8 @@ ULONG ortg_written_spans(struct BitMap *bm, struct OpenRTGSpan *s, ULONG max)
     w = &SC->watch[n];
     R = (volatile ULONG *)(board[n] + regs_at[n]);     /* the registers, a long each */
     Forbid();
-    if (w->bm != o && !(w->on && shown[n].bm == w->bm)) {   /* not off a bitmap shown */
-        if (w->on) R[R_WATCH_SIZE / 4] = 0;             /* a new one: the watch moves, nothing written yet */
+    if (w->bm != o && !w->no && (!w->bm || shown[n].bm == o)) {   /* free, or o is shown: the watch moves */
+        if (w->on) R[R_WATCH_SIZE / 4] = 0;
         w->bm = o;
         w->left = w->at = w->end = 0;
         w->on = 0;
@@ -588,6 +588,7 @@ ULONG ortg_written_spans(struct BitMap *bm, struct OpenRTGSpan *s, ULONG max)
             R[R_WATCH_SIZE / 4] = o->stride * o->height;
             w->on = R[R_WATCH_SIZE / 4] != 0;
         }
+        w->no = !w->on;                                 /* the board can't (before v9, or not asked to): never again */
     } else if (w->bm == o && w->on && s)
         while (k < max) {
             ULONG y, row, e;
