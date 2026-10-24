@@ -1393,6 +1393,8 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
         int drawable = !vk->failed && gpu_op(op) && vk->core.target >= 0 && vk->core.slot[vk->core.target].pixels;
         int routed = 0;             /* 1: by cost to the core, 2: by cost to the GPU (timed for weigh) */
         int kind = K_FILL;
+        /* why it would run on the core (ogpu_vk_stats' why[]); -1: the GPU command's own checks */
+        int why = vk->failed ? OGPU_VK_WHY_LOST : !gpu_op(op) ? OGPU_VK_WHY_OP : !drawable ? OGPU_VK_WHY_TARGET : -1;
         ogpu_u32 dst;
         double t0 = 0;
         if (drawable && gpu_target(vk, &dst)) {
@@ -1401,7 +1403,10 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
                 drawable = 0;       /* cheaper on the core */
                 routed = vk->route == OGPU_VK_ROUTE_COST ? 1 : 0;
                 vk->stats.routed++;
+                why = vk->route == OGPU_VK_ROUTE_CORE ? OGPU_VK_WHY_ROUTE : OGPU_VK_WHY_COST;
             }
+        } else if (drawable) {
+            why = OGPU_VK_WHY_TARGET;   /* outside video RAM, or not aligned to its pixels, or INDEX8 */
         }
         if (routed == 2) t0 = now_ns();
         if (drawable && gpu_draw(vk, op, stream + at * 4 + 4)) {
@@ -1414,7 +1419,11 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
             if (routed) t0 = now_ns();
             done += ogpu_core_run(&vk->core, stream + at * 4, len);
             if (routed == 1) vk->core_us[kind] += (now_ns() - t0) / 1000;
-            if (op >= OGPU_OP_FILL && op < OGPU_OP_FENCE) vk->stats.cpu++;
+            if (op >= OGPU_OP_FILL && op < OGPU_OP_FENCE) {
+                vk->stats.cpu++;
+                vk->stats.why[why >= 0 ? why : OGPU_VK_WHY_REFUSED]++;
+                if (op - OGPU_OP_FILL < OGPU_VK_CORE_OPS) vk->stats.core_op[op - OGPU_OP_FILL]++;
+            }
 #ifdef OGPU_WITH_3D
             if (op >= OGPU_OP_FILL && op != OGPU_OP_FENCE) ogpu3d_rec_cpu_wrote(vk->rec);   /* the core drew */
 #endif

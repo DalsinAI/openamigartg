@@ -129,7 +129,23 @@ struct ogpu_vk_stats {
      * pixels, composites, composites from video RAM, blends, bilinear,
      * YUV, lines */
     double gpu_scale, core_scale[OGPU_VK_COST_KINDS];
+    /* Why each 2D drawing command of cpu ran on the core (they add up to
+     * cpu): OGPU_VK_WHY_ below. And of those, by opcode: core_op[op - 0x10]
+     * for the drawing range 0x0010..0x002F (FILL to the last 2D opcode). */
+    unsigned long why[OGPU_VK_WHY_COUNT];
+    unsigned long core_op[OGPU_VK_CORE_OPS];
 };
+/* Why a drawing command ran on the core (ogpu_vk_stats' why[]): */
+#define OGPU_VK_WHY_OP      0   /* its opcode isn't on the GPU path (v1.4's COMPOSITE_PD, v1.5-v1.7's) */
+#define OGPU_VK_WHY_TARGET  1   /* its target isn't in video RAM (Fast RAM: SDL's surfaces, backing store),
+                                 * or not aligned to its pixels, or INDEX8, or there is none */
+#define OGPU_VK_WHY_COST    2   /* routing by cost: quicker on the core */
+#define OGPU_VK_WHY_REFUSED 3   /* the GPU command's own checks: a format, a flag, a source over the
+                                 * rectangle, a source the arena can't take */
+#define OGPU_VK_WHY_LOST    4   /* the device was lost: everything on the core */
+#define OGPU_VK_WHY_ROUTE   5   /* OGPU_VK_ROUTE_CORE (AC_OPENGPU=core-like routing) */
+#define OGPU_VK_WHY_COUNT   6
+#define OGPU_VK_CORE_OPS    32  /* opcodes 0x0010..0x002F */
 void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s);
 
 #endif
