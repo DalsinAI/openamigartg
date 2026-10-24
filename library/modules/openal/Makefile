@@ -11,8 +11,9 @@
 #            OpenAL's state. SHARED=0: a copy for each program.
 #   stub     libopenal.a: the link library programs use (stubs/openal)
 #   static   libopenal_static.a: all of OpenAL in the program, no module
-#   tests    tests/openal: nomodule.m; ALTone (altone.m on the module,
-#            altone static); and the PC tests' three that need no threads
+#   tests    tests/openal: nomodule.m; ALTone and ALInfo (altone.m and
+#            alinfo.m on the module, altone and alinfo static); and the PC
+#            tests' three that need no threads
 #            (test_al_api, test_al_3d, test_al_stream) built for the 68k,
 #            with Mix's output standing in as on the PC
 
@@ -102,7 +103,7 @@ $(OUT)/libopenal.a: $(STUB_DIR)/openal_stub.o
 
 # The tests (tests/openal).
 TEST_CFLAGS = $(CFLAGS_BASE) -I$(TESTSRC)
-tests: $(TEST_DIR)/nomodule.m $(TEST_DIR)/altone.m $(TEST_DIR)/altone
+tests: $(TEST_DIR)/nomodule.m $(TEST_DIR)/altone.m $(TEST_DIR)/altone $(TEST_DIR)/alinfo.m $(TEST_DIR)/alinfo
 $(TEST_DIR)/nomodule.m: $(TESTSRC)/nomodule.c $(OUT)/libopenal.a
 	@mkdir -p $(dir $@)
 	$(CC) $(TEST_CFLAGS) -o $@ $< -L$(OUT) -lopenal -lm -lamiga
@@ -110,6 +111,12 @@ $(TEST_DIR)/altone.m: $(TESTSRC)/altone.c $(OUT)/libopenal.a
 	@mkdir -p $(dir $@)
 	$(CC) $(TEST_CFLAGS) -o $@ $< -L$(OUT) -lopenal -lm -lamiga
 $(TEST_DIR)/altone: $(TESTSRC)/altone.c $(OUT)/libopenal_static.a
+	@mkdir -p $(dir $@)
+	$(CC) $(TEST_CFLAGS) -o $@ $< -L$(OUT) -lopenal_static -lm -lamiga
+$(TEST_DIR)/alinfo.m: $(TESTSRC)/alinfo.c $(OUT)/libopenal.a
+	@mkdir -p $(dir $@)
+	$(CC) $(TEST_CFLAGS) -o $@ $< -L$(OUT) -lopenal -lm -lamiga
+$(TEST_DIR)/alinfo: $(TESTSRC)/alinfo.c $(OUT)/libopenal_static.a
 	@mkdir -p $(dir $@)
 	$(CC) $(TEST_CFLAGS) -o $@ $< -L$(OUT) -lopenal_static -lm -lamiga
 

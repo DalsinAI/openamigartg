@@ -51,6 +51,12 @@ static double ref_distance_gain(ALenum model, double d, double ref, double roll,
         if (ref == 0.0) {
             return 1.0;
         }
+        /* 0 to a negative power is infinite (and to 0, 1). Said here, not
+         * asked of pow: on the Amiga libnix's pow is mathieeedoubtrans's
+         * IEEEDPPow, which needn't answer it. */
+        if (d == 0.0) {
+            return roll > 0.0 ? HUGE_VAL : 1.0;
+        }
         return pow(d / ref, -roll);
     default:
         return 1.0;
