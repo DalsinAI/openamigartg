@@ -29,7 +29,7 @@
 #define AS_STREAM_BUFFER 4096
 #define AS_GAP_SECONDS 0.5
 
-static void as_tone(short *pcm)
+static inline void as_tone(short *pcm)
 {
     int i;
     for (i = 0; i < AS_TONE_FRAMES; i++) {
@@ -37,7 +37,7 @@ static void as_tone(short *pcm)
     }
 }
 
-static void as_sweep_tone(short *pcm)
+static inline void as_sweep_tone(short *pcm)
 {
     int i;
     for (i = 0; i < AS_SWEEP_FRAMES; i++) {
@@ -46,7 +46,7 @@ static void as_sweep_tone(short *pcm)
 }
 
 /* Step t's position: from the left (-x), behind (+z), right (+x), ahead (-z). */
-static void as_sweep_position(int t, float *x, float *z)
+static inline void as_sweep_position(int t, float *x, float *z)
 {
     double a = 2.0 * AS_PI * t / AS_SWEEP_STEPS;
     *x = (float)(-2.0 * cos(a));
@@ -55,7 +55,7 @@ static void as_sweep_position(int t, float *x, float *z)
 
 /* Frame i of the stream: a chord of three notes and a slow chirp, rising
  * and falling, so a gap, a repeat or a misplaced buffer shows. */
-static short as_stream_frame(long i)
+static inline short as_stream_frame(long i)
 {
     double t = (double)i / AS_STREAM_RATE;
     double env = 0.5 - 0.5 * cos(2.0 * AS_PI * t / 5.0);

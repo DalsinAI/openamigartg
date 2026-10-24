@@ -376,6 +376,10 @@ int main(int argc, char **argv)
         scene_sweep();
         gap();
         rc = scene_stream(argv[a + 1]);
+        /* A source is stopped once its last frame is mixed; Mix's output
+         * still holds two updates and AHI's buffers. Closing the device
+         * now would cut them off. */
+        gap();
     } else if (!strcmp(argv[a], "TIME")) {
         if (!clock_open()) {
             printf("ALLab: no timer.device\n");

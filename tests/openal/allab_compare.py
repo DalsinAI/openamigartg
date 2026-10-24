@@ -6,7 +6,7 @@ ALLab played its scenes (allab.c) against the PC's references
 (allab_ref.c): the tone, the sweep and the stream, each found in the
 recording in turn, after the one before.
 
-    allab_compare.py RECORDING.wav REFDIR voices|mix [--scale]
+    allab_compare.py RECORDING.wav REFDIR voices|mix [--scale] [--from=SECONDS]
 
 Each scene is found by its level, 10 ms at a time (the left and right
 levels set against the reference's), then to the frame by the
@@ -71,6 +71,11 @@ def find(rec, ref, start):
     if len(lr) < len(lf):
         return None
     score = sum(correlate(lr[:, c], lf[:, c]) for c in range(2))
+    # each placement's score over the size of the recording's levels there
+    # (normalised), so a louder passage elsewhere doesn't win
+    e = np.concatenate([[0.0], np.cumsum(np.sum(lr ** 2, axis=1))])
+    m = len(lf)
+    score = score / np.sqrt(np.maximum(e[m:m + len(score)] - e[:len(score)], 1e-9))
     coarse = start + int(np.argmax(score)) * block + pad
     lo = max(start, coarse - pad)
     hi = min(len(rec), coarse + len(ref) + pad)
@@ -109,6 +114,9 @@ def main() -> int:
     if rate != 44100:
         raise SystemExit(f"{rec_path}: {rate} Hz, not 44100")
     start = 0
+    for a in sys.argv[4:]:
+        if a.startswith("--from="):                 # seconds into the recording where the scenes begin
+            start = int(float(a[7:]) * rate)
     for name in ("tone", "sweep", "stream"):
         ref, _ = read_wav(f"{refdir}/ref_{kind}_{name}.wav")
         at = find(rec, ref, start)
