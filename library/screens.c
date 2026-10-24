@@ -1998,6 +1998,65 @@ static const UBYTE *font_data(struct TextFont *f)
     return src;
 }
 
+/* 0.24: Text places and measures as OpenGfx's text core does, which was measured on OS 3.2, so what
+ * it draws matches TextLength and TextExtent (OpenGfx answers those):
+ * - each character moves the pen by its CharSpace (tf_XSize without one), its CharKern and TxSpacing,
+ *   and its image lands at the pen plus its kerning. Bold doesn't move the pen.
+ * - JAM2's background covers the text's box: from the pen, or the leftmost image pixel if further
+ *   left, to the end of the width, or the rightmost image pixel if further right. Bold adds
+ *   tf_BoldSmear on the right; italic adds tf_Baseline / 2 on the right and
+ *   (tf_YSize - tf_Baseline + 1) / 2 on the left.
+ * - italic moves row r of each image right by floor((tf_Baseline - r) / 2).
+ * - the underline leaves a pixel clear each side of an image pixel in its row (text_underline).
+ * Before 0.24 the pen left out the kerning, added the smear for bold, used CharSpace only with
+ * FPF_PROPORTIONAL, and italic wasn't slanted. In Workbench's 23-pixel font a 22-character string
+ * drew 172 pixels where TextLength said 187, and JAM2 left the last 15 columns uncleared. */
+static LONG text_slant(const struct TextFont *f, LONG r)
+{
+    LONG d = (LONG)f->tf_Baseline - r;
+    return d >= 0 ? d / 2 : -((1 - d) / 2);
+}
+
+/* 0.24: the underline, as OS 3.2 draws it: the row below the baseline across the box, but not on a pixel
+ * next to (or under) an image pixel of that row, so descenders keep a pixel clear each side. Built a chunk
+ * of columns at a time; u is the fill in the text's pens. */
+#define UL_CHUNK 1024
+static void text_underline(struct RastPort *rp, struct TextFont *f, const UBYTE *s, LONG n, LONG x, LONG x0, LONG x1,
+                           LONG smear, int italic, const UBYTE *src, struct fill_ctx *u)
+{
+    UWORD *loc = f->tf_CharLoc;
+    WORD *space = f->tf_CharSpace, *kern = f->tf_CharKern;
+    LONG r = f->tf_Baseline + 1, sl = italic ? text_slant(f, r) : 0, y = rp->cp_y + 1, cx;
+    const UBYTE *row = src + r * f->tf_Modulo;
+    UBYTE buf[(UL_CHUNK + 2 + 7) / 8 + 1];              /* columns cx - 1 .. cx + UL_CHUNK */
+    for (cx = x0; cx <= x1; cx += UL_CHUNK) {
+        LONG i, pos = 0, c, run = -1, last = cx + UL_CHUNK - 1 > x1 ? x1 : cx + UL_CHUNK - 1;
+        for (i = 0; i < (LONG)sizeof buf; i++) buf[i] = 0;
+        for (i = 0; i < n; i++) {
+            UBYTE ch = s[i];
+            int k = (ch >= f->tf_LoChar && ch <= f->tf_HiChar) ? ch - f->tf_LoChar : f->tf_HiChar - f->tf_LoChar + 1;
+            LONG w = loc[2 * k + 1], off = loc[2 * k], left = pos + (kern ? kern[k] : 0) + sl, b, j;
+            pos += (space ? space[k] : (LONG)f->tf_XSize) + (kern ? kern[k] : 0) + rp->TxSpacing;
+            for (b = 0;; b = smear) {
+                for (j = 0; j < w; j++) {
+                    LONG col = left + b + j - (cx - 1), bit = off + j;
+                    if (col < 0 || col > UL_CHUNK + 1) continue;
+                    if (row[bit >> 3] >> (7 - (bit & 7)) & 1) buf[col >> 3] |= (UBYTE)(0x80 >> (col & 7));
+                }
+                if (b == smear) break;
+            }
+        }
+#define UL_INK(c) (buf[(c) >> 3] >> (7 - ((c) & 7)) & 1)
+        for (c = 1; c <= last - cx + 1; c++) {          /* column cx - 1 + c */
+            int on = !UL_INK(c - 1) && !UL_INK(c) && !UL_INK(c + 1);
+            if (on && run < 0) run = c;
+            if (!on && run >= 0) { pieces(rp, x + cx - 1 + run, y, x + cx - 1 + c - 1, y, fill_piece, u); run = -1; }
+        }
+        if (run >= 0) pieces(rp, x + cx - 1 + run, y, x + last, y, fill_piece, u);
+#undef UL_INK
+    }
+}
+
 static LONG text_patch(REG(a1, struct RastPort *rp), REG(a0, STRPTR s), REG(d0, WORD n), REG(a6, struct GfxBase *g))
 {
     struct TextFont *f = rp->Font;
@@ -2005,48 +2064,73 @@ static LONG text_patch(REG(a1, struct RastPort *rp), REG(a0, STRPTR s), REG(d0, 
     {
         UWORD *loc = f->tf_CharLoc;
         WORD *space = f->tf_CharSpace, *kern = f->tf_CharKern;
-        LONG x = rp->cp_x, top = rp->cp_y - f->tf_Baseline, total = 0, i;
-        int prop = (f->tf_Flags & FPF_PROPORTIONAL) && space;
+        LONG x = rp->cp_x, top = rp->cp_y - f->tf_Baseline, pos = 0, lo = 0, hi = 0, x0, x1, i;
+        int any = 0;
         struct tmpl_ctx t;
         struct obatch ob;
         UBYTE style = rp->AlgoStyle;
+        LONG smear = (style & FSF_BOLD) ? (LONG)f->tf_BoldSmear : 0;
+        int italic = (style & FSF_ITALIC) != 0;
         pens_of(rp, &t.p);
         ob_init(&ob);
-        /* the advance of the whole string, for JAM2's background */
+        /* the text's box, as TextExtent gives it */
         for (i = 0; i < (LONG)n; i++) {
             UBYTE c = (UBYTE)s[i];
             int k = (c >= f->tf_LoChar && c <= f->tf_HiChar) ? c - f->tf_LoChar : f->tf_HiChar - f->tf_LoChar + 1;
-            total += (prop ? space[k] : f->tf_XSize) + rp->TxSpacing;
-            if (style & FSF_BOLD) total += f->tf_BoldSmear;
+            LONG left = pos + (kern ? kern[k] : 0), w = loc[2 * k + 1];
+            if (w > 0) {
+                if (!any || left < lo) lo = left;
+                if (!any || left + w - 1 > hi) hi = left + w - 1;
+                any = 1;
+            }
+            pos += (space ? space[k] : (LONG)f->tf_XSize) + (kern ? kern[k] : 0) + rp->TxSpacing;
         }
-        if (t.p.mode & JAM2 && !(t.p.mode & COMPLEMENT)) {
+        x0 = any && lo < 0 ? lo : 0;
+        x1 = any ? hi : -0x7FFFFFFF;
+        if (pos - 1 > x1) x1 = pos - 1;
+        x1 += smear;
+        if (italic) {
+            x1 += f->tf_Baseline / 2;
+            x0 -= ((LONG)f->tf_YSize - f->tf_Baseline + 1) / 2;
+        }
+        if (n > 0 && t.p.mode & JAM2 && !(t.p.mode & COMPLEMENT)) {
             struct fill_ctx bg;
             bg.p = t.p; bg.p.a = t.p.b; bg.p.mode = JAM1; bg.ptrn = NULL; bg.ptsz = 1;
-            pieces(rp, x, top, x + total - 1, top + f->tf_YSize - 1, fill_piece, &bg);
+            pieces(rp, x + x0, top, x + x1, top + f->tf_YSize - 1, fill_piece, &bg);
         }
         t.p.mode &= ~JAM2;
         t.src = font_data(f); t.mod = f->tf_Modulo; t.ob = ortg_S->opengpu && !ogpu_off ? &ob : NULL;
+        pos = 0;
         for (i = 0; i < (LONG)n; i++) {
             UBYTE c = (UBYTE)s[i];
             int k = (c >= f->tf_LoChar && c <= f->tf_HiChar) ? c - f->tf_LoChar : f->tf_HiChar - f->tf_LoChar + 1;
-            LONG gx = x + (kern ? kern[k] : 0), w = loc[2 * k + 1];
+            LONG gx = x + pos + (kern ? kern[k] : 0), w = loc[2 * k + 1], b;
             if (w > 0) {
-                t.src_x = loc[2 * k]; t.at_x = gx; t.at_y = top;
-                pieces(rp, gx, top, gx + w - 1, top + f->tf_YSize - 1, tmpl_piece, &t);
-                if (style & FSF_BOLD) {
-                    t.at_x = gx + f->tf_BoldSmear;
-                    pieces(rp, t.at_x, top, t.at_x + w - 1, top + f->tf_YSize - 1, tmpl_piece, &t);
+                t.src_x = loc[2 * k]; t.at_y = top;
+                for (b = 0;; b = smear) {               /* the image, then bold's smear */
+                    LONG ax = gx + b;
+                    if (!italic) {
+                        t.at_x = ax;
+                        pieces(rp, ax, top, ax + w - 1, top + f->tf_YSize - 1, tmpl_piece, &t);
+                    } else {
+                        LONG r;
+                        for (r = 0; r < (LONG)f->tf_YSize; r++) {
+                            t.at_x = ax + text_slant(f, r);
+                            pieces(rp, t.at_x, top + r, t.at_x + w - 1, top + r, tmpl_piece, &t);
+                        }
+                    }
+                    if (b == smear) break;
                 }
             }
-            x += (prop ? space[k] : f->tf_XSize) + rp->TxSpacing + ((style & FSF_BOLD) ? f->tf_BoldSmear : 0);
+            pos += (space ? space[k] : (LONG)f->tf_XSize) + (kern ? kern[k] : 0) + rp->TxSpacing;
         }
         ob_flush(t.ob);
-        if (style & FSF_UNDERLINED) {
+        if (n > 0 && style & FSF_UNDERLINED && f->tf_Baseline + 1 < f->tf_YSize) {   /* the row below the baseline, in the font */
             struct fill_ctx u;
             u.p = t.p; u.ptrn = NULL; u.ptsz = 1;
-            pieces(rp, rp->cp_x, rp->cp_y + 1, x - 1, rp->cp_y + 1, fill_piece, &u);
+            text_underline(rp, f, (const UBYTE *)s, n, x, x0, x1, smear, italic, t.src, &u);
         }
-        rp->cp_x = (WORD)x;
+        rp->cp_x = (WORD)(x + pos);
     }
     return 0;
 }
