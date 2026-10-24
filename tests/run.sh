@@ -73,6 +73,9 @@ if [ -f "${SDL3_SRC:-/nonexistent}/src/dynapi/SDL_dynapi_procs.h" ]; then
 else
     echo "no SDL3_SRC; the SDL 3 stub test is skipped"
 fi
+# OpenAL.module's core and libopenal.a (tests/openal/run_host.sh): the AL and ALC
+# calls, the 3D, streams and offsets, threads, and the stub with no module.
+sh "$HERE/openal/run_host.sh" "$OUT/openal"
 # The same tests big-endian on a 68040, when a Linux m68k compiler and qemu are installed.
 if command -v m68k-linux-gnu-gcc >/dev/null && command -v qemu-m68k >/dev/null; then
     m68k-linux-gnu-gcc -std=c99 -O2 -fno-delete-null-pointer-checks -m68040 -static -Wall -Wextra -Werror \
