@@ -714,9 +714,14 @@ static int gpu_copy(struct ogpu_vk *vk, const ogpu_u8 *a) {
         if (!overlap(s0, s1, d0, d1)) {
             args[A_SRC] = (ogpu_u32)so; args[A_SBPR] = (ogpu_u32)s->bpr;
             args[A_SX] = (ogpu_u32)sx; args[A_SY] = (ogpu_u32)sy;
-        } else if (s != t) {
-            /* Two slots over the same bytes: the core copies them in its own
-             * order, which only the core reproduces. */
+        } else if (s != t && (s->pixels != t->pixels || s->bpr != t->bpr)) {
+            /* Two slots over the same bytes, laid out differently: the core
+             * copies them in its own order, which only the core reproduces.
+             * Two slots that are the same surface (the same pixels, bytes a
+             * row and format: OpenRTG's scrolls in a layer's surface) are
+             * one surface, staged below: COPY is overlap safe, as if through
+             * a temporary. On video RAM's card part such a scroll on the core
+             * read the card's memory at 7 MB/s (lab, 24 October 2026). */
             return 0;
         } else {
             /* Overlapping: the source goes to the arena first, by the GPU (so
