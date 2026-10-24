@@ -296,6 +296,11 @@ static void al_mix_source(const ALCdevice *d, ALsource *s, ALint *acc, ALuint n)
 void al_mix_render(ALCdevice *d, ALshort *out, ALuint frames)
 {
     AL_LOCK();
+    if (!d->update_frames || !d->mix) {
+        /* Not started (no context yet): silence. */
+        memset(out, 0, (size_t)frames * 2 * sizeof *out);
+        frames = 0;
+    }
     while (frames) {
         ALuint n = frames < d->update_frames ? frames : d->update_frames, i;
         ALint *acc = d->mix;

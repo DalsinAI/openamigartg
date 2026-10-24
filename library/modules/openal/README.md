@@ -249,6 +249,13 @@ the OS 3.2 stove at build time, as for SDL.
   `nomodule.m`; `alinfo.m` and `alinfo` (what OpenAL says, and that the
   module's calls work, with or without a sound device); `altone.m` and
   `altone` (a tone, a 3D sweep round the listener and a stream, for a lab).
+- `tests/openal/run_vamos.sh`, on a PC with amitools' vamos (no Amiga, no
+  ROM): those three tests big-endian on a 68k, then `alinfo.m` through
+  `libopenal.a` and `OpenAL.module` (vamos has no ahi.device, so no device
+  opens), and `nomodule.m` and `alinfo.m` with no module. It wants a build
+  with `CPU="-m68020 -m68881"`: the 68040 build takes square roots with
+  FDSQRT, which vamos doesn't emulate (it gives sqrt(16) as 16); a real
+  68040 has it.
 
 ## Next
 
