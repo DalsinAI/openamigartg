@@ -141,7 +141,9 @@ static void trace_big(const char *what, LONG a, LONG b, LONG c, LONG d, LONG w, 
 #define R_RING_SIZE 0xB4
 #define R_GPU_INFO 0xD0
 #define R_CARD_AT 0xF8      /* acrtg-v7: where video RAM's card part starts, or 0 */
-#define R_CARD_SIZE 0xFC    /* acrtg-v7: its bytes once the host has made it the card's memory, else 0 */
+#define R_CARD_SIZE 0xFC    /* acrtg-v7: its bytes once the host has made it the card's memory, else 0;
+                               acrtg-v8: bit 31 set when the host shadows it (the CPU reads it at host speed) */
+#define CARD_SHADOWED 0x80000000UL
 #define RING_RESERVE 0x00040000UL   /* as acrtg.card 2.3: the top 256 KiB of video RAM for OpenGPU's ring */
 #define RING_BYTES   0x00010000UL
 #define C_MODE 1
@@ -386,11 +388,17 @@ static void card_part(int n)
     card_at[n] = at && !(at & 0xFFFFUL) && at < top ? at : 0;
 }
 
-/* 1 when o is in a card part the host has made: the CPU reads it at a crawl. */
+/* 1 when o is in a card part the host has made: the CPU reads it at a crawl.
+ * 0.22: not when the host shadows the part (acrtg-v8, CARD_SIZE's bit 31):
+ * the CPU then reads it as any video RAM, so LockBitMapTags gives its
+ * address again. A runtime before v8 never sets the bit. */
 int ortg_in_card(const struct ortg_bitmap *o)
 {
     int n = o ? o->monitor : 0;
-    return n && card_at[n] && o->vram_off + o->stride * o->height > card_at[n] && rreg(n, R_CARD_SIZE) != 0;
+    ULONG size;
+    if (!n || !card_at[n] || o->vram_off + o->stride * o->height <= card_at[n]) return 0;
+    size = rreg(n, R_CARD_SIZE);
+    return size != 0 && !(size & CARD_SHADOWED);
 }
 
 
@@ -415,18 +423,26 @@ static void own_pens(struct ortg_bitmap *o)
 /* ---- video RAM: first fit in fixed blocks ------------------------------------------- */
 
 
+/* 0.22: video RAM in pages of the host's (4 KiB): each block starts on one,
+ * and a bitmap's header has the page before its pixels to itself, so the
+ * runtime, which protects video RAM a page at a time from the 68k while
+ * OpenGPU draws there (the compositor's step 3, the ring's guard), never
+ * closes the page ortg_is() reads on every call when the bitmap's first
+ * rows are drawn. */
+#define VRAM_PAGE 4096UL
+
 /* The lowest gap from lo, ending by hi, on this monitor's board that fits
- * size bytes (a multiple of 64), or -1. */
+ * size bytes (a multiple of VRAM_PAGE), at a page, or -1. */
 static LONG vram_fit(int monitor, ULONG size, ULONG lo, ULONG hi)
 {
     int i;
-    ULONG off = lo;
+    ULONG off = (lo + VRAM_PAGE - 1) & ~(VRAM_PAGE - 1);
     for (;;) {
         int clash = -1;
         for (i = 0; i < nblk; i++)
             if (SC->blk[i].used && SC->blk[i].monitor == monitor && off < SC->blk[i].off + SC->blk[i].size && SC->blk[i].off < off + size) { clash = i; break; }
         if (clash < 0) break;
-        off = SC->blk[clash].off + SC->blk[clash].size;
+        off = (SC->blk[clash].off + SC->blk[clash].size + VRAM_PAGE - 1) & ~(VRAM_PAGE - 1);
     }
     return off + size > hi ? -1 : (LONG)off;
 }
@@ -439,7 +455,7 @@ static LONG vram_alloc(int monitor, ULONG size, int card)
     int i;
     ULONG top = vram_limit[monitor] ? vram_limit[monitor] : vram_size[monitor], split = card_at[monitor];
     LONG at;
-    size = (size + 63) & ~63UL;
+    size = (size + VRAM_PAGE - 1) & ~(VRAM_PAGE - 1);
     if (!split) at = vram_fit(monitor, size, 0, top);
     else if (card) { if ((at = vram_fit(monitor, size, split, top)) < 0) at = vram_fit(monitor, size, 0, split); }
     else if ((at = vram_fit(monitor, size, 0, split)) < 0) at = vram_fit(monitor, size, split, top);
@@ -462,10 +478,10 @@ static void vram_free(int monitor, ULONG off)
 }
 
 /* The video RAM a w x h bitmap of bpp bytes a pixel takes (ortg_alloc's
- * ORTG_HEAD and stride, vram_alloc's rounding). */
+ * header page and stride, vram_alloc's rounding). */
 static ULONG vram_need(ULONG w, ULONG h, ULONG bpp)
 {
-    return (64 /* ORTG_HEAD */ + ((w * bpp + 63) & ~63UL) * h + 63) & ~63UL;
+    return (VRAM_PAGE + ((w * bpp + 63) & ~63UL) * h + VRAM_PAGE - 1) & ~(VRAM_PAGE - 1);
 }
 
 /* 0.19.2: the video RAM the largest screen this board can open takes: each
@@ -576,9 +592,9 @@ struct ortg_bitmap *ortg_alloc_card(int monitor, ULONG w, ULONG h, int clear, in
     o->pal_index = (UBYTE)(monitor > 0 && monitor <= ORTG_MAX_MONITORS ? monitor : 1);
     o->width = (UWORD)w; o->height = (UWORD)h; o->stride = stride;
     if (monitor > 0 && monitor <= ORTG_MAX_MONITORS && board[monitor]) {
-        LONG off = vram_alloc(monitor, ORTG_HEAD + stride * h, card);
+        LONG off = vram_alloc(monitor, VRAM_PAGE + stride * h, card);   /* 0.22: the header's page, then the pixels at a page */
         if (off >= 0) {
-            o->monitor = (UBYTE)monitor; o->vram_block = (ULONG)off; o->vram_off = (ULONG)off + ORTG_HEAD;
+            o->monitor = (UBYTE)monitor; o->vram_block = (ULONG)off; o->vram_off = (ULONG)off + VRAM_PAGE;
             o->mem = board[monitor] + VRAM_AT + o->vram_off;
         }
     }

@@ -45,6 +45,14 @@
  * screen, a palette change and WaitTOF wait for everything still running
  * first (screens.c, ortg_ogpu_settle). ORTG_DrawStats' kind 21 counts the
  * batches left running and waited for.
+ *
+ * 0.22: video RAM in 4 KiB pages: each bitmap there starts on a page, with
+ * its header alone in the page before its pixels (screens.c, VRAM_PAGE), so
+ * the runtime's guard, which closes a page to the 68k while a batch handed
+ * over draws it, never closes the page every call's ortg_is() reads. A card
+ * part the host shadows (acrtg-v8: CARD_SIZE's bit 31) is read by the CPU as
+ * any video RAM, so its bitmaps are no longer ORTG_BMI_CARD, and
+ * LockBitMapTags gives their address again (screens.c, ortg_in_card).
  */
 #include <exec/types.h>
 #include "ortg_state.h"
@@ -117,9 +125,9 @@ struct OpenRTGBase {
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.21 (24.10.2026) OpenRTG, AmigaChrome Team\r\n";
+static const char lib_id[] = "openrtg.library 0.22 (24.10.2026) OpenRTG, AmigaChrome Team\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.21 (24.10.2026) OpenRTG, AmigaChrome Team";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.22 (24.10.2026) OpenRTG, AmigaChrome Team";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));
