@@ -1,0 +1,82 @@
+diff -ruN a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3events.c
+--- a/src/video/amigaos3/SDL_os3events.c	2026-10-24 05:05:08.583903225 +0100
++++ b/src/video/amigaos3/SDL_os3events.c	2026-10-24 05:05:08.594662906 +0100
+@@ -27,6 +27,7 @@
+ #include <dos/dos.h>
+ #include "SDL_keyboard.h"
+ #include "SDL_mouse.h"
++#include "SDL_timer.h"
+ #include <devices/inputevent.h>
+ #include <proto/keymap.h>
+ 
+@@ -310,6 +311,37 @@
+     SDL_SendMouseButton(sdlwin, 0, state, button);
+ }
+ 
++/* Open: while SDL holds the screen saver off (SDL_DisableScreenSaver, SDL's
++   default while a program runs), OpenBlanker is told every few seconds, as
++   X11's back end resets its screen saver. OpenBlanker 1.2 counts a CTRL_E to
++   its task as a key or the mouse; older ones ignore it. */
++#define OS3_BLANKER_PORT  "OpenBlanker"
++#define OS3_BLANKER_EVERY 5000      /* ms */
++static Uint32 os3_blanker_told;
++
++static void OS3_TellBlanker(void)
++{
++    struct MsgPort *port;
++
++    Forbid();
++    port = FindPort((CONST_STRPTR)OS3_BLANKER_PORT);
++    if (port && port->mp_SigTask) {
++        Signal((struct Task *)port->mp_SigTask, SIGBREAKF_CTRL_E);
++    }
++    Permit();
++    os3_blanker_told = SDL_GetTicks();
++    if (!os3_blanker_told) {
++        os3_blanker_told = 1;
++    }
++}
++
++void OS3_SuspendScreenSaver(_THIS)
++{
++    if (_this->suspend_screensaver) {
++        OS3_TellBlanker();
++    }
++}
++
+ void OS3_PumpEvents(_THIS)
+ {
+     SDL_Window      *sdlwin;
+@@ -331,6 +363,11 @@
+         SDL_SendQuit();
+     }
+ 
++    if (_this->suspend_screensaver &&
++        (!os3_blanker_told || SDL_TICKS_PASSED(SDL_GetTicks(), os3_blanker_told + OS3_BLANKER_EVERY))) {
++        OS3_TellBlanker();
++    }
++
+     /* Walk all open SDL windows and drain their IDCMP queues */
+     for (sdlwin = _this->windows; sdlwin; sdlwin = sdlwin->next) {
+         data = (OS3_WindowData *)sdlwin->driverdata;
+diff -ruN a/src/video/amigaos3/SDL_os3events.h b/src/video/amigaos3/SDL_os3events.h
+--- a/src/video/amigaos3/SDL_os3events.h	2026-10-24 05:05:08.584227200 +0100
++++ b/src/video/amigaos3/SDL_os3events.h	2026-10-24 05:05:08.584587986 +0100
+@@ -9,5 +9,6 @@
+ #include "../SDL_sysvideo.h"
+ 
+ extern void OS3_PumpEvents(_THIS);
++extern void OS3_SuspendScreenSaver(_THIS);
+ 
+ #endif /* SDL_os3events_h_ */
+diff -ruN a/src/video/amigaos3/SDL_os3video.c b/src/video/amigaos3/SDL_os3video.c
+--- a/src/video/amigaos3/SDL_os3video.c	2026-10-24 05:05:08.584395340 +0100
++++ b/src/video/amigaos3/SDL_os3video.c	2026-10-24 05:05:08.594797542 +0100
+@@ -111,6 +111,7 @@
+ 
+     /* Events */
+     device->PumpEvents = OS3_PumpEvents;
++    device->SuspendScreenSaver = OS3_SuspendScreenSaver;
+ 
+ #if SDL_VIDEO_RENDER_OPENGPU
+     /* The window surface in video RAM on a 32-bit OpenRTG screen (Open,

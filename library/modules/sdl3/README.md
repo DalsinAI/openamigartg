@@ -22,6 +22,7 @@ third-party is committed; the Team's work is in:
 | `patches/amigaos3/0002-build.patch` | What the back ends need to build on SDL 3.4.14 as released. |
 | `patches/amigaos3/0003-opengpu-present.patch` | The window framebuffer shown through OpenGPU where it can be, WritePixelArray otherwise. |
 | `patches/amigaos3/0004-timer-signal.patch` | timer.device opened without a reply port, and closed when the program ends: before, each SDL program left a signal behind in its Shell, and after about a dozen runs that Shell could open no windows. |
+| `patches/amigaos3/0005-screensaver.patch` | While SDL holds the screen saver off (`SDL_DisableScreenSaver`, SDL's default while a program runs), OpenBlanker is told every 5 seconds: a CTRL_E to the task of its `OpenBlanker` port, which OpenBlanker 1.2 counts as a key or the mouse. `SDL_VIDEO_ALLOW_SCREENSAVER=1` lets the show come. |
 | `src/video/amigaos3/SDL_os3gpu.c`, `.h` | opengpu.library for SDL: opening it, the pixel formats, and a window's present (one copy into the screen's bitmap through the window's visible parts). |
 | `src/SDL_os3callout.h` | The callouts (as SDL2.module's). |
 | `include/SDL_build_config_amigaos3.h` | SDL's configuration for the Amiga. |
