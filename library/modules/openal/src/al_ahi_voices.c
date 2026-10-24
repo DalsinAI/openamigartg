@@ -35,6 +35,7 @@
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <proto/ahi.h>
+#include <clib/alib_protos.h>
 #include <stdlib.h>
 #include <string.h>
 

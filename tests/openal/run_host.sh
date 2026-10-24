@@ -58,6 +58,13 @@ else
     echo "test_al_thread under ThreadSanitizer: skipped (not available here)"
 fi
 
+# The lab's references (allab_ref.c): built and run, so they stay in step
+# with the core; tests/openal/allab_compare.py reads them.
+# shellcheck disable=SC2086
+$CC $FLAGS $SAN -o "$OUT/allab_ref" "$HERE/allab_ref.c" $CORE -lm -lpthread
+mkdir -p "$OUT/allab_refs"
+"$OUT/allab_ref" "$OUT/allab_refs" > /dev/null
+
 # libopenal.a with no module: the stub's own file with exec, dos and
 # opengpu.library answered by the test (tests/sdl3/host's stand-ins).
 $CC -std=gnu11 -Wall -Wextra -Werror $SAN -I"$ROOT/tests/sdl3/host" -I"$ROOT/tests/host-include" -I"$ROOT/include" \
