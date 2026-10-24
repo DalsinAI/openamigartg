@@ -5,7 +5,8 @@
 # (library/modules/sdl3/Makefile). build.sh prepares the AHI headers
 # (SDK_INC) and calls this Makefile. Everything here is the Team's.
 #
-#   module   OpenAL.module: OpenAL 1.1 with Mix on AHI (LIBS:OpenGPU/).
+#   module   OpenAL.module: OpenAL 1.1 with Voices on ACAHI's Host mix and
+#            Mix on any AHI (LIBS:OpenGPU/).
 #            Built -fbaserel32 (SHARED=1, the default): its code is loaded
 #            once for every program, and each program gets its own copy of
 #            OpenAL's state. SHARED=0: a copy for each program.
@@ -14,8 +15,9 @@
 #   tests    tests/openal: nomodule.m; ALTone and ALInfo (altone.m and
 #            alinfo.m on the module, altone and alinfo static); and the PC
 #            tests' three that need no threads
-#            (test_al_api, test_al_3d, test_al_stream) built for the 68k,
-#            with Mix's output standing in as on the PC
+#            (test_al_api, test_al_3d, test_al_stream, test_al_voices)
+#            built for the 68k, with Mix's output and the board standing in
+#            as on the PC
 
 HERE    := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ROOT    := $(abspath $(HERE)/../../..)
@@ -44,7 +46,8 @@ CFLAGS_BASE = -std=gnu11 $(OPT) $(CPU) -fno-delete-null-pointer-checks -noixemul
          -Wno-unused-parameter -I$(HERE)include -I$(HERE)src -I$(ROOT)/include -I$(ROOT)/stubs/openal \
          -I$(COMMON) -I$(SDK_INC)
 
-CORE    = alc al_state al_buffer al_source al_spatial al_mix
+CORE    = alc al_state al_buffer al_source al_spatial al_mix al_voices
+AMIGA   = al_ahi al_ahi_voices al_vhook
 SRCDIR  = $(HERE)src
 CORE_DIR   = $(WORK)/obj-module
 STATIC_DIR = $(WORK)/obj-static
@@ -52,8 +55,8 @@ STUB_DIR   = $(WORK)/obj-stub
 TEST_DIR   = $(OUT)/tests/openal
 HEADERS = $(wildcard $(HERE)include/AL/*.h) $(SRCDIR)/al_internal.h $(SRCDIR)/al_attr.h $(ROOT)/stubs/openal/openal_procs.h
 
-CORE_OBJS   = $(addprefix $(CORE_DIR)/,$(addsuffix .o,$(CORE) al_ahi))
-STATIC_OBJS = $(addprefix $(STATIC_DIR)/,$(addsuffix .o,$(CORE) al_ahi))
+CORE_OBJS   = $(addprefix $(CORE_DIR)/,$(addsuffix .o,$(CORE) $(AMIGA)))
+STATIC_OBJS = $(addprefix $(STATIC_DIR)/,$(addsuffix .o,$(CORE) $(AMIGA)))
 INLINE      = $(SDK_INC)/inline/opengpu.h
 
 .PHONY: all module stub static tests
@@ -73,6 +76,12 @@ $(CORE_DIR)/%.o: $(SRCDIR)/%.c $(HEADERS)
 $(STATIC_DIR)/%.o: $(SRCDIR)/%.c $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_BASE) -DAL_STATIC_BUILD -c $< -o $@
+$(CORE_DIR)/%.o: $(SRCDIR)/%.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CPU) -c $< -o $@
+$(STATIC_DIR)/%.o: $(SRCDIR)/%.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CPU) -c $< -o $@
 
 $(OUT)/libopenal_static.a: $(STATIC_OBJS)
 	@rm -f $@; $(AR) rcs $@ $^; $(RANLIB) $@; echo "built $@"
@@ -121,8 +130,9 @@ $(TEST_DIR)/alinfo: $(TESTSRC)/alinfo.c $(OUT)/libopenal_static.a
 	$(CC) $(TEST_CFLAGS) -o $@ $< -L$(OUT) -lopenal_static -lm -lamiga
 
 # The PC tests on the 68k: the core with Mix's stand-in output (no AHI).
-PCTESTS = test_al_api test_al_3d test_al_stream
-PCTEST_CORE = $(addprefix $(WORK)/obj-pctest/,$(addsuffix .o,$(CORE) host_out))
+PCTESTS = test_al_api test_al_3d test_al_stream test_al_voices
+BOARD = $(TESTSRC)/acahi/machines/motherboards/a1200-x86/native
+PCTEST_CORE = $(addprefix $(WORK)/obj-pctest/,$(addsuffix .o,$(CORE) host_out host_voices acahi))
 tests: $(addprefix $(TEST_DIR)/,$(PCTESTS))
 $(WORK)/obj-pctest/%.o: $(SRCDIR)/%.c $(HEADERS)
 	@mkdir -p $(dir $@)
@@ -130,6 +140,13 @@ $(WORK)/obj-pctest/%.o: $(SRCDIR)/%.c $(HEADERS)
 $(WORK)/obj-pctest/host_out.o: $(TESTSRC)/host_out.c $(TESTSRC)/host_out.h $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(TEST_CFLAGS) -c $< -o $@
+$(WORK)/obj-pctest/host_voices.o: $(TESTSRC)/host_voices.c $(TESTSRC)/host_voices.h $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) $(TEST_CFLAGS) -I$(BOARD) -c $< -o $@
+# The board (the runtime's acahi.c, tests/openal/acahi): its own warnings' set.
+$(WORK)/obj-pctest/acahi.o: $(BOARD)/acahi.c $(BOARD)/acahi.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 $(OPT) $(CPU) -fno-delete-null-pointer-checks -noixemul -Wall -Werror -c $< -o $@
 $(addprefix $(TEST_DIR)/,$(PCTESTS)): $(TEST_DIR)/%: $(TESTSRC)/%.c $(TESTSRC)/check.h $(PCTEST_CORE)
 	@mkdir -p $(dir $@)
-	$(CC) $(TEST_CFLAGS) -o $@ $< $(PCTEST_CORE) -lm -lamiga
+	$(CC) $(TEST_CFLAGS) -I$(BOARD) -o $@ $< $(PCTEST_CORE) -lm -lamiga

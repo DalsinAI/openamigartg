@@ -313,7 +313,7 @@ void al_mix_render(ALCdevice *d, ALshort *out, ALuint frames)
                     al_context_update(c);
                 }
                 for (s = c->sources; s; s = s->next) {
-                    s->dirty &= ~(unsigned)(AL_DIRTY_STATE | AL_DIRTY_QUEUE);
+                    s->dirty &= AL_DIRTY_PARAMS;     /* the rest is read as it mixes */
                     if (s->state == AL_PLAYING) {
                         al_mix_source(d, s, acc, n);
                     }
@@ -336,9 +336,13 @@ void al_mix_render(ALCdevice *d, ALshort *out, ALuint frames)
  * word of one (update NULL). */
 const struct al_backend al_backend_mix = {
     "AHI Mix",
+    NULL,                       /* any AHI: always there to try */
     al_out_open,
     al_out_close,
     al_out_start,
     al_out_stop,
     NULL,
+    NULL,
+    NULL,
+    0,
 };

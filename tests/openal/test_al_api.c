@@ -22,11 +22,12 @@ static void test_alc_no_device(void)
     ALCint v;
     ALCdevice *d;
 
-    /* 6.3.7: the default device, and the list (ALC_ENUMERATION_EXT, 9.5). */
+    /* 6.3.7: the default device, and the list (ALC_ENUMERATION_EXT, 9.5).
+     * No board here (host_voices_fitted is 0): Mix is the default. */
     s = alcGetString(NULL, ALC_DEFAULT_DEVICE_SPECIFIER);
     CHECK(s && !strcmp(s, "AHI Mix"));
     s = alcGetString(NULL, ALC_DEVICE_SPECIFIER);
-    CHECK(s && !strcmp(s, "AHI Mix") && s[8] == 0);
+    CHECK(s && !strcmp(s, "AHI Voices") && !strcmp(s + 11, "AHI Mix") && s[19] == 0);
     CHECK_ALC(NULL, ALC_NO_ERROR);
     /* "Specifying NULL for deviceHandle when asking for ALC_EXTENSIONS will
      * generate an ALC_INVALID_DEVICE error." */

@@ -65,12 +65,13 @@ static ALCdevice *al_devices;
 static ALCenum alc_error;               /* errors with no valid device to keep them */
 static int al_ready;
 
-/* The back ends, the default first. P2 puts Voices before Mix. */
-static const struct al_backend *const al_backends[] = { &al_backend_mix };
+/* The back ends, in the order alcOpenDevice(NULL) tries them: Voices when
+ * the board has a Host mix mode and voices free, Mix otherwise. */
+static const struct al_backend *const al_backends[] = { &al_backend_voices, &al_backend_mix };
 #define AL_NBACKENDS (sizeof(al_backends) / sizeof(al_backends[0]))
 /* ALC_DEVICE_SPECIFIER with no device (6.3.7, ALC_ENUMERATION_EXT): each
  * name, then a second NUL. */
-static const char al_device_list[] = "AHI Mix\0";
+static const char al_device_list[] = "AHI Voices\0AHI Mix\0";
 
 #define AL_DEFAULT_REFRESH 25           /* updates a second: 40 ms each */
 #define AL_DEFAULT_FREQUENCY 22050      /* when the output doesn't say */
@@ -174,15 +175,20 @@ ALCcontext *al_enter(void)
     c = al_current;
     if (!c) {
         AL_UNLOCK();
+    } else if (c->device->backend->sync) {
+        c->device->backend->sync(c);
     }
     return c;
 }
 
+/* The back end hears of every change, suspended or not: Mix needs no word
+ * (it reads the state as it mixes); Voices sends plays, stops and queues to
+ * the board at once and the rest when the context isn't suspended. */
 void al_leave(ALCcontext *c)
 {
     if (c->changed) {
         c->changed = AL_FALSE;
-        if (!c->suspended && c->device->backend->update) {
+        if (c->device->backend->update) {
             c->device->backend->update(c);
         }
     }
@@ -355,28 +361,42 @@ ALboolean al_enum_value(const char *name, ALenum *value)
 
 static void alc_free_contexts(ALCdevice *device);
 
+/* The default device: the first back end that has an output now. */
+static const struct al_backend *alc_default_backend(void)
+{
+    size_t i;
+    for (i = 0; i + 1 < AL_NBACKENDS; i++) {
+        if (!al_backends[i]->available || al_backends[i]->available()) {
+            return al_backends[i];
+        }
+    }
+    return al_backends[AL_NBACKENDS - 1];
+}
+
 ALCdevice *ALC_APIENTRY alcOpenDevice(const ALCchar *devicename)
 {
     const struct al_backend *b = NULL;
     ALCdevice *d;
-    size_t i;
+    size_t i, first = 0, last = AL_NBACKENDS;
 
     al_mutex_lock(&al_device_lock);
-    if (!devicename || !devicename[0]) {
-        b = al_backends[0];
-    } else {
+    /* No name: each back end in turn, until one opens (Voices fails when
+     * the board has no Host mix mode or no voices free). A name: that one. */
+    if (devicename && devicename[0]) {
         for (i = 0; i < AL_NBACKENDS; i++) {
             if (!strcmp(devicename, al_backends[i]->name)) {
                 b = al_backends[i];
+                first = i;
+                last = i + 1;
             }
         }
-    }
-    if (!b) {
-        AL_LOCK();
-        alc_set_error(NULL, ALC_INVALID_VALUE);
-        AL_UNLOCK();
-        al_mutex_unlock(&al_device_lock);
-        return NULL;
+        if (!b) {
+            AL_LOCK();
+            alc_set_error(NULL, ALC_INVALID_VALUE);
+            AL_UNLOCK();
+            al_mutex_unlock(&al_device_lock);
+            return NULL;
+        }
     }
     d = calloc(1, sizeof *d);
     if (!d) {
@@ -386,10 +406,17 @@ ALCdevice *ALC_APIENTRY alcOpenDevice(const ALCchar *devicename)
         al_mutex_unlock(&al_device_lock);
         return NULL;
     }
-    d->backend = b;
-    d->connected = ALC_TRUE;
-    d->refresh = AL_DEFAULT_REFRESH;
-    if (!b->open(d)) {
+    for (i = first; i < last; i++) {
+        b = al_backends[i];
+        memset(d, 0, sizeof *d);
+        d->backend = b;
+        d->connected = ALC_TRUE;
+        d->refresh = AL_DEFAULT_REFRESH;
+        if (b->open(d)) {
+            break;
+        }
+    }
+    if (i == last) {
         free(d);
         AL_LOCK();
         alc_set_error(NULL, ALC_INVALID_VALUE);
@@ -591,6 +618,12 @@ ALCcontext *ALC_APIENTRY alcCreateContext(ALCdevice *device, const ALCint *attrl
      * output runs by itself), nor another rate on a device that plays. */
     if (sync) {
         bad = ALC_INVALID_VALUE;
+    }
+    /* An output with a rate of its own (Voices: the board's 44.1 kHz)
+     * takes ALC_FREQUENCY and ALC_REFRESH as hints, and keeps its own. */
+    if (device->backend->flags & AL_BACKEND_FIXED_RATE) {
+        have_freq = 0;
+        refresh = 0;
     }
     if (device->running && have_freq && (ALuint)freq != device->frequency) {
         bad = ALC_INVALID_VALUE;
@@ -860,7 +893,7 @@ const ALCchar *ALC_APIENTRY alcGetString(ALCdevice *device, ALCenum param)
         r = "ALC_OUT_OF_MEMORY";
         break;
     case ALC_DEFAULT_DEVICE_SPECIFIER:
-        r = al_backends[0]->name;   /* the device is ignored */
+        r = alc_default_backend()->name;    /* the device is ignored */
         break;
     case ALC_DEVICE_SPECIFIER:
         if (bad) {

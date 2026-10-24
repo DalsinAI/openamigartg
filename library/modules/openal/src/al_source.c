@@ -54,6 +54,9 @@ static void al_queue_clear(ALsource *s)
 void al_source_free(ALsource *source)
 {
     ALCcontext *c = source->context;
+    if (c->device->backend->forget) {
+        c->device->backend->forget(source);
+    }
     al_queue_clear(source);
     free(source->queue);
     if (source->prev) {
@@ -105,9 +108,59 @@ int al_source_next(ALsource *s)
     return 1;
 }
 
+/* Time going on for a source no back end plays (Voices' virtual sources):
+ * out frames of the output at out_rate, at the source's rate times its
+ * pitch as a 16.16 step (Mix's: al_mix.c), entry by entry, looping or
+ * stopping at the end of the queue as playing would. */
+void al_source_advance(ALsource *s, ALuint out, ALuint out_rate)
+{
+    const ALbuffer *f = al_source_format(s);
+    ALdouble p = s->params.pitch;
+    unsigned long long left, step;
+    ALuint spins = 0;
+    if (!f || !out || !out_rate || s->state != AL_PLAYING) {
+        return;
+    }
+    p = p > 0.0 ? (p >= 255.0 ? 255.0 : p) : 0.0;
+    step = (unsigned long long)(p * 65536.0 + 0.5);
+    step = step * (ALuint)f->frequency / out_rate;
+    if (step < 1) {
+        step = 1;
+    }
+    if (step > (255ull << 16)) {
+        step = 255ull << 16;
+    }
+    left = (unsigned long long)out * step;      /* 16.16 frames to move */
+    while (s->state == AL_PLAYING) {
+        const ALbuffer *b = s->current < s->queued ? s->queue[s->current] : NULL;
+        unsigned long long room;
+        if (!b || s->pos >= b->frames) {
+            if (!al_source_next(s)) {
+                break;
+            }
+            s->pos = s->frac = 0;
+            if (++spins > s->queued) {      /* a looping queue with no frames */
+                al_source_stop_all(s);
+                break;
+            }
+            continue;
+        }
+        spins = 0;
+        room = ((unsigned long long)(b->frames - s->pos) << 16) - s->frac;
+        if (left < room) {
+            unsigned long long t = ((unsigned long long)s->pos << 16) + s->frac + left;
+            s->pos = (ALuint)(t >> 16);
+            s->frac = (ALuint)(t & 0xFFFF);
+            break;
+        }
+        left -= room;
+        s->pos = b->frames;
+    }
+}
+
 /* The first buffer with data: it gives the queue's format (4.3.5: every
  * buffer in a queue has the same). */
-static const ALbuffer *al_source_format(const ALsource *s)
+const ALbuffer *al_source_format(const ALsource *s)
 {
     ALuint i;
     for (i = 0; i < s->queued; i++) {
@@ -222,7 +275,7 @@ static ALenum al_source_set_offset(ALsource *s, ALenum type, ALdouble value)
         return AL_INVALID_VALUE;
     }
     al_source_seek(s, frames);
-    al_source_touch(s, AL_DIRTY_STATE);
+    al_source_touch(s, AL_DIRTY_STATE | AL_DIRTY_SEEK);
     return AL_NO_ERROR;
 }
 
@@ -240,6 +293,7 @@ static void al_source_defaults(ALsource *s)
     s->cone_outer = 360.0f;
     s->type = AL_UNDETERMINED;
     s->state = AL_INITIAL;
+    s->voice = -1;
 }
 
 void AL_APIENTRY alGenSources(ALsizei n, ALuint *sources)
@@ -496,7 +550,7 @@ static void al_source_set(ALuint source, ALenum param, int form, const ALdouble 
             s->relative = (ALboolean)iv[0];
         } else {
             s->looping = (ALboolean)iv[0];
-            al_source_touch(s, AL_DIRTY_STATE);
+            al_source_touch(s, AL_DIRTY_STATE | AL_DIRTY_LOOP);
         }
         break;
     case AL_BUFFER:
@@ -729,6 +783,7 @@ void AL_APIENTRY alGetSourceiv(ALuint source, ALenum param, ALint *values)
 static void al_source_play(ALsource *s)
 {
     ALCdevice *d = s->context->device;
+    unsigned dirty = AL_DIRTY_STATE;
     if (s->state == AL_PAUSED) {
         s->state = AL_PLAYING;
     } else {
@@ -746,6 +801,7 @@ static void al_source_play(ALsource *s)
                 al_source_seek(s, frames);
             }
         }
+        dirty |= AL_DIRTY_SEEK;
     }
     /* No buffers, or a device that has gone (ALC_EXT_disconnect): nothing
      * to play, so it ends at once. */
@@ -753,7 +809,7 @@ static void al_source_play(ALsource *s)
         al_source_stop_all(s);
         return;
     }
-    al_source_touch(s, AL_DIRTY_STATE);
+    al_source_touch(s, dirty);
 }
 
 static void al_source_pause(ALsource *s)
@@ -778,7 +834,7 @@ static void al_source_rewind(ALsource *s)
         s->state = AL_INITIAL;
         s->current = 0;
         s->pos = s->frac = 0;
-        al_source_touch(s, AL_DIRTY_STATE);
+        al_source_touch(s, AL_DIRTY_STATE | AL_DIRTY_SEEK);
     }
     s->pending_type = 0;
 }
@@ -971,6 +1027,7 @@ void AL_APIENTRY alSourceUnqueueBuffers(ALuint source, ALsizei nb, ALuint *buffe
     }
     memmove(s->queue, s->queue + nb, (s->queued - (ALuint)nb) * sizeof *s->queue);
     s->queued -= (ALuint)nb;
+    s->dequeued += (ALuint)nb;
     s->current = s->current > (ALuint)nb ? s->current - (ALuint)nb : 0;
     if (s->state == AL_STOPPED) {
         s->current = s->queued;
