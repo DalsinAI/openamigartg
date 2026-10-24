@@ -707,6 +707,38 @@ static void test_why(void) {
           "why: by opcode, two FILLs, a COMPOSITE_PD and a COMPOSITE on the core");
 }
 
+/* ---- video RAM's card part ---------------------------------------------------------- */
+
+/* With a card part (OGPU_VK_HOST=1 OGPU_VK_HOSTMEM=map OGPU_VK_CARD_AT=bytes):
+ * a command that reads it goes to the GPU and is counted (card_gpu), one
+ * that only writes it is not, and all of them draw what the core draws,
+ * across the join between the host part and the card part too. */
+static void test_card(void) {
+    ogpu_u32 c = ogpu_vk_card_at(V);
+    struct ogpu_vk_stats s0, s1;
+    if (!c) return;
+    noise_both(1, 0, (long)VSIZE);
+    ogpu_vk_stats(V, &s0);
+    begin();
+    ogpu_surface(&B, 0, VBASE + c + 0x1000, 64 * 4, 64, 32, OGPU_FMT_ARGB32);          /* in the card part */
+    ogpu_surface(&B, 1, VBASE + 0x1000, 64 * 4, 64, 32, OGPU_FMT_ARGB32);              /* in the host part */
+    ogpu_surface(&B, 2, VBASE + c - 64 * 4 * 16, 64 * 4, 64, 32, OGPU_FMT_ARGB32);     /* across the join */
+    ogpu_target(&B, 0);
+    ogpu_fill(&B, 0, 0, 32, 16, 0xFF102030UL);                                 /* writes the card part: not counted */
+    ogpu_fill_blend(&B, 4, 4, 16, 8, 0x80FF0000UL, OGPU_BLEND_BLEND);          /* reads it: counted */
+    ogpu_target(&B, 1);
+    ogpu_copy(&B, 0, 0, 0, 0, 0, 32, 16);                                      /* from the card part: counted */
+    ogpu_target(&B, 2);
+    ogpu_copy(&B, 1, 0, 0, 0, 0, 64, 32);                                      /* from the host part, across the join: not counted */
+    ogpu_fill_blend(&B, 0, 8, 64, 16, 0x4000FF00UL, OGPU_BLEND_BLEND);         /* reads across the join: counted */
+    ogpu_fence(&B, 9);
+    CHECK(run_both("card part: fills, blends and copies, across the join too"), "the card part draws as the core does");
+    ogpu_vk_stats(V, &s1);
+    CHECK(s1.card_gpu - s0.card_gpu == 3, "card part: 3 commands read it, on the GPU (%lu)", s1.card_gpu - s0.card_gpu);
+    CHECK(s1.card_core - s0.card_core == 0, "card part: none read it on the core (%lu)", s1.card_core - s0.card_core);
+    printf("opengpu vulkan: card part from %u KiB of %lu KiB; %lu commands read it, on the GPU\n", c >> 10, VSIZE >> 10, s1.card_gpu);
+}
+
 /* ---- routing by cost ---------------------------------------------------------------- */
 
 /* A back end routing by cost (OGPU_VK_ROUTE_COST, the runtime's default)
@@ -855,6 +887,9 @@ int main(int argc, char **argv) {
     }
     vram_vk = ogpu_vk_vram(V);
     printf("opengpu vulkan: on %s, video RAM %s\n", ogpu_vk_device(V), ogpu_vk_vram_mode(V));
+    if (getenv("OGPU_VK_CARD_AT") && cfg.host_vram)
+        printf("opengpu vulkan: card part asked for at %s: %s\n", getenv("OGPU_VK_CARD_AT"),
+               ogpu_vk_card_at(V) ? "made" : "not made (no sparse binding, no such memory, or not map)");
     if (cfg.host_vram) {
         CHECK(vram_vk == cfg.host_vram, "video RAM is not the caller's");
         CHECK(vram_vk[VSIZE - 1] == 0x5A, "what was in the caller's video RAM was lost");
@@ -897,6 +932,7 @@ int main(int argc, char **argv) {
     test_random(rounds);
     test_list();
     test_why();
+    test_card();
     test_supports();
 #ifdef OGPU_WITH_3D
     test_3d(argc > 4 ? argv[4] : 0);

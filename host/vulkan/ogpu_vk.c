@@ -72,6 +72,9 @@ struct ogpu_vk {
     ogpu_u8 *vram, *arena;
     const char *vram_mode;      /* "own", "import" or "map" */
     int vram_mapped;            /* "map": host_vram is our mapping of the GPU's memory */
+    ogpu_u32 card;              /* where video RAM's card part starts, or 0: none (vram_mem is then the host part's) */
+    VkDeviceMemory card_mem;    /* the card part's memory */
+    int sparse;                 /* the queue binds sparsely, and the feature is on: a card part can be made */
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
     VkShaderModule shader;
@@ -239,6 +242,49 @@ static ogpu_u8 *core_map(void *user, ogpu_u32 address, ogpu_u32 length) {
     if (address >= base && address - base <= size && length <= size - (address - base))
         return vk->vram + (address - base);
     return vk->cfg.map ? vk->cfg.map(vk->cfg.user, address, length) : 0;
+}
+
+/* Video RAM's card part (ogpu_vk_config's card_at). The CPU reads the card's
+ * memory at about 7 MB/s, so a command that reads it goes to the GPU. A
+ * pointer the core mapped and len bytes from it: 1 when any is in the card part. */
+static int in_card(const struct ogpu_vk *vk, const ogpu_u8 *p, unsigned long len) {
+    long off;
+    if (!vk->card || !p) return 0;
+    if (!len) len = 1;
+    off = vram_off(vk, p, len);
+    return off >= 0 && (unsigned long)off + len > vk->card;
+}
+/* An Amiga address in the card part. */
+static int addr_in_card(const struct ogpu_vk *vk, ogpu_u32 a) {
+    ogpu_u32 base = vk->cfg.vram_base;
+    return vk->card && a >= base && a - base >= vk->card && a - base < vk->cfg.vram_size;
+}
+/* A slot whose pixels are in the card part, any of them. */
+static int slot_in_card(const struct ogpu_vk *vk, ogpu_u32 slot) {
+    const struct ogpu_surface *t;
+    if (slot >= OGPU_MAX_SLOTS) return 0;
+    t = &vk->core.slot[slot];
+    return t->pixels && in_card(vk, t->pixels, t->bpr > 0 && t->h > 0 ? (unsigned long)t->bpr * (unsigned long)t->h : 1);
+}
+/* 1 when a drawing command reads video RAM's card part: a source there, or
+ * its target there unless it only writes the target: FILL; TEMPLATE, PATTERN
+ * and LINE without COMPLEMENT; PIXELS; and COPY, which reads only its
+ * source. a: the command's words after its header. */
+static int reads_card(const struct ogpu_vk *vk, int op, const ogpu_u8 *a) {
+    int t;
+    if (!vk->card) return 0;
+    t = vk->core.target >= 0 && slot_in_card(vk, (ogpu_u32)vk->core.target);
+    switch (op) {
+    case OGPU_OP_FILL: return 0;
+    case OGPU_OP_COPY: return slot_in_card(vk, rd32(a));
+    case OGPU_OP_TEMPLATE: return addr_in_card(vk, rd32(a)) || (t && (rd32(a + 28) & OGPU_COMPLEMENT));
+    case OGPU_OP_PATTERN: return addr_in_card(vk, rd32(a)) || (t && (rd32(a + 24) & OGPU_COMPLEMENT));
+    case OGPU_OP_LINE: return t && (rd32(a + 12) & OGPU_COMPLEMENT);
+    case OGPU_OP_PIXELS: return addr_in_card(vk, rd32(a));
+    case OGPU_OP_MASK: return t || addr_in_card(vk, rd32(a));
+    case OGPU_OP_COMPOSITE: case OGPU_OP_COMPOSITE_AFFINE: return t || slot_in_card(vk, rd32(a));
+    }
+    return t;
 }
 
 static void flush(struct ogpu_vk *vk);
@@ -1399,7 +1445,11 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
         double t0 = 0;
         if (drawable && gpu_target(vk, &dst)) {
             routed = vk->route == OGPU_VK_ROUTE_COST ? 2 : 0;
-            if (!route_gpu(vk, op, stream + at * 4 + 4, stream, at, words, &kind)) {
+            if (vk->card && vk->route != OGPU_VK_ROUTE_CORE && reads_card(vk, op, stream + at * 4 + 4)) {
+                /* it reads the card's memory: the GPU, whatever the cost (unweighed) */
+                vk->stats.card_gpu++;
+                routed = 0;
+            } else if (!route_gpu(vk, op, stream + at * 4 + 4, stream, at, words, &kind)) {
                 drawable = 0;       /* cheaper on the core */
                 routed = vk->route == OGPU_VK_ROUTE_COST ? 1 : 0;
                 vk->stats.routed++;
@@ -1420,6 +1470,7 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
             done += ogpu_core_run(&vk->core, stream + at * 4, len);
             if (routed == 1) vk->core_us[kind] += (now_ns() - t0) / 1000;
             if (op >= OGPU_OP_FILL && op < OGPU_OP_FENCE) {
+                if (vk->card && reads_card(vk, op, stream + at * 4 + 4)) vk->stats.card_core++;   /* slowly */
                 vk->stats.cpu++;
                 vk->stats.why[why >= 0 ? why : OGPU_VK_WHY_REFUSED]++;
                 if (op - OGPU_OP_FILL < OGPU_VK_CORE_OPS) vk->stats.core_op[op - OGPU_OP_FILL]++;
@@ -1483,6 +1534,7 @@ long ogpu_vk_error_word(const struct ogpu_vk *vk) { return vk->error_word; }
 int ogpu_vk_lost(const struct ogpu_vk *vk) { return vk->failed; }
 ogpu_u8 *ogpu_vk_vram(struct ogpu_vk *vk) { return vk->vram; }
 const char *ogpu_vk_vram_mode(struct ogpu_vk *vk) { return vk->vram_mode; }
+ogpu_u32 ogpu_vk_card_at(const struct ogpu_vk *vk) { return vk->card; }
 const char *ogpu_vk_device(struct ogpu_vk *vk) { return vk->name; }
 void ogpu_vk_stats(const struct ogpu_vk *vk, struct ogpu_vk_stats *s) {
     *s = vk->stats;
@@ -1618,6 +1670,131 @@ static void unplace(struct ogpu_vk *vk) {
 }
 #endif
 
+#ifdef OGPU_VK_MMAP
+/* Video RAM with a card part (ogpu_vk_config's card_at): one buffer bound
+ * sparsely to two memories, host memory the CPU caches for [0, card) and the
+ * card's own (device-local, host-visible through the PCI bar) for [card,
+ * end); each exported and put over its part of the caller's video RAM, what
+ * was there copied in first. Tried on daletop's RX 460 (vksplit, 24 October
+ * 2026): writes across the join reach the GPU, the GPU's reach the CPU. */
+static int map_split(struct ogpu_vk *vk, int dma_buf) {
+    VkExternalMemoryHandleTypeFlagBits ht = dma_buf ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+                                                    : VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    VkExternalMemoryBufferCreateInfo ebi = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO };
+    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    VkExportMemoryAllocateInfo exp = { .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO };
+    VkMemoryAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    VkMemoryGetFdInfoKHR gfi = { .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR };
+    VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    VkBindSparseInfo bsi = { .sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO };
+    VkSparseMemoryBind bind[2];
+    VkSparseBufferMemoryBindInfo sb;
+    VkPhysicalDeviceMemoryProperties mp;
+    VkMemoryRequirements req;
+    VkFence fence = 0;
+    PFN_vkGetMemoryFdKHR get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(vk->dev, "vkGetMemoryFdKHR");
+    ogpu_u32 host = vk->card, card = vk->cfg.vram_size - vk->card, i;
+    ogpu_u8 *keep = 0, *ph = 0, *pc = 0;
+    void *m;
+    int th, tc = -1, fh = -1, fc = -1, placed = 0, same;
+    if (!get_fd || !vk->sparse || !host || host >= vk->cfg.vram_size) return 0;
+    ebi.handleTypes = (VkExternalMemoryHandleTypeFlags)ht;
+    bi.pNext = &ebi;
+    bi.flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT;
+    bi.size = vk->cfg.vram_size;
+    bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vk->dev, &bi, 0, &vk->vram_buf) != VK_SUCCESS) { vk->vram_buf = 0; return 0; }
+    vkGetBufferMemoryRequirements(vk->dev, vk->vram_buf, &req);
+    if (!req.alignment || host % req.alignment || card % req.alignment) goto no;
+    vkGetPhysicalDeviceMemoryProperties(vk->phys, &mp);
+    th = memory_type(vk->phys, req.memoryTypeBits, 1);
+    for (i = 0; i < mp.memoryTypeCount && tc < 0; i++) {
+        VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags, want = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+            | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        if ((req.memoryTypeBits & (1u << i)) && (f & want) == want) tc = (int)i;
+    }
+    /* the host part must be memory the CPU caches, not the card's */
+    if (th < 0 || tc < 0 || (mp.memoryTypes[th].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+        || !(mp.memoryTypes[th].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) goto no;
+    exp.handleTypes = (VkExternalMemoryHandleTypeFlags)ht;
+    ai.pNext = &exp;
+    ai.allocationSize = host;
+    ai.memoryTypeIndex = (uint32_t)th;
+    if (vkAllocateMemory(vk->dev, &ai, 0, &vk->vram_mem) != VK_SUCCESS) { vk->vram_mem = 0; goto no; }
+    ai.allocationSize = card;
+    ai.memoryTypeIndex = (uint32_t)tc;
+    if (vkAllocateMemory(vk->dev, &ai, 0, &vk->card_mem) != VK_SUCCESS) { vk->card_mem = 0; goto no; }
+    bind[0].resourceOffset = 0; bind[0].size = host; bind[0].memory = vk->vram_mem; bind[0].memoryOffset = 0; bind[0].flags = 0;
+    bind[1].resourceOffset = host; bind[1].size = card; bind[1].memory = vk->card_mem; bind[1].memoryOffset = 0; bind[1].flags = 0;
+    sb.buffer = vk->vram_buf; sb.bindCount = 2; sb.pBinds = bind;
+    bsi.bufferBindCount = 1; bsi.pBufferBinds = &sb;
+    if (vkCreateFence(vk->dev, &fci, 0, &fence) != VK_SUCCESS) { fence = 0; goto no; }
+    if (vkQueueBindSparse(vk->queue, 1, &bsi, fence) != VK_SUCCESS
+        || vkWaitForFences(vk->dev, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) goto no;
+    gfi.handleType = ht;
+    gfi.memory = vk->vram_mem;
+    if (get_fd(vk->dev, &gfi, &fh) != VK_SUCCESS || fh < 0) goto no;
+    gfi.memory = vk->card_mem;
+    if (get_fd(vk->dev, &gfi, &fc) != VK_SUCCESS || fc < 0) goto no;
+    /* what was there, into each part (the CPU writes the card's memory well) */
+    if (vkMapMemory(vk->dev, vk->vram_mem, 0, VK_WHOLE_SIZE, 0, &m) != VK_SUCCESS) goto no;
+    ph = m;
+    if (vkMapMemory(vk->dev, vk->card_mem, 0, VK_WHOLE_SIZE, 0, &m) != VK_SUCCESS) goto no;
+    pc = m;
+    memcpy(ph, vk->cfg.host_vram, host);
+    memcpy(pc, vk->cfg.host_vram + host, card);
+    if (!(keep = malloc(vk->cfg.vram_size))) goto no;
+    memcpy(keep, vk->cfg.host_vram, vk->cfg.vram_size);
+    if (vk->cfg.place_part)
+        placed = !vk->cfg.place_part(vk->cfg.user, fh, 0, host) && !vk->cfg.place_part(vk->cfg.user, fc, host, card);
+    else
+        placed = mmap(vk->cfg.host_vram, host, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fh, 0) == (void *)vk->cfg.host_vram
+                 && mmap(vk->cfg.host_vram + host, card, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fc, 0)
+                    == (void *)(vk->cfg.host_vram + host);
+    close(fh); fh = -1;
+    close(fc); fc = -1;
+    /* a write through each placed part must reach that part's memory */
+    same = placed;
+    if (same) {
+        vk->cfg.host_vram[0] ^= 0xFF;
+        same = ((volatile ogpu_u8 *)ph)[0] == vk->cfg.host_vram[0];
+        vk->cfg.host_vram[0] ^= 0xFF;
+    }
+    if (same) {
+        vk->cfg.host_vram[host] ^= 0xFF;
+        same = ((volatile ogpu_u8 *)pc)[0] == vk->cfg.host_vram[host];
+        vk->cfg.host_vram[host] ^= 0xFF;
+    }
+    vkUnmapMemory(vk->dev, vk->vram_mem); ph = 0;
+    vkUnmapMemory(vk->dev, vk->card_mem); pc = 0;
+    if (!same) {
+        unplace(vk);
+        memcpy(vk->cfg.host_vram, keep, vk->cfg.vram_size);
+        goto no;
+    }
+    free(keep);
+    vkDestroyFence(vk->dev, fence, 0);
+    vk->vram = vk->cfg.host_vram;
+    vk->vram_mode = "map+card";
+    vk->vram_mapped = 1;
+    return 1;
+no:
+    free(keep);
+    if (fh >= 0) close(fh);
+    if (fc >= 0) close(fc);
+    if (ph) vkUnmapMemory(vk->dev, vk->vram_mem);
+    if (pc) vkUnmapMemory(vk->dev, vk->card_mem);
+    if (fence) { vkDeviceWaitIdle(vk->dev); vkDestroyFence(vk->dev, fence, 0); }
+    vkDestroyBuffer(vk->dev, vk->vram_buf, 0);
+    if (vk->vram_mem) vkFreeMemory(vk->dev, vk->vram_mem, 0);
+    if (vk->card_mem) vkFreeMemory(vk->dev, vk->card_mem, 0);
+    vk->vram_buf = 0;
+    vk->vram_mem = vk->card_mem = 0;
+    return 0;
+}
+#endif
+
 /* The GPU's own memory, exported and mapped over the caller's video RAM:
  * what was there is copied in first, so nothing is lost. */
 static int map_host_vram(struct ogpu_vk *vk, int dma_buf) {
@@ -1635,6 +1812,10 @@ static int map_host_vram(struct ogpu_vk *vk, int dma_buf) {
     volatile ogpu_u8 *probe;
     int type, fd = -1, same;
     if (!get_fd) return 0;
+    if (vk->card) {             /* a card part asked for: that, or none */
+        if (map_split(vk, dma_buf)) return 1;
+        vk->card = 0;
+    }
     ebi.handleTypes = (VkExternalMemoryHandleTypeFlags)ht;
     bi.pNext = &ebi;
     bi.size = vk->cfg.vram_size;
@@ -1891,6 +2072,8 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
     const char *ext[3];
     int next = 0, can_import = 0, can_map = 0, can_dma_buf = 0;
     const char *hostmem = getenv("OGPU_VK_HOSTMEM");
+    VkPhysicalDeviceFeatures feat;
+    ogpu_u32 card = 0;
 
     if (!vk) { fail(err, errlen, "out of memory", VK_ERROR_OUT_OF_HOST_MEMORY); return 0; }
     vk->cfg = *cfg;
@@ -1911,6 +2094,26 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
     }
     vkGetPhysicalDeviceQueueFamilyProperties(vk->phys, &nq, qf);
     for (q = 0; q < nq; q++) if (qf[q].queueFlags & VK_QUEUE_COMPUTE_BIT) { qfam = q; break; }
+    /* A card part (map only): it needs sparse binding, and a queue that
+     * computes and binds sparsely. Without them there is none. */
+    card = vk->cfg.card_at;
+    if (!card && getenv("OGPU_VK_CARD_AT")) card = (ogpu_u32)strtoul(getenv("OGPU_VK_CARD_AT"), 0, 0);
+    if (card >= vk->cfg.vram_size || (card & 0xFFFFu) || !vk->cfg.host_vram || (hostmem && strcmp(hostmem, "map"))) card = 0;
+    memset(&feat, 0, sizeof feat);
+    if (card) {
+        VkPhysicalDeviceFeatures have;
+        vkGetPhysicalDeviceFeatures(vk->phys, &have);
+        if (have.sparseBinding)
+            for (q = 0; q < nq; q++)
+                if ((qf[q].queueFlags & VK_QUEUE_COMPUTE_BIT) && (qf[q].queueFlags & VK_QUEUE_SPARSE_BINDING_BIT)) {
+                    qfam = q;
+                    vk->sparse = 1;
+                    feat.sparseBinding = VK_TRUE;
+                    di.pEnabledFeatures = &feat;
+                    break;
+                }
+        if (vk->sparse) vk->card = card;
+    }
 
     qi.queueFamilyIndex = qfam;
     qi.queueCount = 1;
@@ -2040,10 +2243,88 @@ bad:
     return 0;
 }
 
+#ifdef OGPU_VK_MMAP
+/* len bytes of video RAM from offset at, copied by the GPU into host memory
+ * and then to dst; 0 when that couldn't be done. For the card part, which
+ * the CPU reads slowly. The video RAM buffer must be still alive. */
+static int card_read(struct ogpu_vk *vk, ogpu_u8 *dst, ogpu_u32 at, ogpu_u32 len) {
+    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    VkMemoryAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    VkCommandBufferAllocateInfo cai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    VkCommandBufferBeginInfo cbi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+    VkMemoryRequirements req;
+    VkBufferCopy rg;
+    VkBuffer b = 0;
+    VkDeviceMemory m = 0;
+    VkCommandBuffer cmd = 0;
+    VkFence fence = 0;
+    void *p = 0;
+    int type, ok = 0;
+    if (!vk->vram_buf || !vk->cpool) return 0;
+    bi.size = len;
+    bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(vk->dev, &bi, 0, &b) != VK_SUCCESS) return 0;
+    vkGetBufferMemoryRequirements(vk->dev, b, &req);
+    type = memory_type(vk->phys, req.memoryTypeBits, 1);
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = (uint32_t)type;
+    if (type < 0 || vkAllocateMemory(vk->dev, &ai, 0, &m) != VK_SUCCESS) { m = 0; goto out; }
+    if (vkBindBufferMemory(vk->dev, b, m, 0) != VK_SUCCESS || vkMapMemory(vk->dev, m, 0, VK_WHOLE_SIZE, 0, &p) != VK_SUCCESS) goto out;
+    cai.commandPool = vk->cpool;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(vk->dev, &cai, &cmd) != VK_SUCCESS) { cmd = 0; goto out; }
+    cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &cbi);
+    rg.srcOffset = at; rg.dstOffset = 0; rg.size = len;
+    vkCmdCopyBuffer(cmd, vk->vram_buf, b, 1, &rg);
+    mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, 0, 0, 0);
+    vkEndCommandBuffer(cmd);
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    if (vkCreateFence(vk->dev, &fci, 0, &fence) != VK_SUCCESS) { fence = 0; goto out; }
+    if (vkQueueSubmit(vk->queue, 1, &si, fence) != VK_SUCCESS || vkWaitForFences(vk->dev, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) goto out;
+    memcpy(dst, p, len);
+    ok = 1;
+out:
+    if (fence) vkDestroyFence(vk->dev, fence, 0);
+    if (cmd) vkFreeCommandBuffers(vk->dev, vk->cpool, 1, &cmd);
+    if (p) vkUnmapMemory(vk->dev, m);
+    if (m) vkFreeMemory(vk->dev, m, 0);
+    vkDestroyBuffer(vk->dev, b, 0);
+    return ok;
+}
+#endif
+
 void ogpu_vk_destroy(struct ogpu_vk *vk) {
     if (!vk) return;
     if (vk->dev) {
         vkDeviceWaitIdle(vk->dev);
+#ifdef OGPU_VK_MMAP
+        /* "map": put plain memory back under the caller's video RAM with
+         * what the GPU left there, so the caller can carry on (first:
+         * the card part is read back with the GPU, before anything goes). */
+        if (vk->vram_mapped) {
+            ogpu_u8 *keep = malloc(vk->cfg.vram_size);
+            if (keep) {
+                /* the card part through a GPU copy: the CPU reads it at 7 MB/s */
+                if (vk->card) {
+                    memcpy(keep, vk->cfg.host_vram, vk->card);
+                    if (!card_read(vk, keep + vk->card, vk->card, vk->cfg.vram_size - vk->card))
+                        memcpy(keep + vk->card, vk->cfg.host_vram + vk->card, vk->cfg.vram_size - vk->card);
+                } else
+                    memcpy(keep, vk->cfg.host_vram, vk->cfg.vram_size);
+            }
+            unplace(vk);
+            if (keep) { memcpy(vk->cfg.host_vram, keep, vk->cfg.vram_size); free(keep); }
+        }
+#endif
 #ifdef OGPU_WITH_3D
         teardown_3d(vk);
 #endif
@@ -2056,17 +2337,8 @@ void ogpu_vk_destroy(struct ogpu_vk *vk) {
         if (vk->dsl) vkDestroyDescriptorSetLayout(vk->dev, vk->dsl, 0);
         if (vk->vram_buf) vkDestroyBuffer(vk->dev, vk->vram_buf, 0);
         if (vk->arena_buf) vkDestroyBuffer(vk->dev, vk->arena_buf, 0);
-#ifdef OGPU_VK_MMAP
-        /* "map": put plain memory back under the caller's video RAM with
-         * what the GPU left there, so the caller can carry on. */
-        if (vk->vram_mapped) {
-            void *keep = malloc(vk->cfg.vram_size);
-            if (keep) memcpy(keep, vk->cfg.host_vram, vk->cfg.vram_size);
-            unplace(vk);
-            if (keep) { memcpy(vk->cfg.host_vram, keep, vk->cfg.vram_size); free(keep); }
-        }
-#endif
         if (vk->vram_mem) vkFreeMemory(vk->dev, vk->vram_mem, 0);
+        if (vk->card_mem) vkFreeMemory(vk->dev, vk->card_mem, 0);
         if (vk->arena_mem) vkFreeMemory(vk->dev, vk->arena_mem, 0);
         vkDestroyDevice(vk->dev, 0);
     }

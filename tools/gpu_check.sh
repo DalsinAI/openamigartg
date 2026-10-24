@@ -23,15 +23,20 @@ cc -std=c99 -O2 -Wall -Wextra -I"$INC" -DOGPU_WITH_3D -o "$OUT/test_opengpu_vk" 
     "$HERE/tests/golden_scene_3d.c" "$HERE/tests/scenes3d.c" "$HERE/host/vulkan/ogpu_vk.c" "$HERE/library/opengpu/ogpu_core.c" \
     "$HERE/library/opengpu/ogpu_3d.c" "$HERE/library/opengpu/ogpu_build.c" "$HERE/library/opengpu/ogpu_build3d.c" "$LIB" -lm || exit 1
 rc=0
-for mode in own auto import map; do
-    if [ $mode = own ]; then host=0; mem=; elif [ $mode = auto ]; then host=1; mem=; else host=1; mem=$mode; fi
+# card: mapped, with its second half the card's own memory (the compositor's
+# step 2b); 300 streams, as the check reads the card part back at the CPU's
+# slow speed after each one.
+for mode in own auto import map card; do
+    if [ $mode = own ]; then host=0; mem=; elif [ $mode = auto ]; then host=1; mem=; elif [ $mode = card ]; then host=1; mem=map; else host=1; mem=$mode; fi
+    card=; rounds=3000
+    if [ $mode = card ]; then card=0x80000; rounds=300; fi
     echo "== video RAM: $mode"
     start=$(date +%s)
-    OGPU_VK_HOST=$host OGPU_VK_HOSTMEM=$mem "$OUT/test_opengpu_vk" "$HERE/tests/golden/opengpu-g1.txt" 3000 "$HERE/tests/golden/opengpu-v11.txt" \
+    OGPU_VK_HOST=$host OGPU_VK_HOSTMEM=$mem OGPU_VK_CARD_AT=$card "$OUT/test_opengpu_vk" "$HERE/tests/golden/opengpu-g1.txt" $rounds "$HERE/tests/golden/opengpu-v11.txt" \
         "$HERE/tests/golden/opengpu-3d.txt"
     r=$?
     echo "   (exit $r, $(( $(date +%s) - start )) s)"
-    # import or map alone may be missing on a device; own and auto must pass.
+    # import, map or card alone may be missing on a device; own and auto must pass.
     if [ $r -ne 0 ] && { [ $mode = own ] || [ $mode = auto ]; }; then rc=1; fi
 done
 [ $rc -eq 0 ] && echo "gpu check: passed" || echo "gpu check: FAILED"
