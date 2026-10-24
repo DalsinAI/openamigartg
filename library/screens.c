@@ -2007,6 +2007,7 @@ static const UBYTE *font_data(struct TextFont *f)
  *   tf_BoldSmear on the right; italic adds tf_Baseline / 2 on the right and
  *   (tf_YSize - tf_Baseline + 1) / 2 on the left.
  * - italic moves row r of each image right by floor((tf_Baseline - r) / 2).
+ * - the underline leaves a pixel clear each side of an image pixel in its row (text_underline).
  * Before 0.24 the pen left out the kerning, added the smear for bold, used CharSpace only with
  * FPF_PROPORTIONAL, and italic wasn't slanted. In Workbench's 23-pixel font a 22-character string
  * drew 172 pixels where TextLength said 187, and JAM2 left the last 15 columns uncleared. */
@@ -2014,6 +2015,46 @@ static LONG text_slant(const struct TextFont *f, LONG r)
 {
     LONG d = (LONG)f->tf_Baseline - r;
     return d >= 0 ? d / 2 : -((1 - d) / 2);
+}
+
+/* 0.24: the underline, as OS 3.2 draws it: the row below the baseline across the box, but not on a pixel
+ * next to (or under) an image pixel of that row, so descenders keep a pixel clear each side. Built a chunk
+ * of columns at a time; u is the fill in the text's pens. */
+#define UL_CHUNK 1024
+static void text_underline(struct RastPort *rp, struct TextFont *f, const UBYTE *s, LONG n, LONG x, LONG x0, LONG x1,
+                           LONG smear, int italic, const UBYTE *src, struct fill_ctx *u)
+{
+    UWORD *loc = f->tf_CharLoc;
+    WORD *space = f->tf_CharSpace, *kern = f->tf_CharKern;
+    LONG r = f->tf_Baseline + 1, sl = italic ? text_slant(f, r) : 0, y = rp->cp_y + 1, cx;
+    const UBYTE *row = src + r * f->tf_Modulo;
+    UBYTE buf[(UL_CHUNK + 2 + 7) / 8 + 1];              /* columns cx - 1 .. cx + UL_CHUNK */
+    for (cx = x0; cx <= x1; cx += UL_CHUNK) {
+        LONG i, pos = 0, c, run = -1, last = cx + UL_CHUNK - 1 > x1 ? x1 : cx + UL_CHUNK - 1;
+        for (i = 0; i < (LONG)sizeof buf; i++) buf[i] = 0;
+        for (i = 0; i < n; i++) {
+            UBYTE ch = s[i];
+            int k = (ch >= f->tf_LoChar && ch <= f->tf_HiChar) ? ch - f->tf_LoChar : f->tf_HiChar - f->tf_LoChar + 1;
+            LONG w = loc[2 * k + 1], off = loc[2 * k], left = pos + (kern ? kern[k] : 0) + sl, b, j;
+            pos += (space ? space[k] : (LONG)f->tf_XSize) + (kern ? kern[k] : 0) + rp->TxSpacing;
+            for (b = 0;; b = smear) {
+                for (j = 0; j < w; j++) {
+                    LONG col = left + b + j - (cx - 1), bit = off + j;
+                    if (col < 0 || col > UL_CHUNK + 1) continue;
+                    if (row[bit >> 3] >> (7 - (bit & 7)) & 1) buf[col >> 3] |= (UBYTE)(0x80 >> (col & 7));
+                }
+                if (b == smear) break;
+            }
+        }
+#define UL_INK(c) (buf[(c) >> 3] >> (7 - ((c) & 7)) & 1)
+        for (c = 1; c <= last - cx + 1; c++) {          /* column cx - 1 + c */
+            int on = !UL_INK(c - 1) && !UL_INK(c) && !UL_INK(c + 1);
+            if (on && run < 0) run = c;
+            if (!on && run >= 0) { pieces(rp, x + cx - 1 + run, y, x + cx - 1 + c - 1, y, fill_piece, u); run = -1; }
+        }
+        if (run >= 0) pieces(rp, x + cx - 1 + run, y, x + last, y, fill_piece, u);
+#undef UL_INK
+    }
 }
 
 static LONG text_patch(REG(a1, struct RastPort *rp), REG(a0, STRPTR s), REG(d0, WORD n), REG(a6, struct GfxBase *g))
@@ -2087,7 +2128,7 @@ static LONG text_patch(REG(a1, struct RastPort *rp), REG(a0, STRPTR s), REG(d0, 
         if (n > 0 && style & FSF_UNDERLINED && f->tf_Baseline + 1 < f->tf_YSize) {   /* the row below the baseline, in the font */
             struct fill_ctx u;
             u.p = t.p; u.ptrn = NULL; u.ptsz = 1;
-            pieces(rp, x + x0, rp->cp_y + 1, x + x1, rp->cp_y + 1, fill_piece, &u);
+            text_underline(rp, f, (const UBYTE *)s, n, x, x0, x1, smear, italic, t.src, &u);
         }
         rp->cp_x = (WORD)(x + pos);
     }
