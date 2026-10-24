@@ -89,6 +89,28 @@ struct OpenRTGBitMapInfo {
  * RAM. Other graphics libraries ignore it. */
 #define ORTG_BMA_CARD     0x804F5201UL
 
+/* ORTG_WrittenSpans (0.23; decision D7(b), acrtg-v9): what the CPU itself
+ * wrote into an OpenRTG bitmap in video RAM by address since the last
+ * call, a row's piece at a time; never what OpenGPU or the board drew.
+ * - The first call for a bitmap asks the board to watch it, and answers 0.
+ *   A board watches one bitmap: a call for another moves the watch, but
+ *   not off a bitmap a monitor shows to one it doesn't. A board that can't
+ *   watch (before acrtg-v9, or a runtime not asked to) answers 0 always.
+ * - It answers how many spans it put in buf, max at most. When it answers
+ *   max, call again for the rest: nothing is lost between calls.
+ * - buf NULL: the watch is set as above, and the answer is the address of
+ *   a long that is not 0 while there is something to take, or 0 when the
+ *   board doesn't watch the bitmap. Reading it costs nothing; the board
+ *   sets it at the CPU's first write and clears it once everything is
+ *   taken from the board. After a call that answered max there may be
+ *   more whatever the long says.
+ * layers.library uses it on a composited screen's bitmap: what a program
+ * writes into the screen by address goes into the window there. */
+struct OpenRTGSpan {
+    unsigned short y;               /* the row */
+    unsigned short x0, x1;          /* its pixels x0 to x1, both written */
+};
+
 /* A frame the host's GPU rendered through ACVirgl, for ORTG_PresentVirgl
  * (0.15). The host copies the resource's damage box straight into the
  * window's visible rectangles (ACV_PRESENT); nothing passes through the

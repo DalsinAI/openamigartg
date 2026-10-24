@@ -81,6 +81,9 @@ int ortg_is(struct BitMap *bm);
 struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear, int format);
 struct ortg_bitmap *ortg_alloc_card(int monitor, ULONG w, ULONG h, int clear, int format, int card);
 int ortg_in_card(const struct ortg_bitmap *o);
+/* 0.23: ORTG_WrittenSpans (openrtg.h): what the CPU wrote into bm by address since the last call, from the board's watch. */
+struct OpenRTGSpan;
+ULONG ortg_written_spans(struct BitMap *bm, struct OpenRTGSpan *s, ULONG max);
 void ortg_free(struct ortg_bitmap *o);
 
 /* For pixels.c: the OpenRTG bitmap a BitMap is (or NULL); every visible
