@@ -56,19 +56,24 @@ struct ogpu_vk_config {
      * memory (jit_alias) so it knows the pages changed; fd -1 puts plain
      * memory back (the back end then copies the contents in). 0: mmap. */
     int (*place)(void *user, int fd, ogpu_u32 size);
-    /* "map" only: video RAM's card part (the compositor's step 2b). From this
-     * offset to the end, video RAM is the card's own memory (device-local,
+    /* "map" only: video RAM's card part (the compositor's step 2b). From
+     * card_at to card_end, video RAM is the card's own memory (device-local,
      * reached through the PCI bar) instead of host memory, in one GPU buffer
      * by sparse binding. The CPU writes it well but reads it slowly (7 MB/s
      * against 2.5 GB/s on daletop's RX 460), so a command that reads it is
-     * drawn on the GPU whatever the cost (ogpu_vk_stats' card_gpu). A
-     * multiple of 64 KiB, or 0: none, or the environment's OGPU_VK_CARD_AT
-     * (bytes). Without sparse binding or the memory, there is no card part:
-     * ogpu_vk_card_at says what was made. */
-    ogpu_u32 card_at;
-    /* With a card part: put the file fd's size bytes at offset `at` of
-     * host_vram, shared, and return 0 (place, a part at a time). 0: mmap. */
-    int (*place_part)(void *user, int fd, ogpu_u32 at, ogpu_u32 size);
+     * drawn on the GPU whatever the cost (ogpu_vk_stats' card_gpu). Each a
+     * multiple of 64 KiB. card_at 0: none, or the environment's
+     * OGPU_VK_CARD_AT (bytes). card_end 0: the end of video RAM, or the
+     * environment's OGPU_VK_CARD_END. What follows card_end is host memory
+     * again: the ACRTG board's drivers keep OpenGPU's ring in the top 256 KiB
+     * of video RAM, and the core reads every word of it. Without sparse
+     * binding or the memory, there is no card part: ogpu_vk_card_at says
+     * what was made. */
+    ogpu_u32 card_at, card_end;
+    /* With a card part: put size bytes of the file fd, from fd_off, at
+     * offset `at` of host_vram, shared, and return 0 (place, a part at a
+     * time). 0: mmap. */
+    int (*place_part)(void *user, int fd, unsigned long fd_off, ogpu_u32 at, ogpu_u32 size);
     /* As ogpu_core's ext (OGPU_OP_VIRGL and its range), with user; called
      * once the GPU has finished everything before the command. 0: none. */
     int (*ext)(void *user, int op, const ogpu_u8 *cmd, long words);
@@ -98,8 +103,10 @@ const char *ogpu_vk_device(struct ogpu_vk *vk);
 /* How video RAM reaches the GPU: "own", "import", "map", or "map+card"
  * (map with a card part). */
 const char *ogpu_vk_vram_mode(struct ogpu_vk *vk);
-/* Where video RAM's card part starts (bytes from its start), or 0: none. */
+/* Where video RAM's card part starts (bytes from its start), or 0: none;
+ * and where it ends. */
 ogpu_u32 ogpu_vk_card_at(const struct ogpu_vk *vk);
+ogpu_u32 ogpu_vk_card_end(const struct ogpu_vk *vk);
 
 /* As ogpu_core_run: carries out `words` words of stream and returns the
  * commands done; the GPU's work is finished when it returns. Slots, the

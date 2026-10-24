@@ -48,6 +48,9 @@ if [ -e /usr/include/vulkan/vulkan.h ] && { ldconfig -p 2>/dev/null | grep -q li
     # where the device can (sparse binding); else it says so and carries on.
     OGPU_VK_HOST=1 OGPU_VK_HOSTMEM=map OGPU_VK_CARD_AT=0x80000 ASAN_OPTIONS=detect_leaks=0 "$OUT/test_opengpu_vk" "$HERE/golden/opengpu-g1.txt" 200 \
         "$HERE/golden/opengpu-v11.txt" "$HERE/golden/opengpu-3d.txt"
+    # And with host memory again after the card part, where the board's drivers keep the ring.
+    OGPU_VK_HOST=1 OGPU_VK_HOSTMEM=map OGPU_VK_CARD_AT=0x80000 OGPU_VK_CARD_END=0xC0000 ASAN_OPTIONS=detect_leaks=0 "$OUT/test_opengpu_vk" \
+        "$HERE/golden/opengpu-g1.txt" 200 "$HERE/golden/opengpu-v11.txt" "$HERE/golden/opengpu-3d.txt"
     cc -std=c99 -O1 -g -Wall -Wextra -Werror -o "$OUT/test_opengpu_vk-no3d" "$HERE/test_opengpu_vk.c" "$HERE/../host/vulkan/ogpu_vk.c" \
         "$OGPU/ogpu_core.c" "$OGPU/ogpu_build.c" -lvulkan
     "$OUT/test_opengpu_vk-no3d" "$HERE/golden/opengpu-g1.txt" 200 "$HERE/golden/opengpu-v11.txt"

@@ -733,12 +733,14 @@ static void test_copy_alias(void) {
 
 /* ---- video RAM's card part ---------------------------------------------------------- */
 
-/* With a card part (OGPU_VK_HOST=1 OGPU_VK_HOSTMEM=map OGPU_VK_CARD_AT=bytes):
- * a command that reads it goes to the GPU and is counted (card_gpu), one
- * that only writes it is not, and all of them draw what the core draws,
- * across the join between the host part and the card part too. */
+/* With a card part (OGPU_VK_HOST=1 OGPU_VK_HOSTMEM=map OGPU_VK_CARD_AT=bytes,
+ * and OGPU_VK_CARD_END=bytes for host memory again after it): a command that
+ * reads it goes to the GPU and is counted (card_gpu), one that only writes it
+ * is not, and all of them draw what the core draws, across the joins between
+ * the host part and the card part too. */
 static void test_card(void) {
-    ogpu_u32 c = ogpu_vk_card_at(V);
+    ogpu_u32 c = ogpu_vk_card_at(V), e = ogpu_vk_card_end(V);
+    unsigned long want = 3;
     struct ogpu_vk_stats s0, s1;
     if (!c) return;
     noise_both(1, 0, (long)VSIZE);
@@ -755,12 +757,24 @@ static void test_card(void) {
     ogpu_target(&B, 2);
     ogpu_copy(&B, 1, 0, 0, 0, 0, 64, 32);                                      /* from the host part, across the join: not counted */
     ogpu_fill_blend(&B, 0, 8, 64, 16, 0x4000FF00UL, OGPU_BLEND_BLEND);         /* reads across the join: counted */
+    if (e < VSIZE) {    /* host memory again after the card part: the ring's place */
+        ogpu_surface(&B, 3, VBASE + e + 0x1000, 64 * 4, 64, 32, OGPU_FMT_ARGB32);      /* after the card part */
+        ogpu_surface(&B, 4, VBASE + e - 64 * 4 * 16, 64 * 4, 64, 32, OGPU_FMT_ARGB32); /* across its end */
+        ogpu_target(&B, 3);
+        ogpu_fill_blend(&B, 0, 0, 32, 16, 0x80FF0000UL, OGPU_BLEND_BLEND);      /* reads host memory: not counted */
+        ogpu_copy(&B, 0, 0, 0, 0, 16, 32, 16);                                  /* from the card part: counted */
+        ogpu_target(&B, 4);
+        ogpu_copy(&B, 3, 0, 0, 0, 0, 64, 32);                                   /* from host memory, across the end: not counted */
+        ogpu_fill_blend(&B, 0, 8, 64, 16, 0x400000FFUL, OGPU_BLEND_BLEND);      /* reads across the end: counted */
+        want += 2;
+    }
     ogpu_fence(&B, 9);
-    CHECK(run_both("card part: fills, blends and copies, across the join too"), "the card part draws as the core does");
+    CHECK(run_both("card part: fills, blends and copies, across the joins too"), "the card part draws as the core does");
     ogpu_vk_stats(V, &s1);
-    CHECK(s1.card_gpu - s0.card_gpu == 3, "card part: 3 commands read it, on the GPU (%lu)", s1.card_gpu - s0.card_gpu);
+    CHECK(s1.card_gpu - s0.card_gpu == want, "card part: %lu commands read it, on the GPU (%lu)", want, s1.card_gpu - s0.card_gpu);
     CHECK(s1.card_core - s0.card_core == 0, "card part: none read it on the core (%lu)", s1.card_core - s0.card_core);
-    printf("opengpu vulkan: card part from %lu KiB of %lu KiB; %lu commands read it, on the GPU\n", (unsigned long)(c >> 10), VSIZE >> 10, s1.card_gpu);
+    printf("opengpu vulkan: card part from %lu KiB to %lu KiB of %lu KiB; %lu commands read it, on the GPU\n", (unsigned long)(c >> 10),
+           (unsigned long)(e >> 10), VSIZE >> 10, s1.card_gpu);
 }
 
 /* ---- routing by cost ---------------------------------------------------------------- */
@@ -912,7 +926,9 @@ int main(int argc, char **argv) {
     vram_vk = ogpu_vk_vram(V);
     printf("opengpu vulkan: on %s, video RAM %s\n", ogpu_vk_device(V), ogpu_vk_vram_mode(V));
     if (getenv("OGPU_VK_CARD_AT") && cfg.host_vram)
-        printf("opengpu vulkan: card part asked for at %s: %s\n", getenv("OGPU_VK_CARD_AT"),
+        printf("opengpu vulkan: card part asked for at %s%s%s: %s\n", getenv("OGPU_VK_CARD_AT"),
+               getenv("OGPU_VK_CARD_END") && *getenv("OGPU_VK_CARD_END") ? " to " : "",
+               getenv("OGPU_VK_CARD_END") && *getenv("OGPU_VK_CARD_END") ? getenv("OGPU_VK_CARD_END") : "",
                ogpu_vk_card_at(V) ? "made" : "not made (no sparse binding, no such memory, or not map)");
     if (cfg.host_vram) {
         CHECK(vram_vk == cfg.host_vram, "video RAM is not the caller's");
