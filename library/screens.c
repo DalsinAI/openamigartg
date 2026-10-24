@@ -144,6 +144,14 @@ static void trace_big(const char *what, LONG a, LONG b, LONG c, LONG d, LONG w, 
 #define R_CARD_SIZE 0xFC    /* acrtg-v7: its bytes once the host has made it the card's memory, else 0;
                                acrtg-v8: bit 31 set when the host shadows it (the CPU reads it at host speed) */
 #define CARD_SHADOWED 0x80000000UL
+/* acrtg-v9, the watch (0.23, decision D7(b)): what the 68k itself writes into one bitmap by address */
+#define R_WATCH_AT 0x100    /* the watched bitmap's first byte, an offset in video RAM */
+#define R_WATCH_SIZE 0x104  /* its bytes; writing it sets the watch, and it reads 0 when the board can't */
+#define R_WRITTEN 0x108     /* takes what the 68k wrote there: the runs now ready to read, 256 at most */
+#define R_SPAN_AT 0x10C     /* the next run's first byte, from WATCH_AT */
+#define R_SPAN_LEN 0x110    /* its bytes; the read moves on */
+#define R_WATCH_FLAG 0x114  /* the offset of a long the board keeps not 0 while there is something to take */
+#define WATCH_FLAG_AT 16    /* that long: 16 bytes before the watched bitmap's pixels, in its header's page */
 #define RING_RESERVE 0x00040000UL   /* as acrtg.card 2.3: the top 256 KiB of video RAM for OpenGPU's ring */
 #define RING_BYTES   0x00010000UL
 #define C_MODE 1
@@ -201,6 +209,9 @@ typedef void (*waittof_fn)(REG(a6, struct GfxBase *));
 #define STAGE_PART (STAGE_BYTES / STAGE_PARTS)
 #define STAGE_MAX 4096          /* a source up to this is copied; a bigger one is waited for */
 struct ortg_shown { struct ortg_bitmap *bm; UWORD w, h; UBYTE fmt; };
+/* 0.23: a board's watch: the bitmap it was asked for (on: the board took it; no: it can't, so never
+ * asked again); the runs WRITTEN readied and not yet read (left), and the one being cut into rows, [at, end) */
+struct ortg_watch { struct ortg_bitmap *bm; ULONG left, at, end; UBYTE on, no; };
 struct ortg_blk { ULONG off, size; UBYTE used, monitor, displayable; };
 struct ortg_font { const UBYTE *rom; UBYTE *ram; };
 
@@ -221,6 +232,7 @@ struct scr_g {
     ULONG vram_limit[ORTG_MAX_MONITORS + 1];            /* the video RAM bitmaps may use on each board */
     ULONG card_at[ORTG_MAX_MONITORS + 1];               /* 0.20: where each board's card part starts (acrtg-v7), or 0: none */
     struct ortg_shown shown[ORTG_MAX_MONITORS + 1];     /* what each monitor shows now */
+    struct ortg_watch watch[ORTG_MAX_MONITORS + 1];     /* 0.23: each board's watch (acrtg-v9) */
     struct ortg_blk blk[BLOCKS];
     int nblk;
     ULONG stats[ORTG_STAT_COUNT][4];
@@ -550,6 +562,59 @@ static struct ortg_bitmap *ortg_of(struct BitMap *bm)
 
 int ortg_is(struct BitMap *bm) { return ortg_of(bm) != NULL; }
 
+/* 0.23 (decision D7(b), acrtg-v9): ORTG_WrittenSpans (openrtg.h). Runs
+ * come from the board in bytes from the bitmap's first; each row's part of
+ * one is a span. Under Forbid: the compositor and a drawing task may ask
+ * at once, and a run read must not be split between them. */
+ULONG ortg_written_spans(struct BitMap *bm, struct OpenRTGSpan *s, ULONG max)
+{
+    struct ortg_bitmap *o = ortg_of(bm);
+    struct ortg_watch *w;
+    volatile ULONG *R;
+    ULONG k = 0;
+    int n;
+    if (!o || !(n = o->monitor) || !board[n]) return 0;
+    w = &SC->watch[n];
+    R = (volatile ULONG *)(board[n] + regs_at[n]);     /* the registers, a long each */
+    Forbid();
+    if (w->bm != o && !w->no && (!w->bm || shown[n].bm == o)) {   /* free, or o is shown: the watch moves */
+        if (w->on) R[R_WATCH_SIZE / 4] = 0;
+        w->bm = o;
+        w->left = w->at = w->end = 0;
+        w->on = 0;
+        if (R[R_VERSION / 4] >= 9) {
+            R[R_WATCH_AT / 4] = o->vram_off;
+            R[R_WATCH_FLAG / 4] = o->vram_off - WATCH_FLAG_AT;
+            R[R_WATCH_SIZE / 4] = o->stride * o->height;
+            w->on = R[R_WATCH_SIZE / 4] != 0;
+        }
+        w->no = !w->on;                                 /* the board can't (before v9, or not asked to): never again */
+    } else if (w->bm == o && w->on && s)
+        while (k < max) {
+            ULONG y, row, e;
+            if (w->at >= w->end) {                      /* the next run */
+                if (!w->left && !(w->left = R[R_WRITTEN / 4])) break;
+                w->left--;
+                w->at = R[R_SPAN_AT / 4];
+                w->end = w->at + R[R_SPAN_LEN / 4];
+                continue;
+            }
+            y = w->at / o->stride;
+            row = y * o->stride;
+            e = w->end < row + o->stride ? w->end : row + o->stride;
+            if (y < o->height && (w->at - row) / o->bpp < o->width) {
+                s[k].y = (UWORD)y;
+                s[k].x0 = (UWORD)((w->at - row) / o->bpp);
+                s[k].x1 = (UWORD)((e - row - 1) / o->bpp < o->width ? (e - row - 1) / o->bpp : o->width - 1U);
+                k++;
+            }
+            w->at = e;
+        }
+    Permit();
+    if (s) return k;
+    return w->bm == o && w->on ? (ULONG)(o->mem - WATCH_FLAG_AT) : 0;
+}
+
 /* 1 when any monitor shows an OpenRTG screen (BestModeIDA, displaydb.c). */
 int ortg_any_shown(void)
 {
@@ -628,6 +693,11 @@ void ortg_free(struct ortg_bitmap *o)
     for (int n = 1; n <= ORTG_MAX_MONITORS; n++)
         if (shown[n].bm == o) shown[n].bm = NULL;
     if (o->pal_index < ORTG_PEN_TABLES && pen_owner[o->pal_index] == o) pen_owner[o->pal_index] = NULL;
+    if (o->monitor && SC->watch[o->monitor].bm == o) {  /* 0.23: no watch on memory it gives back */
+        if (SC->watch[o->monitor].on) reg(o->monitor, R_WATCH_SIZE, 0);
+        SC->watch[o->monitor].bm = NULL;
+        SC->watch[o->monitor].on = 0;
+    }
     ((ULONG *)o->mem)[-2] = 0;
     if (o->monitor) vram_free(o->monitor, o->vram_block);
     else FreeVec(o->mem - ORTG_HEAD);

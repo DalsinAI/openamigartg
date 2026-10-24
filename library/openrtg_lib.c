@@ -53,6 +53,12 @@
  * part the host shadows (acrtg-v8: CARD_SIZE's bit 31) is read by the CPU as
  * any video RAM, so its bitmaps are no longer ORTG_BMI_CARD, and
  * LockBitMapTags gives their address again (screens.c, ortg_in_card).
+ *
+ * 0.23: ORTG_WrittenSpans (decision D7(b), acrtg-v9): what the CPU itself
+ * wrote into a bitmap in video RAM by address, a row's piece at a time,
+ * from the board's watch (screens.c, ortg_written_spans). layers.library
+ * asks it about a composited screen and copies those pixels into the
+ * windows there. lib_Revision is 23 (0.22 left it at 21).
  */
 #include <exec/types.h>
 #include "ortg_state.h"
@@ -72,7 +78,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 21
+#define LIB_REVISION 23
 
 /* The ACRTG board (amigachrome's common/protocol/acrtg.h): Zorro III,
  * AmigaChrome Team (0xDA15; 2011 before 1 October 2026), product 9 (16 MiB), product 15 (64 MiB, 0.14) or product 16
@@ -125,9 +131,9 @@ struct OpenRTGBase {
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.22 (24.10.2026) OpenRTG, AmigaChrome Team\r\n";
+static const char lib_id[] = "openrtg.library 0.23 (24.10.2026) OpenRTG, AmigaChrome Team\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.22 (24.10.2026) OpenRTG, AmigaChrome Team";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.23 (24.10.2026) OpenRTG, AmigaChrome Team";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));
@@ -151,13 +157,14 @@ static ULONG ORTG_DrawStats(REG(a0, ULONG *counts), REG(d0, ULONG kinds), REG(d1
 static LONG ORTG_WritePixelsAlpha(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(a0, const struct OpenRTGPixels *px), REG(d2, ULONG alpha), REG(a6, struct OpenRTGBase *base));
 static LONG ORTG_PresentVirgl(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG(d1, LONG y), REG(a0, const struct OpenRTGVirglFrame *f), REG(a6, struct OpenRTGBase *base));
 static BOOL ORTG_NativeSize(REG(d0, ULONG monitor), REG(a0, struct OpenRTGNativeSize *out), REG(a6, struct OpenRTGBase *base));
+static ULONG ORTG_WrittenSpans(REG(a0, struct BitMap *bm), REG(a1, struct OpenRTGSpan *buf), REG(d0, ULONG max), REG(a6, struct OpenRTGBase *base));
 
 static const APTR lib_vectors[] = {
     (APTR)lib_open, (APTR)lib_close, (APTR)lib_expunge, (APTR)lib_null,
     (APTR)ORTG_MonitorCount, (APTR)ORTG_NextMode, (APTR)ORTG_GetMode,
     (APTR)ORTG_BestMode, (APTR)ORTG_SetModeList, (APTR)ORTG_BoardAddress, (APTR)ORTG_DisplayDatabase, (APTR)ORTG_Screens,
     (APTR)ORTG_WritePixels, (APTR)ORTG_ReadPixels, (APTR)ORTG_FillPixels, (APTR)ORTG_InvertPixels, (APTR)ORTG_BitMapInfo,
-    (APTR)ORTG_DrawStats, (APTR)ORTG_WritePixelsAlpha, (APTR)ORTG_PresentVirgl, (APTR)ORTG_NativeSize, (APTR)-1,
+    (APTR)ORTG_DrawStats, (APTR)ORTG_WritePixelsAlpha, (APTR)ORTG_PresentVirgl, (APTR)ORTG_NativeSize, (APTR)ORTG_WrittenSpans, (APTR)-1,
 };
 static const struct { ULONG size; const APTR *vectors; APTR data; APTR init; } lib_inittable = {
     sizeof(struct OpenRTGBase), lib_vectors, NULL, (APTR)lib_init,
@@ -456,6 +463,11 @@ static LONG ORTG_InvertPixels(REG(a1, struct RastPort *rp), REG(d0, LONG x), REG
 static BOOL ORTG_BitMapInfo(REG(a0, struct BitMap *bm), REG(a1, struct OpenRTGBitMapInfo *info), REG(a6, struct OpenRTGBase *base))
 {
     return ortg_bitmap_info(bm, info);
+}
+
+static ULONG ORTG_WrittenSpans(REG(a0, struct BitMap *bm), REG(a1, struct OpenRTGSpan *buf), REG(d0, ULONG max), REG(a6, struct OpenRTGBase *base))
+{
+    return ortg_written_spans(bm, buf, max);
 }
 
 static ULONG ORTG_DrawStats(REG(a0, ULONG *counts), REG(d0, ULONG kinds), REG(d1, ULONG flags), REG(a6, struct OpenRTGBase *base))

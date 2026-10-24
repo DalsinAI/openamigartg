@@ -47,4 +47,6 @@
     LP4(0x78, LONG, ORTG_PresentVirgl, struct RastPort *, rp, a1, LONG, x, d0, LONG, y, d1, const struct OpenRTGVirglFrame *, frame, a0, , OPENRTG_BASE_NAME)
 #define ORTG_NativeSize(monitor, size) \
     LP2(0x7e, BOOL, ORTG_NativeSize, ULONG, monitor, d0, struct OpenRTGNativeSize *, size, a0, , OPENRTG_BASE_NAME)
+#define ORTG_WrittenSpans(bitmap, buf, max) \
+    LP3(0x84, ULONG, ORTG_WrittenSpans, struct BitMap *, bitmap, a0, struct OpenRTGSpan *, buf, a1, ULONG, max, d0, , OPENRTG_BASE_NAME)
 #endif
