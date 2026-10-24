@@ -25,14 +25,16 @@ cc -std=c99 -O2 -Wall -Wextra -I"$INC" -DOGPU_WITH_3D -o "$OUT/test_opengpu_vk" 
 rc=0
 # card: mapped, with its second half the card's own memory (the compositor's
 # step 2b); 300 streams, as the check reads the card part back at the CPU's
-# slow speed after each one.
-for mode in own auto import map card; do
-    if [ $mode = own ]; then host=0; mem=; elif [ $mode = auto ]; then host=1; mem=; elif [ $mode = card ]; then host=1; mem=map; else host=1; mem=$mode; fi
-    card=; rounds=3000
+# slow speed after each one. card-end: the card's memory for its third quarter
+# only, host memory again after it (where the board's drivers keep the ring).
+for mode in own auto import map card card-end; do
+    if [ $mode = own ]; then host=0; mem=; elif [ $mode = auto ]; then host=1; mem=; elif [ $mode = card ] || [ $mode = card-end ]; then host=1; mem=map; else host=1; mem=$mode; fi
+    card=; end=; rounds=3000
     if [ $mode = card ]; then card=0x80000; rounds=300; fi
+    if [ $mode = card-end ]; then card=0x80000; end=0xC0000; rounds=300; fi
     echo "== video RAM: $mode"
     start=$(date +%s)
-    OGPU_VK_HOST=$host OGPU_VK_HOSTMEM=$mem OGPU_VK_CARD_AT=$card "$OUT/test_opengpu_vk" "$HERE/tests/golden/opengpu-g1.txt" $rounds "$HERE/tests/golden/opengpu-v11.txt" \
+    OGPU_VK_HOST=$host OGPU_VK_HOSTMEM=$mem OGPU_VK_CARD_AT=$card OGPU_VK_CARD_END=$end "$OUT/test_opengpu_vk" "$HERE/tests/golden/opengpu-g1.txt" $rounds "$HERE/tests/golden/opengpu-v11.txt" \
         "$HERE/tests/golden/opengpu-3d.txt"
     r=$?
     echo "   (exit $r, $(( $(date +%s) - start )) s)"
