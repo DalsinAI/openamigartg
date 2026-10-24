@@ -4,8 +4,9 @@
 #
 # OpenAL.module's 68k builds on a PC, under amitools' vamos (an AmigaOS
 # emulator that runs a program without an Amiga or its ROM), big-endian:
-#   - test_al_api, test_al_3d and test_al_stream, the PC tests built by the
-#     stove (library/modules/openal/Makefile, tests);
+#   - test_al_api, test_al_3d, test_al_stream and test_al_voices (with
+#     ACAHI's board, tests/openal/acahi, big-endian as on the Amiga), the PC
+#     tests built by the stove (library/modules/openal/Makefile, tests);
 #   - alinfo.m through libopenal.a and OpenAL.module (in LIBS:OpenGPU/;
 #     with no opengpu.library the stub LoadSegs it itself): the module's
 #     first code, its A4 data, libnix's start in it, the jump table, its
@@ -30,9 +31,11 @@ cp "$OUT/OpenAL.module" "$W/libs/OpenGPU/"
 cp "$OUT"/tests/openal/* "$W/"
 cd "$W"
 run() {
-    $VAMOS -C 68040 -V "Work:$W" "$@"
+    # 8 MiB of RAM (test_al_voices's board keeps a 1 MiB stream FIFO) and
+    # a 64 KiB stack, as a Shell's Stack command gives
+    $VAMOS -C 68040 -m 8192 -s 64 -V "Work:$W" "$@"
 }
-for t in test_al_api test_al_3d test_al_stream; do
+for t in test_al_api test_al_3d test_al_stream test_al_voices; do
     run "$t"
 done
 run -a LIBS:Work:libs alinfo.m

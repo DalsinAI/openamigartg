@@ -12,7 +12,10 @@
  *   Mix (al_mix.c)  the module mixes its sources into one 16-bit stereo
  *                   stream, which an output plays: al_ahi.c through
  *                   ahi.device on the Amiga, tests/openal/host_out.c on a PC;
- *   Voices (P2)     the board mixes, one voice for each source.
+ *   Voices          the board mixes (ACAHI's Host mix): each playing source
+ *                   on one of its voices (al_voices.c), through AHI on the
+ *                   Amiga (al_ahi_voices.c) and a model of the board on a
+ *                   PC (tests/openal/host_voices.c).
  * Both take a source's gains and pitch from al_source_params (al_spatial.c)
  * and move its timeline with al_source_next. */
 #ifndef AL_INTERNAL_H
@@ -64,7 +67,8 @@ struct ALbuffer {
     ALint channels;             /* stored: 1 or 2 */
     ALint bits;                 /* stored: 8 (signed) or 16 */
     ALuint frames;
-    void *data;                 /* frames * channels * bits / 8 bytes, native order */
+    void *data;                 /* frames * channels * bits / 8 bytes, native order, at a multiple of 4 */
+    void *alloc;                /* what was allocated for data */
     ALuint refs;                /* queue entries naming it, on every source */
 };
 
@@ -80,11 +84,13 @@ struct al_params {
     ALfloat pitch;              /* AL_PITCH times doppler */
 };
 
-/* What changed in a source since its back end last looked (P2's Voices
- * sends each kind to the board; Mix reads the state as it renders). */
+/* What changed in a source since its back end last looked (Voices sends
+ * each kind to the board; Mix reads the state as it renders). */
 #define AL_DIRTY_PARAMS 1       /* a property its gains or pitch come from */
 #define AL_DIRTY_STATE 2        /* played, paused, stopped, rewound or moved (offset) */
 #define AL_DIRTY_QUEUE 4        /* buffers attached, queued or unqueued */
+#define AL_DIRTY_SEEK 8         /* the timeline jumped: played from the start or an offset, rewound */
+#define AL_DIRTY_LOOP 16        /* AL_LOOPING changed */
 
 /* A source (4.3): its properties, its queue and its timeline. */
 struct ALsource {
@@ -106,6 +112,7 @@ struct ALsource {
     /* The timeline: the entry playing (queued once stopped: all processed)
      * and where in it, in frames and a 16-bit fraction. */
     ALuint current, pos, frac;
+    ALuint dequeued;            /* entries ever unqueued from the front: entry k is dequeued + k from the first ever queued */
     /* An offset set while inactive, for the next alSourcePlay: its token
      * (AL_SEC_OFFSET, ...; 0 for none) and value. */
     ALenum pending_type;
@@ -121,6 +128,10 @@ struct ALsource {
     ALuint mix_ramp;            /* frames of the ramp left */
     ALuint mix_pitch;           /* params.pitch, 16.16 */
     ALboolean mix_fresh;        /* just played: start at the target, no ramp */
+
+    /* Voices' own (al_voices.c). */
+    ALint voice;                /* the board's voice it plays on, or -1 (none: virtual while it plays) */
+    ALuint vclock;              /* the output's clock when its virtual time last moved */
 };
 
 /* A context (6.2): the listener, the global state and the sources. */
@@ -157,7 +168,8 @@ struct ALCdevice_struct {
     ALCboolean connected;       /* ALC_CONNECTED (ALC_EXT_disconnect) */
     ALCboolean running;         /* the back end plays: from the first context to the last */
     ALuint buffers;             /* buffers made on it and not yet deleted */
-    void *out;                  /* the back end's own */
+    void *out;                  /* the back end's output's own */
+    void *voices;               /* Voices' own (al_voices.c) */
     ALint *mix;                 /* Mix's accumulator: update_frames stereo frames */
 };
 
@@ -165,6 +177,9 @@ struct ALCdevice_struct {
 
 struct al_backend {
     const char *name;           /* the device's specifier */
+    /* Whether this back end has an output now, for the default device
+     * (ALC_DEFAULT_DEVICE_SPECIFIER); NULL: always. */
+    ALCboolean (*available)(void);
     /* alcOpenDevice: ALC_FALSE when there is no output. Sets the device's
      * frequency to the output's own rate when it knows it (else 0). Runs
      * in the caller's task. */
@@ -175,12 +190,26 @@ struct al_backend {
      * calls al_device_disconnect. Under al_device_lock alone. */
     ALCboolean (*start)(ALCdevice *device);
     void (*stop)(ALCdevice *device);
-    /* A context's sources or listener changed (not while it is suspended),
-     * or alcProcessContext ended a suspend. Under al_state_lock. */
+    /* A context's sources or listener changed (also while it is
+     * suspended: context->suspended says so), or alcProcessContext ended a
+     * suspend. Under al_state_lock. NULL: nothing to tell. */
     void (*update)(ALCcontext *context);
+    /* The start of each AL call on a context of the device, under
+     * al_state_lock: what the output played since the last call. NULL:
+     * nothing. */
+    void (*sync)(ALCcontext *context);
+    /* A source of the device is about to be freed, under al_state_lock.
+     * NULL: nothing. */
+    void (*forget)(ALsource *source);
+    unsigned flags;             /* AL_BACKEND_* */
 };
 
+/* The output's rate and update rate are its own: a context's
+ * ALC_FREQUENCY and ALC_REFRESH are hints it doesn't take. */
+#define AL_BACKEND_FIXED_RATE 1
+
 extern const struct al_backend al_backend_mix;
+extern const struct al_backend al_backend_voices;
 
 /* Mix's output (al_ahi.c on the Amiga, tests/openal/host_out.c on a PC):
  * the same calls as a back end's. It plays what al_mix_render gives it. */
@@ -196,6 +225,57 @@ void al_mix_render(ALCdevice *device, ALshort *out, ALuint frames);
 /* ALC_EXT_disconnect: the output has gone. Every source of the device stops,
  * with all its buffers processed, and none plays again. Takes al_state_lock. */
 void al_device_disconnect(ALCdevice *device);
+
+/* ---- Voices' output -------------------------------------------------------------- */
+
+/* Voices (al_voices.c) plays each source on one of the board's voices
+ * through these: AHI on the Amiga (al_ahi_voices.c: AHI_AllocAudio on
+ * ACAHI's Host mix mode), a model of the board on a PC
+ * (tests/openal/host_voices.c). A voice plays a segment of a sound (AHI's
+ * SetSound): with imm at once, else when the one playing ends; that end is
+ * an event (AHI's SoundFunc), which the output passes to al_voices_event.
+ * The sounds are AHI's "all of memory" sounds, one for each stored format:
+ * a segment's offset is where its frames are. */
+#define AL_VOICES_MAX 32
+#define AL_VOUT_NOSOUND 0xFFFFu
+
+/* Whether the board has a Host mix mode, for the default device. */
+ALCboolean al_vout_available(void);
+/* Take n of the board's voices, with every voice silent; ALC_FALSE when
+ * it can't give them. Sets the device's frequency to the board's rate. */
+ALCboolean al_vout_open(ALCdevice *device, ALuint n);
+void al_vout_close(ALCdevice *device);
+/* The task that does al_voices_service when the events wake it. */
+ALCboolean al_vout_start(ALCdevice *device);
+void al_vout_stop(ALCdevice *device);
+/* The sound for data of bits and channels, and where data is in it (its
+ * frame number). */
+unsigned al_vout_sound(ALCdevice *device, ALint bits, ALint channels);
+ALuint al_vout_frame(ALCdevice *device, const void *data, ALuint frames, ALint bits, ALint channels);
+/* A voice's segment: frames of sound from frame offset; AL_VOUT_NOSOUND
+ * for silence. imm: now (and an end not yet told is forgotten); else when
+ * the segment playing ends. */
+void al_vout_play(ALCdevice *device, ALuint voice, unsigned sound, ALuint offset, ALuint frames, int imm);
+/* Now: frames a second (0 holds it where it is), and the volume and pan
+ * (16.16: the left channel gets volume * (1 - pan), the right volume * pan;
+ * a stereo sound's pan is a balance). */
+void al_vout_freq(ALCdevice *device, ALuint voice, ALuint freq);
+void al_vout_vol(ALCdevice *device, ALuint voice, ALint vol, ALint pan);
+/* Keep the events out (al_voices_event, al_voices_info) meanwhile. */
+void al_vout_lock(ALCdevice *device);
+void al_vout_unlock(ALCdevice *device);
+/* Output frames played, as far as the module knows (the board's timer). */
+ALuint al_vout_clock(ALCdevice *device);
+/* From an event: al_voices_service should run soon. */
+void al_vout_wake(ALCdevice *device);
+
+/* The output's calls into Voices. The first two come at interrupt time
+ * (AHI's SoundFunc and channel info), take no lock and use no FPU. */
+void al_voices_event(ALCdevice *device, ALuint voice);              /* its segment ended */
+void al_voices_info(ALCdevice *device, ALuint voice, ALuint frame); /* the frame it plays now */
+void al_voices_service(ALCdevice *device);                          /* the task: takes al_state_lock */
+/* A voice's volume and pan for a source's params (16.16). */
+void al_voices_settings(const struct al_params *params, ALint channels, ALint *vol, ALint *pan);
 
 /* ---- The core's own calls ------------------------------------------------------- */
 
@@ -245,6 +325,13 @@ void al_source_stop_all(ALsource *source);                  /* AL_STOPPED, every
 int al_source_next(ALsource *source);
 /* The channels of the source's buffers (1 or 2; 1 with none). */
 ALint al_source_channels(const ALsource *source);
+/* The first buffer of its queue with data, which gives the queue's format
+ * and frequency (4.3.5); NULL with none. */
+const ALbuffer *al_source_format(const ALsource *source);
+/* Time going on for a source no back end plays (Voices' virtual sources):
+ * its timeline moves out frames of an output at out_rate, at its rate times
+ * params.pitch, as Mix's silent sources move. */
+void al_source_advance(ALsource *source, ALuint out, ALuint out_rate);
 
 /* Work out a source's params (al_spatial.c), and every changed source's of
  * a context (al_spatial.c: al_context_update), unless it is suspended. */

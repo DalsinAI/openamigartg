@@ -201,7 +201,7 @@ ALbuffer *al_buffer_get(ALCcontext *context, ALuint name)
 
 void al_buffer_free(ALbuffer *buffer)
 {
-    free(buffer->data);
+    free(buffer->alloc);
     free(buffer);
 }
 
@@ -307,7 +307,7 @@ void AL_APIENTRY alBufferData(ALuint buffer, ALenum format, const ALvoid *data, 
     ALbuffer *b;
     ALuint frame_bytes, frames;
     ALint channels, bits;
-    void *stored;
+    void *stored, *alloc;
     ALCcontext *c = al_enter();
     if (!c) {
         return;
@@ -344,14 +344,19 @@ void AL_APIENTRY alBufferData(ALuint buffer, ALenum format, const ALvoid *data, 
     channels = f->channels == 1 ? 1 : 2;
     /* 8 bit stays 8 bit only unfolded: a fold sums channels into 16 bit. */
     bits = (f->kind == K_U8 && (f->layout == L_MONO || f->layout == L_STEREO)) ? 8 : 16;
-    stored = malloc((size_t)frames * (size_t)channels * (size_t)(bits / 8));
-    if (!stored) {
+    /* At a multiple of 4: Voices gives the board where the frames are as a
+     * frame number of AHI's all-of-memory sound, so a 16-bit stereo
+     * buffer's address must be a multiple of its 4-byte frame. */
+    alloc = malloc((size_t)frames * (size_t)channels * (size_t)(bits / 8) + 3);
+    if (!alloc) {
         al_set_error(c, AL_OUT_OF_MEMORY);
         al_leave(c);
         return;
     }
+    stored = (void *)(((unsigned long)alloc + 3) & ~3ul);
     al_convert(f, data, frames, stored);
-    free(b->data);
+    free(b->alloc);
+    b->alloc = alloc;
     b->data = stored;
     b->format = format;
     b->frequency = freq;

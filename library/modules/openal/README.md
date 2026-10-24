@@ -10,8 +10,11 @@ programs are built the same way (`alGetFloat` and `alGetDouble` return in
 FP0).
 
 The sound goes through AHI, so it reaches the Cradle's mixer like every
-other AHI program. This is the first step (P1) of the Team's OpenAL design
-of 24 October 2026: the core, the headers, the module and Mix.
+other AHI program. The Team's OpenAL design of 24 October 2026: the core,
+the headers, the module and Mix (P1); Voices, where the ACAHI board mixes
+each source on a voice of its own (P2); the lab's programs (P4). P3, the
+broker that shares the board among programs, is acaudio.audio 6.1 in the
+amigachrome repository.
 
 ## What it has
 
@@ -45,11 +48,11 @@ GCC 16 stove:
 
 | File | What it is |
 | --- | --- |
-| `OpenAL.module` | OpenAL and its back end. Goes in `LIBS:OpenGPU/`. |
+| `OpenAL.module` | OpenAL and its two back ends. Goes in `LIBS:OpenGPU/`. |
 | `libopenal.a` | The link library programs use (`stubs/openal`). |
 | `include/AL/` | `al.h`, `alc.h` and `alext.h`, for programs. |
 | `libopenal_static.a` | All of OpenAL inside the program, with no module. |
-| `tests/openal/` | `nomodule.m`, `alinfo.m` and `alinfo`, `altone.m` and `altone`, and the PC tests built for the 68k (below). |
+| `tests/openal/` | `nomodule.m`, `alinfo.m` and `alinfo`, `altone.m` and `altone`, `allab.m` and `allab` (the lab's), and the PC tests built for the 68k (below). `sdltone.m` with the `lab-sdl` target (it needs SDL 2's `libSDL2.a`). |
 
 Build a program the usual way:
 
@@ -66,6 +69,8 @@ Build a program the usual way:
 | `src/al_spatial.c` | A source's gains and pitch from its properties and the listener. |
 | `src/al_mix.c` | The Mix back end: the mixer. |
 | `src/al_ahi.c` | Mix's output on the Amiga: ahi.device. |
+| `src/al_voices.c` | The Voices back end: sources on the board's voices, the plan of each voice, virtual sources. |
+| `src/al_ahi_voices.c`, `src/al_vhook.S` | Voices' output on the Amiga: AHI's low-level calls on the Host mix mode, its hooks (with the program's A4), the "OpenAL Voices" task. |
 | `module/openal_module.c` | The module's table (`stubs/openal/openal_module.h`). |
 | `../../../stubs/openal` | `libopenal.a`; `openal_procs.h` is the jump table's order. |
 | `../../../tests/openal` | The tests (below). |
@@ -81,7 +86,7 @@ Build a program the usual way:
   that needs calls it hasn't got.
 - The module is shared (residency step 2, DESIGN.md section 5): built
   `-fbaserel32`, its code is loaded once, and each program's open gets its
-  own copy of OpenAL's data (424 bytes of data and BSS; 43,080 bytes of
+  own copy of OpenAL's data (432 bytes of data and BSS; 51,428 bytes of
   code shared). Every stub entry sets A4 to the program's copy for the
   call (`OGPU_A4`).
 - `alGetProcAddress` and `alcGetProcAddress` give the stub's own entry for
@@ -105,7 +110,13 @@ after an AL call changed a context (unless it is suspended) and at
 `_STATE`, `_QUEUE`); both back ends take a source's two gains and its pitch
 from `al_source_params` and move its timeline with `al_source_next`.
 
-- **Mix** (this step) works on any AHI. It mixes every playing source of a
+`alcOpenDevice(NULL)` takes Voices when ACAHI's Host mix mode is there
+(`0x00AC0001`, acaudio.audio's) and the board has voices free, Mix
+otherwise; `ALC_DEFAULT_DEVICE_SPECIFIER` says which. A program can name
+either: `"AHI Voices"` or `"AHI Mix"` (the list, `ALC_DEVICE_SPECIFIER`
+with no device, has both).
+
+- **Mix** works on any AHI. It mixes every playing source of a
   device into one 16-bit stereo stream at the device's rate:
   - each source read at its rate times its pitch (a 16.16 step) with linear
     interpolation; at the end of a buffer the next frame is the next queue
@@ -129,10 +140,52 @@ from `al_source_params` and move its timeline with `al_source_next`.
   comes back with an error (the board taken by a program that allocated it
   itself), the device is disconnected: every source stops, a play stops at
   once, and `ALC_CONNECTED` is `ALC_FALSE`.
-- **Voices** (P2) will play each source on one of the board's voices on
-  ACAHI's Host mix, and the broker in acaudio.audio (P3) will share the
-  board between programs. Mix stays for every other AHI mode and for
-  sources past the voices.
+- **Voices** (`src/al_voices.c`) plays each source on one of the board's
+  voices on ACAHI's Host mix: the board mixes, on the PC, and reads each
+  buffer straight from the module's memory (acaudio.doc, acahi.doc).
+  - `alcOpenDevice` takes 16 voices with `AHI_AllocAudio` on the Host mix
+    mode, or 8, or 4 when fewer are free (ahi.device's four units of four
+    and a program of sixteen fill the board's 32). It loads AHI's
+    "all of memory" sounds (address 0, length 0xFFFFFFFF), one for each
+    stored format (8 and 16 bit, mono and stereo), so a segment's offset is
+    where its frames are: no sound slot for each buffer, and no limit on
+    the buffers. The master volume is n / 2, which acaudio.audio's 2 / n
+    makes unity. The device's rate is the board's, 44,100 Hz, and it takes
+    `ALC_FREQUENCY` and `ALC_REFRESH` as hints.
+  - The gains and pitch come from the same 3D code as Mix's
+    (`al_spatial.c`), when something changes: a mono source's voice gets
+    volume = left + right and pan = right / (left + right), which the board
+    turns back into left and right (to 3/65536); a stereo one gets the gain
+    and a centred balance; the frequency is the buffers' times the pitch,
+    in whole Hz (AHI's). Each is sent only when it changed. Paused: a
+    frequency of 0, which holds the voice where it is.
+  - Each voice has a plan: the segment playing and up to 15 after it (a
+    queue's buffers, round and round when it loops; silence after the last
+    when it doesn't). AHI's SoundFunc, at the end of each segment, gives the
+    board the one after next, at interrupt time (no lock, no FPU), so a
+    stream plays with no gap whatever the 68k is doing. The events are
+    taken into the sources at the start of each AL call (so
+    `AL_BUFFERS_PROCESSED` counts a buffer as soon as its end has been
+    told) and by the device's task ("OpenAL Voices", priority 5), which
+    also tops the plans up and stops a source whose queue has played out.
+  - Offsets come from AHI's channel info (the board's position for each
+    voice), told after each PlayerFunc: 50 a second, so `AL_SAMPLE_OFFSET`
+    of a source on a voice is at most 882 frames (20 ms) behind.
+  - Between `alcSuspendContext` and `alcProcessContext`, plays, pauses,
+    stops, offsets and queues go to the board at once; gains and pitches
+    in one pass at `alcProcessContext`.
+  - More sources than voices: the loudest play on voices. The others are
+    virtual: their time runs on with the board's clock (the PlayerFunc's
+    ticks), silent. A virtual source takes a voice when one comes free, or
+    from a paused source, or from one playing at under half its gain, at
+    its current offset; the source it takes from goes on virtually from
+    where it was. `ALC_MONO_SOURCES` stays 256.
+  - Without the broker (acaudio.audio before 6.1) the board serves one
+    `AHI_AllocAudio` at a time: Voices then opens only while no other
+    program, ahi.device's units included, has the board, and the default
+    device is Mix otherwise.
+- Mix stays for every other AHI mode (AHI's 68k mixers, a real card, Paula
+  through AHI), and for a board with fewer than four voices free.
 
 Two locks: `al_device_lock` around making and ending devices and contexts
 (a back end's start and stop run under it alone, so they can wait for the
@@ -214,6 +267,26 @@ representation of the buffer data"):
 - **Strings**: the error strings are the errors' names (2.7). Extension
   names are matched without regard to case.
 
+## What the board does differently
+
+- **A seam between two buffers, resampled.** The board interpolates
+  within a segment; at its last frame it holds that frame for the step
+  that would reach into the next buffer. Mix interpolates into the next
+  buffer. Played at another rate, each seam of a stream so differs from
+  Mix by part of a step: the largest such difference in the PC tests'
+  32 kHz stream was 348 of 32768, at the seams only.
+- **Whole hertz.** AHI's frequencies are whole numbers, so a pitch is
+  rounded to 1 Hz (11,025 Hz at pitch 1.5 plays at 16,538 Hz, not 16,537.5).
+  Mix steps in 1/65536 of a frame. Over a second the two drift apart by a
+  fraction of a frame: the PC tests' 8-bit scene at pitch 1.5 is 32 dB
+  from Mix's.
+- **Buffers shorter than an interrupt's wait.** The board says that a
+  voice's segment ended with one bit a voice, so two ends before the
+  interrupt is served are told as one, and a segment that ends before the
+  next was given to the board plays again (AHI's rule). On an instance the
+  interrupt is served within a few lines' time; the PC tests stream
+  buffers of 200 frames with the interrupt served every 128.
+
 ## Clean room
 
 The module, its headers and its tests are the Team's own, MIT. They are
@@ -226,7 +299,9 @@ the OS 3.2 stove at build time, as for SDL.
 ## Tests
 
 - `tests/openal/run_host.sh`, on a Linux PC (in `tests/run.sh`): the core
-  built for the PC, with Mix's output as `tests/openal/host_out.c`, with
+  built for the PC, with Mix's output as `tests/openal/host_out.c` and
+  Voices' as `tests/openal/host_voices.c` on ACAHI's board itself (the
+  runtime's `acahi.c`, copied into `tests/openal/acahi`), with
   AddressSanitizer and UBSan, every UBSan report fatal:
   - `test_al_api`: every AL and ALC call's error cases and state queries,
     from the specification's sections and tables;
@@ -242,15 +317,41 @@ the OS 3.2 stove at build time, as for SDL.
     offsets, the NULL buffer;
   - `test_al_thread`: OpenAL from two threads while a third mixes, also
     under ThreadSanitizer;
+  - `test_al_voices`: Voices on the board: the devices (Voices when the
+    board has voices, Mix otherwise, each by name; 16, 8 or 4 voices); the
+    board's volume and pan against the 3D gains; one buffer, looping,
+    paused, deleted, offsets, frame for frame; queued streams with no gap
+    and no repeat while the test unqueues and refills after every
+    interrupt, with `AL_BUFFERS_PROCESSED` checked after each one (with the
+    task, and with the AL calls alone; at 44.1 kHz and at 22,050 Hz;
+    buffers of 200 to 1,000 frames); an underrun; virtual sources (20 on
+    16 voices); suspend and process; a random workout of 3,000 calls on 40
+    sources and 8 voices; and Mix's output against the same five scenes
+    through the board (signal to difference ratios printed);
+  - `allab_ref`: the lab's references (below), built and run;
   - `stub_nomodule`: `libopenal.a` with no module, an older one, and one
     that works.
-- On the Amiga (`build.sh`'s tests): `test_al_api`, `test_al_3d` and
-  `test_al_stream` built for the 68k with the same stand-in output;
-  `nomodule.m`; `alinfo.m` and `alinfo` (what OpenAL says, and that the
-  module's calls work, with or without a sound device); `altone.m` and
-  `altone` (a tone, a 3D sweep round the listener and a stream, for a lab).
+- On the Amiga (`build.sh`'s tests): `test_al_api`, `test_al_3d`,
+  `test_al_stream` and `test_al_voices` built for the 68k with the same
+  stand-ins; `nomodule.m`; `alinfo.m` and `alinfo` (what OpenAL says, and
+  that the module's calls work, with or without a sound device);
+  `altone.m` and `altone` (a tone, a 3D sweep round the listener and a
+  stream); `allab.m` and `allab`, the lab's:
+  - `ALLab [DEVICE name] SCENES file`: a tone, a sweep round the listener
+    and a stream of `file`, half a second apart (`allab_scenes.h`);
+  - `ALLab [DEVICE name] TIME`: the 68k's time for a source's update, the
+    listener's, a suspended batch's, an offset's query, a play and stop;
+  - `ALLab [DEVICE name] HOLD seconds [LEFT|RIGHT|CENTRE] [hz]`: a tone.
+- The lab (a copy of an instance, Host mix): `tests/openal/ahi_ring_rec.py`
+  records the instance's ACAHI ring (`/dev/shm/amigachrome-native-PORT.ahi`)
+  while ALLab plays; `allab_ref OUT_DIR` writes the stream file
+  (`alstream.raw`) and the PC's references of the three scenes through
+  Voices and through Mix; `allab_compare.py RECORDING REFDIR voices|mix
+  [--scale] [--from=SECONDS]` finds each scene in the recording and sets it
+  against its reference. `sdltone.c` is an SDL 2 program's sound (on the
+  right) for OpenAL and SDL at once.
 - `tests/openal/run_vamos.sh`, on a PC with amitools' vamos (no Amiga, no
-  ROM): those three tests big-endian on a 68k, then `alinfo.m` through
+  ROM): those four tests big-endian on a 68k, then `alinfo.m` through
   `libopenal.a` and `OpenAL.module` (vamos has no ahi.device, so no device
   opens), and `nomodule.m` and `alinfo.m` with no module. It wants a build
   with `CPU="-m68020 -m68881"`: the 68040 build takes square roots with
@@ -259,11 +360,6 @@ the OS 3.2 stove at build time, as for SDL.
 
 ## Next
 
-- P2: Voices on ACAHI's Host mix, and Mix's output compared with the same
-  scene through a model of the board's voices.
-- P3: the broker in acaudio.audio.
-- P4: the lab (a tone, a sweep and a stream recorded from the instance's
-  `.ahi` ring; the 68k's time for each source update; OpenAL and SDL at
-  once; Mix on the 16-bit mode), and Doom 3.
+- Doom 3, when Team 1's dhewm3 build is there.
 - `AL/efx.h` and EFX; `ALC_ENUMERATE_ALL_EXT`.
 - Mixing on the cores (openmulticore), as SDL2_mixer decodes.
