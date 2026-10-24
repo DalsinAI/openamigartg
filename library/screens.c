@@ -413,56 +413,6 @@ int ortg_in_card(const struct ortg_bitmap *o)
     return size != 0 && !(size & CARD_SHADOWED);
 }
 
-/* 0.23 (decision D7(b), acrtg-v9): ORTG_WrittenSpans (openrtg.h). Runs
- * come from the board in bytes from the bitmap's first; each row's part of
- * one is a span. Under Forbid: the compositor and a drawing task may ask
- * at once, and a run read must not be split between them. */
-ULONG ortg_written_spans(struct BitMap *bm, struct OpenRTGSpan *s, ULONG max)
-{
-    struct ortg_bitmap *o = ortg_of(bm);
-    struct ortg_watch *w;
-    ULONG k = 0;
-    int n;
-    if (!o || !(n = o->monitor) || !board[n]) return 0;
-    w = &SC->watch[n];
-    Forbid();
-    if (w->bm != o && !(w->on && shown[n].bm == w->bm)) {   /* not off a bitmap shown */
-        if (w->on) reg(n, R_WATCH_SIZE, 0);             /* a new one: the watch moves, nothing written yet */
-        w->bm = o;
-        w->left = w->at = w->end = 0;
-        w->on = 0;
-        if (rreg(n, R_VERSION) >= 9) {
-            reg(n, R_WATCH_AT, o->vram_off);
-            reg(n, R_WATCH_FLAG, o->vram_off - WATCH_FLAG_AT);
-            reg(n, R_WATCH_SIZE, o->stride * o->height);
-            w->on = rreg(n, R_WATCH_SIZE) != 0;
-        }
-    } else if (w->bm == o && w->on && s)
-        while (k < max) {
-            ULONG y, row, e;
-            if (w->at >= w->end) {                      /* the next run */
-                if (!w->left && !(w->left = rreg(n, R_WRITTEN))) break;
-                w->left--;
-                w->at = rreg(n, R_SPAN_AT);
-                w->end = w->at + rreg(n, R_SPAN_LEN);
-                continue;
-            }
-            y = w->at / o->stride;
-            row = y * o->stride;
-            e = w->end < row + o->stride ? w->end : row + o->stride;
-            if (y < o->height && (w->at - row) / o->bpp < o->width) {
-                s[k].y = (UWORD)y;
-                s[k].x0 = (UWORD)((w->at - row) / o->bpp);
-                s[k].x1 = (UWORD)((e - row - 1) / o->bpp < o->width ? (e - row - 1) / o->bpp : o->width - 1U);
-                k++;
-            }
-            w->at = e;
-        }
-    Permit();
-    if (s) return k;
-    return w->bm == o && w->on ? (ULONG)(o->mem - WATCH_FLAG_AT) : 0;
-}
-
 
 /* Pen colours for 16 and 32-bit bitmaps. Tables 0 to ORTG_MAX_MONITORS are
  * each monitor's shared one ([0] for the rest); the others belong to one
@@ -611,6 +561,56 @@ static struct ortg_bitmap *ortg_of(struct BitMap *bm)
 }
 
 int ortg_is(struct BitMap *bm) { return ortg_of(bm) != NULL; }
+
+/* 0.23 (decision D7(b), acrtg-v9): ORTG_WrittenSpans (openrtg.h). Runs
+ * come from the board in bytes from the bitmap's first; each row's part of
+ * one is a span. Under Forbid: the compositor and a drawing task may ask
+ * at once, and a run read must not be split between them. */
+ULONG ortg_written_spans(struct BitMap *bm, struct OpenRTGSpan *s, ULONG max)
+{
+    struct ortg_bitmap *o = ortg_of(bm);
+    struct ortg_watch *w;
+    ULONG k = 0;
+    int n;
+    if (!o || !(n = o->monitor) || !board[n]) return 0;
+    w = &SC->watch[n];
+    Forbid();
+    if (w->bm != o && !(w->on && shown[n].bm == w->bm)) {   /* not off a bitmap shown */
+        if (w->on) reg(n, R_WATCH_SIZE, 0);             /* a new one: the watch moves, nothing written yet */
+        w->bm = o;
+        w->left = w->at = w->end = 0;
+        w->on = 0;
+        if (rreg(n, R_VERSION) >= 9) {
+            reg(n, R_WATCH_AT, o->vram_off);
+            reg(n, R_WATCH_FLAG, o->vram_off - WATCH_FLAG_AT);
+            reg(n, R_WATCH_SIZE, o->stride * o->height);
+            w->on = rreg(n, R_WATCH_SIZE) != 0;
+        }
+    } else if (w->bm == o && w->on && s)
+        while (k < max) {
+            ULONG y, row, e;
+            if (w->at >= w->end) {                      /* the next run */
+                if (!w->left && !(w->left = rreg(n, R_WRITTEN))) break;
+                w->left--;
+                w->at = rreg(n, R_SPAN_AT);
+                w->end = w->at + rreg(n, R_SPAN_LEN);
+                continue;
+            }
+            y = w->at / o->stride;
+            row = y * o->stride;
+            e = w->end < row + o->stride ? w->end : row + o->stride;
+            if (y < o->height && (w->at - row) / o->bpp < o->width) {
+                s[k].y = (UWORD)y;
+                s[k].x0 = (UWORD)((w->at - row) / o->bpp);
+                s[k].x1 = (UWORD)((e - row - 1) / o->bpp < o->width ? (e - row - 1) / o->bpp : o->width - 1U);
+                k++;
+            }
+            w->at = e;
+        }
+    Permit();
+    if (s) return k;
+    return w->bm == o && w->on ? (ULONG)(o->mem - WATCH_FLAG_AT) : 0;
+}
 
 /* 1 when any monitor shows an OpenRTG screen (BestModeIDA, displaydb.c). */
 int ortg_any_shown(void)
