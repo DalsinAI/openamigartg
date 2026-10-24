@@ -1,0 +1,71 @@
+diff -ruN a/src/video/amigaos3/SDL_os3events.c b/src/video/amigaos3/SDL_os3events.c
+--- a/src/video/amigaos3/SDL_os3events.c	2026-10-24 05:06:32.568173034 +0100
++++ b/src/video/amigaos3/SDL_os3events.c	2026-10-24 05:06:32.568925974 +0100
+@@ -13,10 +13,47 @@
+ #include "../../events/SDL_mouse_c.h"
+ #include "../../events/SDL_windowevents_c.h"
+ 
++/* Open: while SDL holds the screen saver off (SDL_DisableScreenSaver, SDL's
++   default while a program runs), OpenBlanker is told every few seconds, as
++   X11's back end resets its screen saver. OpenBlanker 1.2 counts a CTRL_E to
++   its task as a key or the mouse; older ones ignore it. */
++#define OS3_BLANKER_PORT  "OpenBlanker"
++#define OS3_BLANKER_EVERY 5000      /* ms */
++static Uint64 os3_blanker_told;
++
++static void OS3_TellBlanker(void)
++{
++    struct MsgPort *port;
++
++    Forbid();
++    port = FindPort((CONST_STRPTR)OS3_BLANKER_PORT);
++    if (port && port->mp_SigTask) {
++        Signal((struct Task *)port->mp_SigTask, SIGBREAKF_CTRL_E);
++    }
++    Permit();
++    os3_blanker_told = SDL_GetTicks();
++    if (!os3_blanker_told) {
++        os3_blanker_told = 1;
++    }
++}
++
++bool OS3_SuspendScreenSaver(SDL_VideoDevice *_this)
++{
++    if (_this->suspend_screensaver) {
++        OS3_TellBlanker();
++    }
++    return true;
++}
++
+ void OS3_PumpEvents(SDL_VideoDevice *_this)
+ {
+     SDL_Window *sw;
+ 
++    if (_this->suspend_screensaver &&
++        (!os3_blanker_told || SDL_GetTicks() >= os3_blanker_told + OS3_BLANKER_EVERY)) {
++        OS3_TellBlanker();
++    }
++
+     for (sw = _this->windows; sw; sw = sw->next) {
+         SDL_WindowData *d = sw->internal;
+         struct IntuiMessage *m;
+diff -ruN a/src/video/amigaos3/SDL_os3events.h b/src/video/amigaos3/SDL_os3events.h
+--- a/src/video/amigaos3/SDL_os3events.h	2026-10-24 05:06:32.568482432 +0100
++++ b/src/video/amigaos3/SDL_os3events.h	2026-10-24 05:06:32.568821967 +0100
+@@ -2,4 +2,5 @@
+ #define SDL_os3events_h_
+ #include "SDL_os3video.h"
+ void OS3_PumpEvents(SDL_VideoDevice *);
++bool OS3_SuspendScreenSaver(SDL_VideoDevice *);
+ #endif
+diff -ruN a/src/video/amigaos3/SDL_os3video.c b/src/video/amigaos3/SDL_os3video.c
+--- a/src/video/amigaos3/SDL_os3video.c	2026-10-24 05:06:32.568644650 +0100
++++ b/src/video/amigaos3/SDL_os3video.c	2026-10-24 05:06:32.569006888 +0100
+@@ -148,6 +148,7 @@
+      */
+     device->checked_texture_framebuffer = true;
+     device->PumpEvents=OS3_PumpEvents;
++    device->SuspendScreenSaver=OS3_SuspendScreenSaver;
+     device->StartTextInput=OS3_StartTextInput; device->StopTextInput=OS3_StopTextInput;
+ #if !defined(SDL_AMIGAOS3_SW_ONLY)
+     device->GL_LoadLibrary=OS3_GL_LoadLibrary; device->GL_GetProcAddress=OS3_GL_GetProcAddress; device->GL_UnloadLibrary=OS3_GL_UnloadLibrary;

@@ -89,6 +89,7 @@ or, with the OpenGPU developer kit (`tools/make_sdk.py`, `sdk/README`):
 | OpenGL | GL.module, through the program's own libGL.a (below). |
 | Haptic | SDL's dummy driver: `SDL_Init(SDL_INIT_HAPTIC)` succeeds with no devices, as games that ask for it expect. |
 | Environment | `SDL_getenv` reads the Shell's local and global variables (SetEnv, ENV:) as well as the program's own. |
+| Screen saver | While SDL holds the screen saver off (`SDL_DisableScreenSaver`, SDL's default while a program runs), OpenBlanker is told every 5 seconds: a CTRL_E to the task of its `OpenBlanker` port, which OpenBlanker 1.2 counts as a key or the mouse (`patches/amigaos3/0009`). `SDL_VIDEO_ALLOW_SCREENSAVER=1` lets the show come. |
 
 Settings, with `SetEnv` or `SDL_SetHint`:
 
