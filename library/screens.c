@@ -570,30 +570,32 @@ ULONG ortg_written_spans(struct BitMap *bm, struct OpenRTGSpan *s, ULONG max)
 {
     struct ortg_bitmap *o = ortg_of(bm);
     struct ortg_watch *w;
+    volatile ULONG *R;
     ULONG k = 0;
     int n;
     if (!o || !(n = o->monitor) || !board[n]) return 0;
     w = &SC->watch[n];
+    R = (volatile ULONG *)(board[n] + regs_at[n]);     /* the registers, a long each */
     Forbid();
     if (w->bm != o && !(w->on && shown[n].bm == w->bm)) {   /* not off a bitmap shown */
-        if (w->on) reg(n, R_WATCH_SIZE, 0);             /* a new one: the watch moves, nothing written yet */
+        if (w->on) R[R_WATCH_SIZE / 4] = 0;             /* a new one: the watch moves, nothing written yet */
         w->bm = o;
         w->left = w->at = w->end = 0;
         w->on = 0;
-        if (rreg(n, R_VERSION) >= 9) {
-            reg(n, R_WATCH_AT, o->vram_off);
-            reg(n, R_WATCH_FLAG, o->vram_off - WATCH_FLAG_AT);
-            reg(n, R_WATCH_SIZE, o->stride * o->height);
-            w->on = rreg(n, R_WATCH_SIZE) != 0;
+        if (R[R_VERSION / 4] >= 9) {
+            R[R_WATCH_AT / 4] = o->vram_off;
+            R[R_WATCH_FLAG / 4] = o->vram_off - WATCH_FLAG_AT;
+            R[R_WATCH_SIZE / 4] = o->stride * o->height;
+            w->on = R[R_WATCH_SIZE / 4] != 0;
         }
     } else if (w->bm == o && w->on && s)
         while (k < max) {
             ULONG y, row, e;
             if (w->at >= w->end) {                      /* the next run */
-                if (!w->left && !(w->left = rreg(n, R_WRITTEN))) break;
+                if (!w->left && !(w->left = R[R_WRITTEN / 4])) break;
                 w->left--;
-                w->at = rreg(n, R_SPAN_AT);
-                w->end = w->at + rreg(n, R_SPAN_LEN);
+                w->at = R[R_SPAN_AT / 4];
+                w->end = w->at + R[R_SPAN_LEN / 4];
                 continue;
             }
             y = w->at / o->stride;
