@@ -37,6 +37,14 @@
  * it; ORTG_BitMapInfo's flags say ORTG_BMI_CARD once the host has made it,
  * and cybergraphics.library's LockBitMapTags then gives no address
  * (screens.c, card_part).
+ *
+ * 0.21: OpenGPU's batches left running (the compositor's step 4). A batch
+ * drawing from OpenRTG bitmaps, or from sources copied at submit (glyphs,
+ * patterns, pixel arrays up to 4 KiB), is not waited for; the CPU drawing
+ * on or reading a bitmap, ORTG_BitMapInfo, freeing a bitmap, showing a
+ * screen, a palette change and WaitTOF wait for everything still running
+ * first (screens.c, ortg_ogpu_settle). ORTG_DrawStats' kind 21 counts the
+ * batches left running and waited for.
  */
 #include <exec/types.h>
 #include "ortg_state.h"
@@ -56,7 +64,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 20
+#define LIB_REVISION 21
 
 /* The ACRTG board (amigachrome's common/protocol/acrtg.h): Zorro III,
  * AmigaChrome Team (0xDA15; 2011 before 1 October 2026), product 9 (16 MiB), product 15 (64 MiB, 0.14) or product 16
@@ -109,9 +117,9 @@ struct OpenRTGBase {
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.20 (24.10.2026) OpenRTG, AmigaChrome Team\r\n";
+static const char lib_id[] = "openrtg.library 0.21 (24.10.2026) OpenRTG, AmigaChrome Team\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.20 (24.10.2026) OpenRTG, AmigaChrome Team";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.21 (24.10.2026) OpenRTG, AmigaChrome Team";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));

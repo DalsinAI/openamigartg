@@ -276,6 +276,7 @@ static void write_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG 
         }
     }
     ortg_stat(ORTG_STAT_PIXELS, 0, (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1));
+    ortg_ogpu_settle();             /* 0.21: the CPU on the bitmap: what OpenGPU has running first */
     if (bm->bpp == 4 && (fmt == ORTG_PIX_ARGB || fmt == ORTG_PIX_0RGB)
         && c->dw == c->px->width && c->dh == c->px->height) {
         /* ARGB colours 1:1 onto a 32-bit bitmap, the case a GL or SDL frame
@@ -333,6 +334,7 @@ static void read_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
         }
     }
     ortg_stat(ORTG_STAT_PIXELS_READ, 0, (ULONG)(x1 - x0 + 1) * (ULONG)(y1 - y0 + 1));
+    ortg_ogpu_settle();             /* 0.21 */
     for (LONG y = y0; y <= y1; y++) {
         UBYTE *row = (UBYTE *)c->px->data + (c->px->y + y - dy - c->at_y) * c->px->modulo;
         const UBYTE *s = bm->mem + y * bm->stride;
@@ -359,6 +361,7 @@ static void fill_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
         return;
     }
     ortg_stat(ORTG_STAT_PIXELS_FILL, 0, n);
+    ortg_ogpu_settle();             /* 0.21 */
     if (bm->bpp != 1) {
         ULONG v = ortg_encode(bm, c->argb);
         if (!c->mask) return;
@@ -381,6 +384,7 @@ static void invert_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG
         return;
     }
     ortg_stat(ORTG_STAT_PIXELS_INVERT, 0, n);
+    ortg_ogpu_settle();             /* 0.21 */
     if (bm->bpp != 1) {
         ULONG m = bm->bpp == 2 ? 0xFFFF : 0xFFFFFF;
         if (!c->mask) return;
@@ -518,6 +522,7 @@ static void alpha_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG 
         return;
     }
     ortg_stat(ORTG_STAT_ALPHA, 0, n);
+    ortg_ogpu_settle();             /* 0.21 */
     for (LONG y = y0; y <= y1; y++, src += px->modulo) {
         const UBYTE *p = src;
         UBYTE *d8 = bm->mem + y * bm->stride;
@@ -588,6 +593,7 @@ BOOL ortg_bitmap_info(struct BitMap *bm, struct OpenRTGBitMapInfo *info)
 {
     struct ortg_bitmap *o = ortg_find(bm);
     if (!o || !info) return FALSE;
+    ortg_ogpu_settle();             /* 0.21: the address goes out (LockBitMapTags): nothing left running on it */
     info->memory = o->mem;
     info->bytes_per_row = o->stride;
     info->width = o->width; info->height = o->height;

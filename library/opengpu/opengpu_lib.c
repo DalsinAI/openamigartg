@@ -45,6 +45,11 @@
  * command answered for it, and the 3D state commands answer for all), and,
  * before v1.7, TRIANGLES' target and slot texture formats must be ones it
  * drew in and read right (ogpu_variant.h).
+ * 0.20: batches may be left running (the compositor's step 4: the Cradle's
+ * ring has a worker thread, and OpenRTG waits only at the hazards).
+ * OGPU_Wait(OGPU_FENCE_ALL) waits for every batch submitted so far, and a
+ * fence too old to keep its result (OGPU_ERR_EXPIRED) is waited for as the
+ * newest one is, where 0.19 returned at once.
  * Built bare by library/build.sh.
  */
 #include <exec/types.h>
@@ -74,7 +79,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 19
+#define LIB_REVISION 20
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -95,6 +100,7 @@ struct OpenGPUBase {
     UBYTE drv_ok[256];                          /* opcodes the driver carries out (for some format) */
     UBYTE drv_fmt[OGPU_FMT_COUNT];              /* formats it takes SURFACE in */
     unsigned long drv_last;                     /* the driver's last fence, before a batch runs on the CPU */
+    unsigned long drv_done;                     /* 0.20: the driver's newest fence a wait found done */
     char drv_names[MAX_DRIVERS][32];            /* drivers_load's scratch, under drv_lock */
     struct ogpu_modules modules;                /* shared modules loaded (ogpu_module.c) */
     struct Interrupt low_mem;                   /* the low-memory handler: unloads unused modules */
@@ -122,9 +128,9 @@ int start(void) { return -1; }
 const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.19 (23.10.2026) OpenGPU, AmigaChrome Team\r\n";
+static const char lib_id[] = "opengpu.library 0.20 (24.10.2026) OpenGPU, AmigaChrome Team\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.19 (23.10.2026) OpenGPU, AmigaChrome Team";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.20 (24.10.2026) OpenGPU, AmigaChrome Team";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";
@@ -538,19 +544,43 @@ static LONG OGPU_Wait(REG(d0, ULONG fence), REG(a6, struct OpenGPUBase *base))
     EXEC(base);
     LONG r = OGPU_OK;
     unsigned long df = ON_CPU;
+    int newest = fence == OGPU_FENCE_ALL;
     ObtainSemaphore(&base->lock);
     /* Only recent results are kept, and an older fence says so rather than
      * claim the batch went well. */
-    if (fence && fence <= base->fence) {
+    if (!newest && fence && fence <= base->fence) {
         if (base->fence - fence < RESULTS) {
             r = base->result[fence % RESULTS];
             df = base->dfence[fence % RESULTS];
-        } else r = OGPU_ERR_EXPIRED;
+        } else {
+            /* 0.20: done once the newest batch is (batches finish in order).
+             * 0.19 returned at once, which with batches left running (the
+             * compositor's step 4: OpenRTG and layers wait only when they
+             * must) could be before the batch was done. */
+            r = OGPU_ERR_EXPIRED;
+            newest = 1;
+        }
     }
     ReleaseSemaphore(&base->lock);
+    if (newest) {
+        /* OGPU_FENCE_ALL (0.20), or an expired fence: everything submitted
+         * so far; nothing to ask the driver when that was waited for already */
+        LONG w = OGPU_OK;
+        ObtainSemaphore(&base->drv_lock);
+        if (base->drv && base->drv_last && base->drv_done != base->drv_last) {
+            unsigned long last = base->drv_last;
+            w = base->drv->wait(last);
+            if (w != OGPU_ERR_DEVICE) base->drv_done = last;
+        }
+        ReleaseSemaphore(&base->drv_lock);
+        return w == OGPU_ERR_DEVICE ? w : r;
+    }
     if (df != ON_CPU && r == OGPU_OK) {
         ObtainSemaphore(&base->drv_lock);
-        if (base->drv) r = base->drv->wait(df);
+        if (base->drv) {
+            r = base->drv->wait(df);
+            if (r != OGPU_ERR_DEVICE && (long)(df - base->drv_done) > 0) base->drv_done = df;
+        }
         ReleaseSemaphore(&base->drv_lock);
     }
     return r;

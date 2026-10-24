@@ -23,4 +23,10 @@
 
 #define OGPU_BACKEND_CPU 0
 
+/* OGPU_Wait(OGPU_FENCE_ALL) (opengpu.library 0.20): wait for every batch
+ * submitted so far, whoever submitted it; OGPU_OK, or OGPU_ERR_DEVICE when
+ * the hardware has gone. Before 0.20 it returns at once. */
+#define OGPU_FENCE_ALL   0xFFFFFFFFUL
+#define OGPU_FENCE_ALL_REVISION 20      /* the library's lib_Revision (version 0) that knows it */
+
 #endif
