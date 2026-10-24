@@ -77,7 +77,9 @@ struct OpenRTGBitMapInfo {
 };
 /* 0.20: in video RAM's card part (acrtg-v7), the PC graphics card's own
  * memory: its GPU draws there at full speed, the CPU reads it at a crawl.
- * cybergraphics.library's LockBitMapTags gives no address for it. */
+ * cybergraphics.library's LockBitMapTags gives no address for it. 0.22:
+ * not set when the host shadows the card part (acrtg-v8), where the CPU
+ * reads at host speed. */
 #define ORTG_BMI_CARD     0x01
 
 /* 0.20: AllocBitMap's tags (BMATags_*, OS 3.2's extended form): ti_Data TRUE
