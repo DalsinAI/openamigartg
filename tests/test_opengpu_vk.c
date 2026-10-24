@@ -736,7 +736,7 @@ static void test_card(void) {
     ogpu_vk_stats(V, &s1);
     CHECK(s1.card_gpu - s0.card_gpu == 3, "card part: 3 commands read it, on the GPU (%lu)", s1.card_gpu - s0.card_gpu);
     CHECK(s1.card_core - s0.card_core == 0, "card part: none read it on the core (%lu)", s1.card_core - s0.card_core);
-    printf("opengpu vulkan: card part from %u KiB of %lu KiB; %lu commands read it, on the GPU\n", c >> 10, VSIZE >> 10, s1.card_gpu);
+    printf("opengpu vulkan: card part from %lu KiB of %lu KiB; %lu commands read it, on the GPU\n", (unsigned long)(c >> 10), VSIZE >> 10, s1.card_gpu);
 }
 
 /* ---- routing by cost ---------------------------------------------------------------- */
