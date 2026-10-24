@@ -581,6 +581,7 @@ static void test_virtual(void)
         alSourcei(s[i], AL_BUFFER, (ALint)b);
         alSourcei(s[i], AL_LOOPING, AL_TRUE);
         alSourcef(s[i], AL_GAIN, 0.05f * (ALfloat)(i + 1));
+        alSourcei(s[i], AL_SAMPLE_OFFSET, 1000 * i);    /* each from a place of its own */
     }
     alSourcePlayv(N, s);
     CHECK_AL(AL_NO_ERROR);
@@ -593,7 +594,7 @@ static void test_virtual(void)
     CHECK(voiced == 16);
     render(8820);
     for (i = 0; i < 4; i++) {
-        off = srci(s[i], AL_SAMPLE_OFFSET);
+        off = srci(s[i], AL_SAMPLE_OFFSET) - 1000 * i;
         CHECK(off >= 8820 - 882 && off <= 8820);   /* virtual: time runs on, to the timer's tick */
         CHECK(srci(s[i], AL_SOURCE_STATE) == AL_PLAYING);
     }
@@ -603,7 +604,7 @@ static void test_virtual(void)
     k = SRC(s[3])->voice;
     off = srci(s[3], AL_SAMPLE_OFFSET);
     CHECK((ALint)host_voices_buffer_frame(dev, (ALuint)k) == off);
-    CHECK(off >= 8820 - 882 && off <= 8820);
+    CHECK(off - 3000 >= 8820 - 882 && off - 3000 <= 8820);
     render(882);
     CHECK(host_voices_on(dev, (ALuint)k));
     /* Louder than twice the quietest playing on a voice: takes its voice. */
