@@ -108,6 +108,10 @@ int ortg_ogpu_scale(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, 
                     LONG sw, LONG sh, int format, LONG dx, LONG dy, LONG dw, LONG dh);
 void ortg_stat(int kind, int gpu, ULONG pixels);
 ULONG ortg_draw_stats(ULONG *counts, ULONG kinds, ULONG flags);
+/* 0.21: the batches OpenGPU still has running are done (screens.c, the
+ * compositor's step 4): before the CPU draws on or reads an OpenRTG
+ * bitmap, or hands its address out. */
+void ortg_ogpu_settle(void);
 struct OpenRTGVirglFrame;
 LONG ortg_present_virgl(struct RastPort *rp, LONG x, LONG y, const struct OpenRTGVirglFrame *f);
 

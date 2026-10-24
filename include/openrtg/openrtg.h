@@ -132,9 +132,13 @@ struct OpenRTGVirglFrame {
 #define ORTG_STAT_BLIT_CONVERT  18  /* copies between OpenRTG bitmaps of two formats */
 #define ORTG_STAT_BLIT_MASKED   19  /* blits through a mask (BltMaskBitMapRastPort) */
 #define ORTG_STAT_VIRGL         20  /* ORTG_PresentVirgl: GL frames the host wrote straight in (0.15) */
-#define ORTG_STAT_COUNT         21
+/* 0.21: OpenGPU's batches, not pieces: those left running (where the GPU
+ * count is), those waited for, the bytes of sources copied to be left
+ * running; the fourth count stays 0 */
+#define ORTG_STAT_WAIT          21
+#define ORTG_STAT_COUNT         22
 #define ORTG_STAT_NAMES { "fill", "invert", "pattern", "template", "copy", "blit", "scroll", "setrast", "line", \
     "pixel", "chunky", "chunky read", "pixels", "pixels read", "pixels fill", "pixels invert", "alpha", \
-    "blit planar", "blit convert", "blit masked", "virgl" }
+    "blit planar", "blit convert", "blit masked", "virgl", "batches" }
 
 #endif

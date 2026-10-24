@@ -190,8 +190,14 @@ typedef BOOL (*closescreen_fn)(REG(a0, struct Screen *), REG(a6, struct Intuitio
 
 typedef LONG (*line8_fn)(REG(a0, struct RastPort *), REG(d0, ULONG), REG(d1, ULONG), REG(d2, ULONG), REG(a2, UBYTE *), REG(a1, struct RastPort *), REG(a6, struct GfxBase *));
 
+typedef void (*waittof_fn)(REG(a6, struct GfxBase *));
+
 #define BLOCKS 128
 #define FONT_CACHE 8
+#define STAGE_BYTES 65536       /* 0.21: the staging block for sources a batch reads after the call returns */
+#define STAGE_PARTS 4
+#define STAGE_PART (STAGE_BYTES / STAGE_PARTS)
+#define STAGE_MAX 4096          /* a source up to this is copied; a bigger one is waited for */
 struct ortg_shown { struct ortg_bitmap *bm; UWORD w, h; UBYTE fmt; };
 struct ortg_blk { ULONG off, size; UBYTE used, monitor, displayable; };
 struct ortg_font { const UBYTE *rom; UBYTE *ram; };
@@ -259,6 +265,13 @@ struct scr_g {
     struct ortg_ogfx_provider_all ogfx_all_provider;
     int on;
     int gpu_tried;              /* 0.18: late_opengpu() has looked for opengpu.library */
+    /* 0.21 (the compositor's step 4): batches left running (ortg_ogpu_settle) */
+    int ogpu_pend;              /* one of ours went without a wait since the last settle */
+    ULONG ogpu_pend_fence;      /* ... the last one's fence (for an opengpu.library before 0.20) */
+    UBYTE *stage;               /* STAGE_BYTES of public memory: sources copied at submit (stage_copy) */
+    ULONG stage_at;             /* its next free byte */
+    UBYTE stage_used[STAGE_PARTS];   /* a part holds sources of batches not yet waited for */
+    waittof_fn old_waittof;
 #ifdef ORTG_MOUSE_HANDLER
     struct Interrupt mouse_irq;
     struct IEPointerPixel mouse_pp;
@@ -326,6 +339,7 @@ ULONG ortg_screens_size(void) { return sizeof(struct scr_g); }
 #define ogfx_all_provider (SC->ogfx_all_provider)
 #define gpu_tried (SC->gpu_tried)
 #define ortg_stats (SC->stats)
+#define old_waittof (SC->old_waittof)
 
 static void late_opengpu(int asked);
 
@@ -526,20 +540,19 @@ int ortg_any_shown(void)
 }
 
 /* A new bitmap in video RAM, cleared: by OpenGPU's FILL when it can (one
- * command, carried out on the GPU or the runtime's core, and waited for), else
- * by the 68k a longword at a time. The rows' padding past the width is the
- * 68k's either way. It was a byte at a time: 4.6 million stores for a
+ * command, carried out on the GPU or the runtime's core; 0.21: left
+ * running), else by the 68k a longword at a time. The rows' padding past the
+ * width is the 68k's either way, first (0.21: before the FILL, which then
+ * meets no CPU write). It was a byte at a time: 4.6 million stores for a
  * 1920 x 1200 16-bit screen, 3.1 million for a 1024 x 768 32-bit one (the video
  * RAM write tracker, 24 October 2026). */
 static void clear_new(struct ortg_bitmap *o)
 {
     ULONG row = (ULONG)o->width * o->bpp, all = o->stride * o->height;
-    if (ortg_ogpu_fill(o, 0, 0, (LONG)o->width - 1, (LONG)o->height - 1, 0)) {
-        if (row < o->stride)
-            for (ULONG y = 0; y < o->height; y++)
-                for (ULONG i = y * o->stride + row; i < (y + 1) * o->stride; i++) o->mem[i] = 0;
-        return;
-    }
+    if (row < o->stride)
+        for (ULONG y = 0; y < o->height; y++)
+            for (ULONG i = y * o->stride + row; i < (y + 1) * o->stride; i++) o->mem[i] = 0;
+    if (ortg_ogpu_fill(o, 0, 0, (LONG)o->width - 1, (LONG)o->height - 1, 0)) return;
     if (((ULONG)o->mem & 3) == 0 && (all & 3) == 0)
         for (ULONG *l = (ULONG *)o->mem, *e = l + all / 4; l < e; l++) *l = 0;
     else
@@ -593,6 +606,7 @@ struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear, int for
 void ortg_free(struct ortg_bitmap *o)
 {
     if (!o) return;
+    ortg_ogpu_settle();                             /* 0.21: no batch left running names it */
     for (int n = 1; n <= ORTG_MAX_MONITORS; n++)
         if (shown[n].bm == o) shown[n].bm = NULL;
     if (o->pal_index < ORTG_PEN_TABLES && pen_owner[o->pal_index] == o) pen_owner[o->pal_index] = NULL;
@@ -721,6 +735,8 @@ static int ogpu_can(int op, const struct ortg_bitmap *bm)
     return ogpu_can_fmt(op, ogpu_format_of(bm));
 }
 
+/* A batch, waited for: what it read from the caller (a big source), or
+ * wrote to the caller's memory (ReadPixels), is done with when this returns. */
 static int ogpu_submit_batch(struct OGPUBatch *b)
 {
     ULONG fence = 0;
@@ -728,7 +744,108 @@ static int ogpu_submit_batch(struct OGPUBatch *b)
     if (!ortg_S->opengpu || !b || b->overflow || !b->words) return 0;
     rc = OGPU_Submit((APTR)b->buf, (ULONG)b->words, &fence);
     if (rc != OGPU_OK) return 0;
+    ortg_stats[ORTG_STAT_WAIT][1]++;
     return OGPU_Wait(fence) == OGPU_OK;
+}
+
+/* ---- batches left running (0.21, the compositor's step 4) --------------------------------
+ *
+ * A batch that draws on OpenRTG bitmaps from OpenRTG bitmaps, or from
+ * sources copied at submit into the staging block (stage_copy: glyphs,
+ * patterns, small pixel arrays), is sent and not waited for
+ * (ogpu_submit_async): the Cradle's ring carries it out while the 68k goes
+ * on. What would meet it waits first (ortg_ogpu_settle), at the hazards:
+ * the CPU drawing on or reading an OpenRTG bitmap, ORTG_BitMapInfo's
+ * address (LockBitMapTags), freeing a bitmap, showing a screen, changing
+ * the pen tables a batch reads its colours from, and WaitTOF, for programs
+ * that write a shown bitmap themselves. Reads into the caller's memory,
+ * virgl's frames and big sources are waited for as before
+ * (ogpu_submit_batch). A batch left running that fails is not drawn again
+ * on the CPU, as a waited one is; OpenRTG sends only what the back end
+ * says it carries out. */
+
+/* Every batch submitted so far is done: OpenRTG's and the others' (layers'
+ * composes), with opengpu.library 0.20's OGPU_FENCE_ALL; with an older one,
+ * OpenRTG's own last. */
+void ortg_ogpu_settle(void)
+{
+    struct Library *g = ortg_S->opengpu;
+    if (!g) return;
+    if (g->lib_Version > 0 || g->lib_Revision >= OGPU_FENCE_ALL_REVISION) {
+        (void)OGPU_Wait(OGPU_FENCE_ALL);
+        ortg_stats[ORTG_STAT_WAIT][1]++;
+    } else if (SC->ogpu_pend) {
+        (void)OGPU_Wait(SC->ogpu_pend_fence);
+        ortg_stats[ORTG_STAT_WAIT][1]++;
+    }
+    SC->ogpu_pend = 0;
+    for (int p = 0; p < STAGE_PARTS; p++) SC->stage_used[p] = 0;   /* their batches are done */
+}
+
+/* A batch not waited for; 1 when it went (its sources must outlive it:
+ * OpenRTG bitmaps, or the staging block). */
+static int ogpu_submit_async(struct OGPUBatch *b)
+{
+    ULONG fence = 0;
+    if (!ortg_S->opengpu || !b || b->overflow || !b->words) return 0;
+    if (OGPU_Submit((APTR)b->buf, (ULONG)b->words, &fence) != OGPU_OK) return 0;
+    SC->ogpu_pend_fence = fence;
+    SC->ogpu_pend = 1;
+    ortg_stats[ORTG_STAT_WAIT][0]++;
+    return 1;
+}
+
+/* Room for n bytes (longword aligned, at most STAGE_PART) in the staging
+ * block, or NULL. It is used round and round in four parts; a part is used
+ * again only once its batches are done, waited for here if they may not be
+ * (ortg_ogpu_settle). Several tasks draw at once (console, Intuition's
+ * drags): the room is taken under Forbid. */
+static UBYTE *stage_room(ULONG n)
+{
+    UBYTE *p = NULL;
+    n = (n + 3) & ~3UL;
+    if (!n || n > STAGE_PART || !ortg_S->opengpu) return NULL;
+    if (!SC->stage) {
+        UBYTE *s = AllocVec(STAGE_BYTES, MEMF_PUBLIC);
+        Forbid();
+        if (!SC->stage) { SC->stage = s; s = NULL; }
+        Permit();
+        if (s) FreeVec(s);
+        if (!SC->stage) return NULL;
+    }
+    for (;;) {
+        ULONG at, first, last;
+        int busy = 0;
+        Forbid();
+        at = SC->stage_at;
+        if (at + n > STAGE_BYTES) at = 0;
+        first = at / STAGE_PART; last = (at + n - 1) / STAGE_PART;
+        /* a part this reaches into fresh (not the one being filled) must be free */
+        for (ULONG q = first; q <= last; q++)
+            if (SC->stage_used[q] && !(at && q == (SC->stage_at - 1) / STAGE_PART && at == SC->stage_at)) busy = 1;
+        if (!busy) {
+            for (ULONG q = first; q <= last; q++) SC->stage_used[q] = 1;
+            SC->stage_at = at + n;
+            p = SC->stage + at;
+        }
+        Permit();
+        if (p) break;
+        ortg_ogpu_settle();
+    }
+    ortg_stats[ORTG_STAT_WAIT][2] += n;
+    return p;
+}
+
+/* rows rows of bytes bytes, bpr apart from src, copied together into the
+ * staging block (bytes apart), or NULL. */
+static const UBYTE *stage_copy(const UBYTE *src, LONG bpr, ULONG bytes, ULONG rows)
+{
+    UBYTE *d, *p;
+    if (!bytes || !rows || bytes * rows > STAGE_MAX || !(d = stage_room(bytes * rows))) return NULL;
+    p = d;
+    if (bpr == (LONG)bytes) CopyMem((APTR)src, d, bytes * rows);
+    else for (ULONG r = 0; r < rows; r++, p += bytes) CopyMem((APTR)(src + (LONG)r * bpr), p, bytes);
+    return d;
 }
 
 static void ogpu_target_bitmap(struct OGPUBatch *b, int slot, const struct ortg_bitmap *bm)
@@ -759,7 +876,7 @@ static int ogpu_fill_piece(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LO
         ogpu_invert(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, k->x);
     else
         ogpu_fill(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, k->a);
-    return ogpu_submit_batch(&b);
+    return ogpu_submit_async(&b);
 }
 
 /* A raw pixel value over a rectangle (SetRast, ScrollRaster's uncovered
@@ -772,7 +889,7 @@ int ortg_ogpu_fill(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, U
     if (!ogpu_can(OGPU_OP_FILL, bm)) return 0;
     ogpu_begin(&b, stream, bm);
     ogpu_fill(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, value);
-    return ogpu_submit_batch(&b);
+    return ogpu_submit_async(&b);
 }
 
 /* Pixel ^= mask over a rectangle (ORTG_InvertPixels). */
@@ -783,20 +900,61 @@ int ortg_ogpu_invert(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
     if (!ogpu_can(OGPU_OP_INVERT, bm)) return 0;
     ogpu_begin(&b, stream, bm);
     ogpu_invert(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, mask);
-    return ogpu_submit_batch(&b);
+    return ogpu_submit_async(&b);
+}
+
+/* Bytes a pixel of an OGPU_FMT_ source format OpenRTG sends takes. */
+static ULONG src_bpp(int format)
+{
+    return format == OGPU_FMT_ARGB32 || format == OGPU_FMT_XRGB32 ? 4 : format == OGPU_FMT_RGB565 ? 2 : 1;
+}
+
+/* A colour table a batch may read after the call returns: OpenRTG's pen
+ * tables (changed only after a settle, palette_changed), or a copy of the
+ * caller's; NULL when it can't be copied. */
+static const void *stage_table(const void *table)
+{
+    const UBYTE *t = table, *pens = (const UBYTE *)SC->pen_rgb;
+    if (!t || (t >= pens && t < pens + sizeof SC->pen_rgb)) return table;
+    return stage_copy(t, 1024, 1024, 1);
+}
+
+/* src's w x h pixels of bpp bytes, src_bpr apart, where a batch left
+ * running reads them: copied (*bpr their new row's bytes), or NULL when too
+ * big (the batch is waited for). */
+static const UBYTE *stage_pixels(const void *src, ULONG src_bpr, LONG w, LONG h, ULONG bpp, ULONG *bpr)
+{
+    const UBYTE *s = stage_copy(src, (LONG)src_bpr, (ULONG)w * bpp, (ULONG)h);
+    if (s) *bpr = (ULONG)w * bpp;
+    return s;
 }
 
 /* Pixels in memory, 1:1, into a rectangle: OGPU's PIXELS (format an
- * OGPU_FMT_ source format; table an INDEX8 source's 256 ARGB colours). */
-int ortg_ogpu_pixels(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
-                     const void *src, ULONG src_bpr, int format, const void *table)
+ * OGPU_FMT_ source format; table an INDEX8 source's 256 ARGB colours).
+ * 0.21: kept, the source is an OpenRTG bitmap's pixels, read where they are
+ * (freeing it, or the CPU drawing on it, waits first); else a source up to
+ * STAGE_MAX bytes, and the table, are copied, and the batch is left running
+ * either way; a bigger one is waited for. */
+static int ogpu_pixels_from(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
+                            const void *src, ULONG src_bpr, int format, const void *table, int kept)
 {
     UBYTE stream[ORTG_OGPU_WORDS * 4];
     struct OGPUBatch b;
+    ULONG bpr = src_bpr;
+    const UBYTE *s = kept ? src : NULL;
+    const void *t = table;
     if (!ogpu_can(OGPU_OP_PIXELS, bm)) return 0;
+    if (!s) s = stage_pixels(src, src_bpr, x1 - x0 + 1, y1 - y0 + 1, src_bpp(format), &bpr);
+    if (s && table && !(t = stage_table(table))) s = NULL;
     ogpu_begin(&b, stream, bm);
-    ogpu_pixels(&b, (ULONG)src, src_bpr, format, (ULONG)table, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-    return ogpu_submit_batch(&b);
+    ogpu_pixels(&b, (ULONG)(s ? s : src), s ? bpr : src_bpr, format, (ULONG)(s ? t : table), x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    return s ? ogpu_submit_async(&b) : ogpu_submit_batch(&b);
+}
+
+int ortg_ogpu_pixels(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
+                     const void *src, ULONG src_bpr, int format, const void *table)
+{
+    return ogpu_pixels_from(bm, x0, y0, x1, y1, src, src_bpr, format, table, 0);
 }
 
 /* Whether ARGB colours can reach a 32-bit bitmap through OpenGPU with their
@@ -813,12 +971,17 @@ int ortg_ogpu_pixels_xrgb(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LON
 {
     UBYTE stream[ORTG_OGPU_WORDS * 4];
     struct OGPUBatch b;
+    ULONG bpr = src_bpr;
+    const UBYTE *s;
+    const void *t = table;
     if (!ortg_ogpu_xrgb(bm)) return 0;
+    s = stage_pixels(src, src_bpr, x1 - x0 + 1, y1 - y0 + 1, src_bpp(format), &bpr);   /* 0.21, as ortg_ogpu_pixels */
+    if (s && table && !(t = stage_table(table))) s = NULL;
     ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
     ogpu_surface(&b, 0, (ULONG)bm->mem, bm->stride, bm->width, bm->height, OGPU_FMT_XRGB32);
     ogpu_target(&b, 0);
-    ogpu_pixels(&b, (ULONG)src, src_bpr, format, (ULONG)table, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-    return ogpu_submit_batch(&b);
+    ogpu_pixels(&b, (ULONG)(s ? s : src), s ? bpr : src_bpr, format, (ULONG)(s ? t : table), x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    return s ? ogpu_submit_async(&b) : ogpu_submit_batch(&b);
 }
 
 /* A rectangle of the bitmap copied, raw, into memory (ORTG_ReadPixels' RAW
@@ -862,13 +1025,16 @@ int ortg_ogpu_alpha(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
     UBYTE stream[ORTG_OGPU_WORDS * 4];
     struct OGPUBatch b;
     LONG w = x1 - x0 + 1, h = y1 - y0 + 1;
+    ULONG bpr = src_bpr;
+    const UBYTE *s;
     if (bm->bpp == 1 || !ogpu_can(OGPU_OP_COMPOSITE, bm)) return 0;
+    s = stage_pixels(src, src_bpr, w, h, 4, &bpr);     /* 0.21: copied and left running, when small */
     ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
     ogpu_target_bitmap(&b, 0, bm);
-    ogpu_surface(&b, 1, (ULONG)src, src_bpr, w, h, OGPU_FMT_ARGB32);
+    ogpu_surface(&b, 1, (ULONG)(s ? s : src), s ? bpr : src_bpr, w, h, OGPU_FMT_ARGB32);
     ogpu_target(&b, 0);
     ogpu_composite(&b, 1, 0, 0, w, h, x0, y0, w, h, (int)(alpha & 255), OGPU_COMP_SRCALPHA);
-    return ogpu_submit_batch(&b);
+    return s ? ogpu_submit_async(&b) : ogpu_submit_batch(&b);
 }
 
 /* Pixels in memory drawn at another size (ORTG_WritePixels with a dest_width
@@ -904,14 +1070,18 @@ int ortg_ogpu_scale(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
             clear_top = 1;
         } else return 0;
     } else return 0;
-    ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
-    ogpu_surface(&b, 0, (ULONG)bm->mem, bm->stride, bm->width, bm->height, tf);
-    ogpu_surface(&b, 1, (ULONG)src, src_bpr, sw, sh, format);
-    ogpu_target(&b, 0);
-    ogpu_clip(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-    ogpu_composite(&b, 1, 0, 0, sw, sh, dx, dy, dw, dh, 255, 0);
-    if (clear_top) ogpu_invert(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, 0xFF000000UL);
-    return ogpu_submit_batch(&b);
+    {
+        ULONG bpr = src_bpr;
+        const UBYTE *s = stage_pixels(src, src_bpr, sw, sh, src_bpp(format), &bpr);   /* 0.21, when small */
+        ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
+        ogpu_surface(&b, 0, (ULONG)bm->mem, bm->stride, bm->width, bm->height, tf);
+        ogpu_surface(&b, 1, (ULONG)(s ? s : src), s ? bpr : src_bpr, sw, sh, format);
+        ogpu_target(&b, 0);
+        ogpu_clip(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+        ogpu_composite(&b, 1, 0, 0, sw, sh, dx, dy, dw, dh, 255, 0);
+        if (clear_top) ogpu_invert(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, 0xFF000000UL);
+        return s ? ogpu_submit_async(&b) : ogpu_submit_batch(&b);
+    }
 }
 
 static int ogpu_pattern_piece(struct ortg_bitmap *bm,
@@ -939,31 +1109,37 @@ static int ogpu_pattern_piece(struct ortg_bitmap *bm,
         }
         ptrn = shifted;
     }
-    ogpu_begin(&b, stream, bm);
-    ogpu_pattern(&b, (ULONG)ptrn, (ULONG)f->ptsz,
-                 x0, y0, x1 - x0 + 1, y1 - y0 + 1,
-                 k->a, k->b, k->mode & ~INVERSVID);
-    return ogpu_submit_batch(&b);
+    {
+        /* 0.21: the rows (on the stack, or the RastPort's) copied, and the batch left running */
+        const UWORD *s = (const UWORD *)stage_copy((const UBYTE *)ptrn, (LONG)f->ptsz * 2, (ULONG)f->ptsz * 2, 1);
+        ogpu_begin(&b, stream, bm);
+        ogpu_pattern(&b, (ULONG)(s ? s : ptrn), (ULONG)f->ptsz,
+                     x0, y0, x1 - x0 + 1, y1 - y0 + 1,
+                     k->a, k->b, k->mode & ~INVERSVID);
+        return s ? ogpu_submit_async(&b) : ogpu_submit_batch(&b);
+    }
 }
 
 /* One batch for many pieces of one call (Text's glyphs): what a piece adds
- * waits for ob_flush, which every CPU drawing in the call comes after. */
+ * waits for ob_flush, which every CPU drawing in the call comes after.
+ * 0.21: left running when every source in it was copied (wait 0). */
 #define OB_WORDS 128
 struct obatch {
     struct OGPUBatch b;
     const struct ortg_bitmap *tgt;
-    int failed;
+    int failed, wait;
     UBYTE buf[OB_WORDS * 4];
 };
 
-static void ob_init(struct obatch *o) { ogpu_batch_init(&o->b, o->buf, OB_WORDS); o->tgt = NULL; o->failed = 0; }
+static void ob_init(struct obatch *o) { ogpu_batch_init(&o->b, o->buf, OB_WORDS); o->tgt = NULL; o->failed = 0; o->wait = 0; }
 
 static void ob_flush(struct obatch *o)
 {
     if (o && o->b.words) {
-        if (!ogpu_submit_batch(&o->b)) o->failed = 1;
+        if (!(o->wait ? ogpu_submit_batch(&o->b) : ogpu_submit_async(&o->b))) o->failed = 1;
         ogpu_batch_init(&o->b, o->buf, OB_WORDS);
         o->tgt = NULL;
+        o->wait = 0;
     }
 }
 
@@ -994,29 +1170,36 @@ static int ogpu_template_piece(struct ortg_bitmap *bm,
     if (row < 0 || first < 0) return 0;
     src = t->src + row * t->mod;
     mod = t->mod;
-    if (t->ob) {
-        /* gathered into the call's batch (the source stays where it is) */
-        if (!TypeOfMem((APTR)src)) return 0;
-        ob_room(t->ob, bm, 9);
-        ogpu_template(&t->ob->b, (ULONG)src, (ULONG)mod, (ULONG)first, x0, y0, x1 - x0 + 1, y1 - y0 + 1,
+    {
+        /* 0.21: the rows this piece needs, copied (from ROM too: topaz's
+         * glyphs are out of a host back end's reach), so the batch is left
+         * running and the caller may change or free its template */
+        LONG h = y1 - y0 + 1, bytes = ((first & 7) + (x1 - x0 + 1) + 7) >> 3;
+        const UBYTE *s = stage_copy(src + (first >> 3), t->mod, (ULONG)bytes, (ULONG)h);
+        if (s) { src = s; mod = bytes; first &= 7; }
+        if (t->ob) {
+            /* gathered into the call's batch; a source not copied stays where it is, and the batch is waited for */
+            if (!s && !TypeOfMem((APTR)src)) return 0;
+            ob_room(t->ob, bm, 9);
+            if (!s) t->ob->wait = 1;
+            ogpu_template(&t->ob->b, (ULONG)src, (ULONG)mod, (ULONG)first, x0, y0, x1 - x0 + 1, y1 - y0 + 1,
+                          k->a, k->b, k->mode & ~INVERSVID);
+            return 1;
+        }
+        /* not copied, and in ROM: the rows to the stack, waited for */
+        if (!s && !TypeOfMem((APTR)src)) {
+            LONG r, i;
+            if (h * bytes > (LONG)sizeof rom_rows) return 0;
+            for (r = 0; r < h; r++)
+                for (i = 0; i < bytes; i++) rom_rows[r * bytes + i] = src[r * t->mod + (first >> 3) + i];
+            src = rom_rows; mod = bytes; first &= 7;
+        }
+        ogpu_begin(&b, stream, bm);
+        ogpu_template(&b, (ULONG)src, (ULONG)mod, (ULONG)first,
+                      x0, y0, x1 - x0 + 1, y1 - y0 + 1,
                       k->a, k->b, k->mode & ~INVERSVID);
-        return 1;
+        return s ? ogpu_submit_async(&b) : ogpu_submit_batch(&b);
     }
-    /* A template in ROM (topaz's glyphs) is out of a host back end's reach:
-     * the rows this piece needs, copied to the stack. */
-    if (!TypeOfMem((APTR)src)) {
-        LONG h = y1 - y0 + 1, bytes = ((first & 7) + (x1 - x0 + 1) + 7) >> 3, r, i;
-        if (h * bytes > (LONG)sizeof rom_rows) return 0;
-        for (r = 0; r < h; r++)
-            for (i = 0; i < bytes; i++) rom_rows[r * bytes + i] = src[r * t->mod + (first >> 3) + i];
-        src = rom_rows; mod = bytes; first &= 7;
-    }
-
-    ogpu_begin(&b, stream, bm);
-    ogpu_template(&b, (ULONG)src, (ULONG)mod, (ULONG)first,
-                  x0, y0, x1 - x0 + 1, y1 - y0 + 1,
-                  k->a, k->b, k->mode & ~INVERSVID);
-    return ogpu_submit_batch(&b);
 }
 
 static int ogpu_copy_rect(struct ortg_bitmap *src, LONG sx, LONG sy,
@@ -1035,7 +1218,7 @@ static int ogpu_copy_rect(struct ortg_bitmap *src, LONG sx, LONG sy,
     ogpu_target_bitmap(&b, 1, dst);
     ogpu_target(&b, 1);
     ogpu_copy(&b, 0, sx, sy, dx, dy, w, h);
-    return ogpu_submit_batch(&b);
+    return ogpu_submit_async(&b);      /* 0.21: both OpenRTG bitmaps; left running */
 }
 
 /* ---- clipping: an operation on every visible piece of a RastPort's box -------------- */
@@ -1240,6 +1423,7 @@ static void fill_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
     if (!f->ptrn && ogpu_fill_piece(bm, x0, y0, x1, y1, &k)) { ortg_stat(kind, 1, area(x0, y0, x1, y1)); return; }
     if (f->ptrn && ogpu_pattern_piece(bm, x0, y0, x1, y1, dx, dy, f, &k)) { ortg_stat(kind, 1, area(x0, y0, x1, y1)); return; }
     ortg_stat(kind, 0, area(x0, y0, x1, y1));
+    ortg_ogpu_settle();                             /* 0.21: the CPU on the bitmap: what is running first */
     for (LONG y = y0; y <= y1; y++) {
         if (!f->ptrn) {
             if (!(k.mode & COMPLEMENT) && (k.mask == 0xFF || (k.bpp != 1 && k.mask))) {
@@ -1267,6 +1451,7 @@ static void tmpl_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
     if (ogpu_template_piece(bm, x0, y0, x1, y1, dx, dy, t, &k)) { ortg_stat(ORTG_STAT_TEMPLATE, 1, area(x0, y0, x1, y1)); return; }
     ortg_stat(ORTG_STAT_TEMPLATE, 0, area(x0, y0, x1, y1));
     ob_flush(t->ob);                                /* what the batch holds first */
+    ortg_ogpu_settle();                             /* 0.21: and everything left running */
     for (LONG y = y0; y <= y1; y++) {
         const UBYTE *s = t->src + (y - dy - t->at_y) * t->mod;
         for (LONG x = x0; x <= x1; x++) {
@@ -1352,6 +1537,7 @@ static void blit(struct BitMap *src, LONG sx, LONG sy, struct BitMap *dst, LONG 
          * drivers are waited here before the call returns. */
         if (ogpu_copy_rect(os, sx, sy, od, dx, dy, w, h)) { ortg_stat(ORTG_STAT_COPY, 1, (ULONG)w * (ULONG)h); return; }
         ortg_stat(ORTG_STAT_COPY, 0, (ULONG)w * (ULONG)h);
+        ortg_ogpu_settle();                         /* 0.21: the CPU reads and writes the pixels */
         /* No OpenGPU, unsupported memory or a refused batch: keep the
          * proven OpenRTG CPU copy as the exact fallback. */
         ULONG bytes = (ULONG)w * od->bpp;
@@ -1377,8 +1563,8 @@ static void blit(struct BitMap *src, LONG sx, LONG sy, struct BitMap *dst, LONG 
         /* A copy between formats, as the loop below converts: pens to
          * their colours (through the pen table), or colours cut to RGB565. */
         const UBYTE *sp = os->mem + sy * os->stride + sx * os->bpp;
-        int ok = os->bpp == 1 ? ortg_ogpu_pixels(od, dx, dy, dx + w - 1, dy + h - 1, sp, os->stride, OGPU_FMT_INDEX8, ortg_pen_rgb[od->pal_index])
-                              : ortg_ogpu_pixels(od, dx, dy, dx + w - 1, dy + h - 1, sp, os->stride, ogpu_format_of(os), NULL);
+        int ok = os->bpp == 1 ? ogpu_pixels_from(od, dx, dy, dx + w - 1, dy + h - 1, sp, os->stride, OGPU_FMT_INDEX8, ortg_pen_rgb[od->pal_index], 1)
+                              : ogpu_pixels_from(od, dx, dy, dx + w - 1, dy + h - 1, sp, os->stride, ogpu_format_of(os), NULL, 1);
         ortg_stat(ORTG_STAT_BLIT_CONVERT, ok, (ULONG)w * (ULONG)h);
         if (ok) return;
     } else if (od)
@@ -1386,6 +1572,7 @@ static void blit(struct BitMap *src, LONG sx, LONG sy, struct BitMap *dst, LONG 
                   0, (ULONG)w * (ULONG)h);
     else if (os)
         ortg_stat(ORTG_STAT_BLIT_PLANAR, 0, (ULONG)w * (ULONG)h);
+    ortg_ogpu_settle();                             /* 0.21: the CPU reads and writes the pixels */
     for (LONG j = 0; j < h; j++) {
         LONG yy = down ? j : h - 1 - j;
         for (LONG i = 0; i < w; i++) {
@@ -1495,6 +1682,7 @@ static void setrast_patch(REG(a1, struct RastPort *rp), REG(d0, ULONG pen), REG(
         ULONG n = (ULONG)o->width * o->height;
         if (ortg_ogpu_fill(o, 0, 0, (LONG)o->width - 1, (LONG)o->height - 1, v)) { ortg_stat(ORTG_STAT_SETRAST, 1, n); return; }
         ortg_stat(ORTG_STAT_SETRAST, 0, n);
+        ortg_ogpu_settle();
         for (ULONG y = 0; y < o->height; y++)
             for (ULONG x = 0; x < o->width; x++) ortg_put(o, (LONG)x, (LONG)y, v);
         return;
@@ -1508,6 +1696,7 @@ static void pixel_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG 
 {
     struct ink k;
     ink_of((struct pens *)c, bm, &k);
+    ortg_ogpu_settle();                             /* 0.21 */
     plot(bm, x0, y0, &k, 1);
 }
 
@@ -1553,7 +1742,7 @@ static void line_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x
     struct ink k;
     if (!l->ok) return;
     if (l->b.words + 6 + 2 + 3 + 5 > LINE_WORDS) {
-        if (!ogpu_submit_batch(&l->b)) { l->ok = 0; return; }
+        if (!ogpu_submit_async(&l->b)) { l->ok = 0; return; }    /* 0.21: lines read nothing: left running */
         ogpu_batch_init(&l->b, l->buf, LINE_WORDS);
         l->tgt = NULL;
     }
@@ -1579,7 +1768,7 @@ static void any_line(struct RastPort *rp, LONG x0, LONG y0, LONG x1, LONG y1)
         ogpu_batch_init(&l.b, l.buf, LINE_WORDS);
         l.tgt = NULL; l.p = &p; l.x0 = x0; l.y0 = y0; l.x1 = x1; l.y1 = y1; l.ok = 1;
         pieces(rp, bx0, by0, bx0 + adx, by0 + ady, line_piece, &l);
-        if (l.ok && (!l.b.words || ogpu_submit_batch(&l.b))) { ortg_stat(ORTG_STAT_LINE, 1, n); return; }
+        if (l.ok && (!l.b.words || ogpu_submit_async(&l.b))) { ortg_stat(ORTG_STAT_LINE, 1, n); return; }
         /* A refused batch: what it drew, line() draws again the same (in
          * COMPLEMENT, it can't be undone, so that one is counted wrong). */
     }
@@ -1625,6 +1814,7 @@ static LONG writepixel_patch(REG(a1, struct RastPort *rp), REG(d0, WORD x), REG(
 struct read_ctx { LONG v; };
 static void read_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1, LONG dx, LONG dy)
 {
+    ortg_ogpu_settle();                             /* 0.21: what is running has drawn the pixel */
     ((struct read_ctx *)c)->v = ortg_px_pen(bm, ortg_get(bm, x0, y0));
 }
 
@@ -1881,6 +2071,7 @@ static void scroll_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG
             return;
         }
         ortg_stat(ORTG_STAT_SCROLL, 0, 0);
+        ortg_ogpu_settle();                         /* 0.21 */
     }
     for (LONG y = y0; y <= y1; y++) {
         int ybar = (s->dy > 0 && y > y1 - s->dy) || (s->dy < 0 && y < y0 - s->dy) || mh <= 0;
@@ -1912,6 +2103,7 @@ static void array_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG 
         ortg_stat(ORTG_STAT_CHUNKY, ok, area(x0, y0, x1, y1));
         if (ok) return;
     }
+    ortg_ogpu_settle();                             /* 0.21 */
     for (LONG y = y0; y <= y1; y++) {
         UBYTE *s = a->a + (y - dy - a->at_y) * a->bpr + (x0 - dx - a->at_x);
         if (bm->bpp == 1) { UBYTE *d = bm->mem + y * bm->stride + x0; for (LONG x = x0; x <= x1; x++) *d++ = *s++; }
@@ -1945,6 +2137,7 @@ static void array_read_piece(void *c, struct ortg_bitmap *bm, LONG x0, LONG y0, 
 {
     struct array_ctx *a = c;
     ortg_stat(ORTG_STAT_CHUNKY_READ, 0, area(x0, y0, x1, y1));
+    ortg_ogpu_settle();                             /* 0.21 */
     for (LONG y = y0; y <= y1; y++) {
         UBYTE *d = a->a + (y - dy - a->at_y) * a->bpr + (x0 - dx - a->at_x);
         if (bm->bpp == 1) { UBYTE *s = bm->mem + y * bm->stride + x0; for (LONG x = x0; x <= x1; x++) *d++ = *s++; }
@@ -2132,6 +2325,7 @@ static void show_front(void)
     for (int n = 1; n <= ORTG_MAX_MONITORS; n++) {
         struct ortg_bitmap *o = want[n];
         if (!board[n] || !o || shown[n].bm == o) continue;
+        ortg_ogpu_settle();                         /* 0.21: shown whole, with nothing running on it */
         serx("ortg: showing ", (ULONG)o->vram_off);
         if (shown[n].w != o->width || shown[n].h != o->height || shown[n].fmt != o->format) {
             reg(n, R_WIDTH, o->width); reg(n, R_HEIGHT, o->height); reg(n, R_FORMAT, board_fmt[o->format]); reg(n, R_CLOCK, 0);
@@ -2216,12 +2410,22 @@ static void loadview_patch(REG(a1, struct View *v), REG(a6, struct GfxBase *g))
     show_front();
 }
 
+/* 0.21: WaitTOF, which a program that writes a shown bitmap itself waits
+ * for the frame with (its address from ORTG_BitMapInfo, LockBitMapTags or
+ * the planes): what OpenGPU still has running is done first. */
+static void waittof_patch(REG(a6, struct GfxBase *g))
+{
+    if (ortg_S->opengpu) ortg_ogpu_settle();
+    old_waittof(g);
+}
+
 static void palette_changed(struct ViewPort *vp, ULONG first, ULONG count)
 {
     struct ortg_bitmap *o = vp_bitmap(vp);
     ortg_palette_gen++;
     if (!o) return;
     if (o->bpp != 1) {
+        ortg_ogpu_settle();                         /* 0.21: batches left running read these tables */
         /* the pens of a 16 or 32-bit screen: what is drawn from now on;
          * what is drawn already keeps its colours, as on any true-colour screen.
          * A screen with its own table keeps it, in front or behind; one on its
@@ -2883,6 +3087,7 @@ int ortg_screens_on(struct Library *gfx, struct ortg_mode_table **t, APTR *board
     if (!ogfx_all) old_rpa8 = (wpa8_fn)SetFunction(gfx, -780, ortg_entry(rpa8_patch));
     old_movesprite = (movesprite_fn)SetFunction(gfx, -426, ortg_entry(movesprite_patch));
     old_changeext = (changeext_fn)SetFunction(gfx, -1026, ortg_entry(changeext_patch));
+    old_waittof = (waittof_fn)SetFunction(gfx, -270, ortg_entry(waittof_patch));     /* 0.21 */
     old_rethink = (remake_fn)SetFunction((struct Library *)ortg_S->intuition, -390, ortg_entry(rethink_patch));
     old_remake = (remake_fn)SetFunction((struct Library *)ortg_S->intuition, -384, ortg_entry(remake_patch));
     old_makescreen = (makescreen_fn)SetFunction((struct Library *)ortg_S->intuition, -378, ortg_entry(makescreen_patch));
