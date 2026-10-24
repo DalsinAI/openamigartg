@@ -665,6 +665,48 @@ static void test_list(void) {
     }
 }
 
+/* ---- why the core drew it ---------------------------------------------------------- */
+
+/* Each drawing command the core drew says why (ogpu_vk_stats' why[]), and
+ * they add up to cpu: a target in Fast RAM, an opcode the GPU path doesn't
+ * take (v1.4's COMPOSITE_PD), a composite whose source is the rectangle it
+ * draws (the GPU command's own check), and on the GPU a fill into video RAM. By opcode
+ * too (core_op[]). Routing everything to the GPU, so nothing is by cost. */
+static void test_why(void) {
+    struct ogpu_vk_stats s0, s1;
+    unsigned long d[OGPU_VK_WHY_COUNT], sum = 0;
+    int k;
+    noise_both(1, 0, (long)VSIZE);
+    noise_both(0, 0x20000, 0x10000);
+    ogpu_vk_stats(V, &s0);
+    begin();
+    ogpu_surface(&B, 0, 0x20000, 64 * 4, 64, 32, OGPU_FMT_ARGB32);       /* in Fast RAM */
+    ogpu_target(&B, 0);
+    ogpu_fill(&B, 0, 0, 8, 8, 0xFF112233UL);
+    ogpu_fill(&B, 8, 0, 8, 8, 0xFF112244UL);
+    ogpu_surface(&B, 1, VBASE + 0x10000, 64 * 4, 64, 32, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 2, VBASE + 0x18000, 16 * 4, 16, 16, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 1);
+    ogpu_fill(&B, 0, 0, 8, 8, 0xFF445566UL);                               /* the GPU's */
+    ogpu_composite_pd(&B, OGPU_PD_OVER, 2, 0, 0, 0, 0, 0, 16, 0, 16, 16);  /* not on the GPU path */
+    ogpu_surface(&B, 3, VBASE + 0x10000, 64 * 4, 64, 32, OGPU_FMT_ARGB32); /* the target again, as a source */
+    ogpu_composite(&B, 3, 0, 0, 16, 16, 4, 4, 16, 16, 255, 0);             /* reads what it writes: refused */
+    ogpu_fence(&B, 3);
+    CHECK(run_both("why: Fast RAM, COMPOSITE_PD, a composite over its own source, a fill on the GPU"), "why the core drew it");
+    ogpu_vk_stats(V, &s1);
+    for (k = 0; k < OGPU_VK_WHY_COUNT; k++) { d[k] = s1.why[k] - s0.why[k]; sum += d[k]; }
+    CHECK(sum == s1.cpu - s0.cpu, "why: the reasons add up to the core's %lu commands (%lu)", s1.cpu - s0.cpu, sum);
+    CHECK(d[OGPU_VK_WHY_TARGET] == 2, "why: two fills into Fast RAM (%lu)", d[OGPU_VK_WHY_TARGET]);
+    CHECK(d[OGPU_VK_WHY_OP] == 1, "why: COMPOSITE_PD isn't on the GPU path (%lu)", d[OGPU_VK_WHY_OP]);
+    CHECK(d[OGPU_VK_WHY_REFUSED] == 1, "why: the composite over its own source was refused (%lu)", d[OGPU_VK_WHY_REFUSED]);
+    CHECK(d[OGPU_VK_WHY_COST] == 0 && d[OGPU_VK_WHY_ROUTE] == 0 && d[OGPU_VK_WHY_LOST] == 0, "why: nothing by cost, routing or loss");
+    CHECK(s1.gpu - s0.gpu >= 1, "why: the fill into video RAM went to the GPU");
+    CHECK(s1.core_op[OGPU_OP_FILL - OGPU_OP_FILL] - s0.core_op[OGPU_OP_FILL - OGPU_OP_FILL] == 2
+          && s1.core_op[OGPU_OP_COMPOSITE_PD - OGPU_OP_FILL] - s0.core_op[OGPU_OP_COMPOSITE_PD - OGPU_OP_FILL] == 1
+          && s1.core_op[OGPU_OP_COMPOSITE - OGPU_OP_FILL] - s0.core_op[OGPU_OP_COMPOSITE - OGPU_OP_FILL] == 1,
+          "why: by opcode, two FILLs, a COMPOSITE_PD and a COMPOSITE on the core");
+}
+
 /* ---- routing by cost ---------------------------------------------------------------- */
 
 /* A back end routing by cost (OGPU_VK_ROUTE_COST, the runtime's default)
@@ -854,6 +896,7 @@ int main(int argc, char **argv) {
     test_xrgb32();
     test_random(rounds);
     test_list();
+    test_why();
     test_supports();
 #ifdef OGPU_WITH_3D
     test_3d(argc > 4 ? argv[4] : 0);
