@@ -26,6 +26,10 @@
  * 0.19.3: a new bitmap in video RAM (every screen's) is cleared by OpenGPU's
  * FILL when it can, else a longword at a time, not a byte at a time
  * (screens.c, clear_new).
+ *
+ * 0.19.4: the 256 MiB ACRTG board (product 16, "rtgVramMiB": 256) as well as
+ * the 16 MiB (9) and 64 MiB (15) ones, so window surfaces and SDL's windows and
+ * textures have room in the video RAM the host's GPU reaches.
  */
 #include <exec/types.h>
 #include "ortg_state.h"
@@ -48,15 +52,18 @@
 #define LIB_REVISION 19
 
 /* The ACRTG board (amigachrome's common/protocol/acrtg.h): Zorro III,
- * AmigaChrome Team (0xDA15; 2011 before 1 October 2026), product 9 (16 MiB) or product 15 (64 MiB, 0.14); the boot ROM page
- * at +0, video RAM from +0x10000, the register page in the last 64 KiB (0xFE0000 bytes of video RAM on the 16 MiB
- * board, 0x3FE0000 on the 64 MiB one); pictures up to 1920x1200 in 8, 16 and 32-bit. */
+ * AmigaChrome Team (0xDA15; 2011 before 1 October 2026), product 9 (16 MiB), product 15 (64 MiB, 0.14) or product 16
+ * (256 MiB, 0.19.4); the boot ROM page at +0, video RAM from +0x10000, the register page in the last 64 KiB (0xFE0000
+ * bytes of video RAM on the 16 MiB board, 0x3FE0000 on the 64 MiB one, 0xFFE0000 on the 256 MiB one); pictures up to
+ * 1920x1200 in 8, 16 and 32-bit. */
 #define AMIGACHROME_MFR          0xDA15
 #define AMIGACHROME_MFR_OLD      2011
 #define ACRTG_PRODUCT   9
 #define ACRTG_PRODUCT_64 15
+#define ACRTG_PRODUCT_256 16
 #define ACRTG_BOARD     0x01000000UL                    /* the 16 MiB board's window */
 #define ACRTG64_BOARD   0x04000000UL                    /* the 64 MiB board's */
+#define ACRTG256_BOARD  0x10000000UL                    /* the 256 MiB board's */
 #define ACRTG_VRAM_OF(size) ((size) - 0x20000UL)        /* ROM page and register page apart */
 #define ACRTG_VRAM      ACRTG_VRAM_OF(ACRTG_BOARD)
 #define ACRTG_MAX_W     1920                            /* before acrtg-v5; from v5 the board's LIMIT says */
@@ -81,7 +88,7 @@ struct OpenRTGBase {
     BPTR seglist;
     ULONG monitors;                                     /* RTG monitors found */
     struct ConfigDev *board[ORTG_MAX_MONITORS + 1];     /* [n]: monitor n's board */
-    ULONG board_size[ORTG_MAX_MONITORS + 1];            /* its window: ACRTG_BOARD or ACRTG64_BOARD */
+    ULONG board_size[ORTG_MAX_MONITORS + 1];            /* its window: ACRTG_BOARD, ACRTG64_BOARD or ACRTG256_BOARD */
     struct ortg_mode_table *table[ORTG_MAX_MONITORS + 1];
     struct Library *gfx;
     int patched;
@@ -95,9 +102,9 @@ struct OpenRTGBase {
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.19.3 (24.10.2026) OpenRTG, AmigaChrome Team\r\n";
+static const char lib_id[] = "openrtg.library 0.19.4 (24.10.2026) OpenRTG, AmigaChrome Team\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.19.3 (24.10.2026) OpenRTG, AmigaChrome Team";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.19.4 (24.10.2026) OpenRTG, AmigaChrome Team";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));
@@ -174,17 +181,19 @@ static void board_caps(struct OpenRTGBase *base, ULONG n)
 static void find_boards(struct OpenRTGBase *base) {
     struct Library *ExpansionBase = OpenLibrary("expansion.library", 37);
     static const ULONG makers[2] = { AMIGACHROME_MFR, AMIGACHROME_MFR_OLD };
+    static const ULONG products[3] = { ACRTG_PRODUCT, ACRTG_PRODUCT_64, ACRTG_PRODUCT_256 };
+    static const ULONG sizes[3] = { ACRTG_BOARD, ACRTG64_BOARD, ACRTG256_BOARD };
     if (!ExpansionBase) return;
     for (int k = 0; k < 2; k++)
-        for (int p = 0; p < 2; p++) {
+        for (int p = 0; p < 3; p++) {
             struct ConfigDev *cd = NULL;
-            ULONG product = p ? ACRTG_PRODUCT_64 : ACRTG_PRODUCT;
+            ULONG product = products[p];
             while ((cd = FindConfigDev(cd, makers[k], product)) != NULL) {
                 ULONG n = cd->cd_Rom.er_SerialNumber;          /* serial = monitor */
                 if (n < 1 || n > ORTG_MAX_MONITORS || base->board[n] || !cd->cd_BoardAddr) continue;
                 struct ortg_mode_table *t = AllocVec(sizeof *t, MEMF_ANY | MEMF_CLEAR);
                 if (!t) continue;
-                base->board[n] = cd; base->board_size[n] = p ? ACRTG64_BOARD : ACRTG_BOARD;
+                base->board[n] = cd; base->board_size[n] = sizes[p];
                 board_caps(base, n);
                 ortg_build_modes(t, (int)n, &base->caps[n], 0);   /* Standard, the default */
                 base->table[n] = t; base->monitors++;

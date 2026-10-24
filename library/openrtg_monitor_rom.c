@@ -53,6 +53,7 @@
 #define AMIGACHROME_MFR_OLD      2011
 #define ACRTG_PRODUCT   9                       /* 16 MiB */
 #define ACRTG_PRODUCT_64 15                     /* 64 MiB */
+#define ACRTG_PRODUCT_256 16                    /* 256 MiB */
 
 #define ORM_PRI (-38)
 
@@ -108,7 +109,9 @@ static int acrtg_fitted(struct ExecBase *SysBase)
     int yes;
     if (!ExpansionBase) return 0;
     yes = FindConfigDev(NULL, AMIGACHROME_MFR, ACRTG_PRODUCT) || FindConfigDev(NULL, AMIGACHROME_MFR, ACRTG_PRODUCT_64) ||
-          FindConfigDev(NULL, AMIGACHROME_MFR_OLD, ACRTG_PRODUCT) || FindConfigDev(NULL, AMIGACHROME_MFR_OLD, ACRTG_PRODUCT_64);
+          FindConfigDev(NULL, AMIGACHROME_MFR, ACRTG_PRODUCT_256) ||
+          FindConfigDev(NULL, AMIGACHROME_MFR_OLD, ACRTG_PRODUCT) || FindConfigDev(NULL, AMIGACHROME_MFR_OLD, ACRTG_PRODUCT_64) ||
+          FindConfigDev(NULL, AMIGACHROME_MFR_OLD, ACRTG_PRODUCT_256);
     CloseLibrary(ExpansionBase);
     return yes;
 }
