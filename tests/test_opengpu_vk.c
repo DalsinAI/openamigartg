@@ -707,6 +707,30 @@ static void test_why(void) {
           "why: by opcode, two FILLs, a COMPOSITE_PD and a COMPOSITE on the core");
 }
 
+/* ---- a copy between two slots of one surface ------------------------------------------ */
+
+/* OpenRTG scrolls a layer's surface with a COPY whose source slot is another
+ * slot over the same surface (the same pixels, bytes a row and format). The
+ * GPU stages it, as it does a copy within one slot, and draws what the core
+ * draws: up, down and sideways. */
+static void test_copy_alias(void) {
+    struct ogpu_vk_stats s0, s1;
+    noise_both(1, 0, (long)VSIZE);
+    ogpu_vk_stats(V, &s0);
+    begin();
+    ogpu_surface(&B, 0, VBASE + 0x20000, 64 * 4, 64, 32, OGPU_FMT_ARGB32);
+    ogpu_surface(&B, 1, VBASE + 0x20000, 64 * 4, 64, 32, OGPU_FMT_ARGB32);   /* the same surface again */
+    ogpu_target(&B, 0);
+    ogpu_copy(&B, 1, 0, 8, 0, 0, 64, 24);
+    ogpu_copy(&B, 1, 0, 0, 0, 8, 64, 24);
+    ogpu_copy(&B, 1, 4, 0, 0, 0, 60, 32);
+    ogpu_fence(&B, 4);
+    CHECK(run_both("copies between two slots of one surface"), "copies between two slots of one surface draw as the core's");
+    ogpu_vk_stats(V, &s1);
+    CHECK(s1.gpu - s0.gpu == 3 && s1.cpu == s0.cpu, "copies between two slots of one surface: %lu on the GPU (want 3), %lu on the core",
+          s1.gpu - s0.gpu, s1.cpu - s0.cpu);
+}
+
 /* ---- video RAM's card part ---------------------------------------------------------- */
 
 /* With a card part (OGPU_VK_HOST=1 OGPU_VK_HOSTMEM=map OGPU_VK_CARD_AT=bytes):
@@ -932,6 +956,7 @@ int main(int argc, char **argv) {
     test_random(rounds);
     test_list();
     test_why();
+    test_copy_alias();
     test_card();
     test_supports();
 #ifdef OGPU_WITH_3D
