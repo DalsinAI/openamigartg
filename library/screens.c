@@ -481,6 +481,27 @@ int ortg_any_shown(void)
     return 0;
 }
 
+/* A new bitmap in video RAM, cleared: by OpenGPU's FILL when it can (one
+ * command, carried out on the GPU or the runtime's core, and waited for), else
+ * by the 68k a longword at a time. The rows' padding past the width is the
+ * 68k's either way. It was a byte at a time: 4.6 million stores for a
+ * 1920 x 1200 16-bit screen, 3.1 million for a 1024 x 768 32-bit one (the video
+ * RAM write tracker, 24 October 2026). */
+static void clear_new(struct ortg_bitmap *o)
+{
+    ULONG row = (ULONG)o->width * o->bpp, all = o->stride * o->height;
+    if (ortg_ogpu_fill(o, 0, 0, (LONG)o->width - 1, (LONG)o->height - 1, 0)) {
+        if (row < o->stride)
+            for (ULONG y = 0; y < o->height; y++)
+                for (ULONG i = y * o->stride + row; i < (y + 1) * o->stride; i++) o->mem[i] = 0;
+        return;
+    }
+    if (((ULONG)o->mem & 3) == 0 && (all & 3) == 0)
+        for (ULONG *l = (ULONG *)o->mem, *e = l + all / 4; l < e; l++) *l = 0;
+    else
+        for (ULONG i = 0; i < all; i++) o->mem[i] = 0;
+}
+
 /* A chunky bitmap of a format: in monitor's video RAM when monitor > 0 (and
  * it fits), else in fast RAM. Its pens use monitor's table (0: the first's). */
 struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear, int format)
@@ -509,12 +530,12 @@ struct ortg_bitmap *ortg_alloc(int monitor, ULONG w, ULONG h, int clear, int for
     }
     ((ULONG *)o->mem)[-2] = ORTG_BM_MAGIC;
     ((ULONG *)o->mem)[-1] = (ULONG)o;
-    if (clear) for (ULONG i = 0; i < stride * h; i++) o->mem[i] = 0;
     o->bm.BytesPerRow = (UWORD)stride;
     o->bm.Rows = (UWORD)h;
     o->bm.Depth = 8;
     o->bm.pad = ORTG_PAD;
     for (int p = 0; p < 8; p++) o->bm.Planes[p] = o->mem;
+    if (clear) clear_new(o);
     return o;
 }
 
