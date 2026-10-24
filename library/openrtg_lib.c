@@ -22,6 +22,10 @@
  * 0.19.2: such friends never take the room the board's largest screen needs;
  * with tags, BMATags_Displayable and BMATags_Clear count; and GetBitMapAttr's
  * BMA_FLAGS says BMF_DISPLAYABLE of a bitmap in video RAM.
+ *
+ * 0.19.3: a new bitmap in video RAM (every screen's) is cleared by OpenGPU's
+ * FILL when it can, else a longword at a time, not a byte at a time
+ * (screens.c, clear_new).
  */
 #include <exec/types.h>
 #include "ortg_state.h"
@@ -91,9 +95,9 @@ struct OpenRTGBase {
 int start(void) { return -1; }
 
 static const char lib_name[] = "openrtg.library";
-static const char lib_id[] = "openrtg.library 0.19.2 (23.10.2026) OpenRTG, AmigaChrome Team\r\n";
+static const char lib_id[] = "openrtg.library 0.19.3 (24.10.2026) OpenRTG, AmigaChrome Team\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.19.2 (23.10.2026) OpenRTG, AmigaChrome Team";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: openrtg.library 0.19.3 (24.10.2026) OpenRTG, AmigaChrome Team";
 
 static struct Library *lib_init(REG(d0, struct OpenRTGBase *base), REG(a0, BPTR seglist), REG(a6, struct ExecBase *sys));
 static struct Library *lib_open(REG(a6, struct OpenRTGBase *base));
