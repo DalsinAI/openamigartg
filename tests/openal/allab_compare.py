@@ -71,11 +71,6 @@ def find(rec, ref, start):
     if len(lr) < len(lf):
         return None
     score = sum(correlate(lr[:, c], lf[:, c]) for c in range(2))
-    # each placement's score over the size of the recording's levels there
-    # (normalised), so a louder passage elsewhere doesn't win
-    e = np.concatenate([[0.0], np.cumsum(np.sum(lr ** 2, axis=1))])
-    m = len(lf)
-    score = score / np.sqrt(np.maximum(e[m:m + len(score)] - e[:len(score)], 1e-9))
     coarse = start + int(np.argmax(score)) * block + pad
     lo = max(start, coarse - pad)
     hi = min(len(rec), coarse + len(ref) + pad)

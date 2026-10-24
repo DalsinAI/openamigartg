@@ -643,7 +643,7 @@ static void test_suspend(void)
 {
     enum { N = 8 };
     ALuint s[N + 1], b;
-    ALshort pcm[2000];
+    static ALshort pcm[2000];
     unsigned long vols, sounds;
     int i;
     for (i = 0; i < 2000; i++) {
@@ -919,7 +919,7 @@ static void scene_eight_bit(int voices, long t)
 {
     (void)voices;
     if (t == 0) {
-        ALubyte pcm[11025];
+        static ALubyte pcm[11025];
         int i;
         for (i = 0; i < 11025; i++) {
             pcm[i] = (ALubyte)(128.0 + 100.0 * sin(2.0 * PI * 147.0 * i / 11025.0));
@@ -987,12 +987,18 @@ static void scene_play(const struct scene *sc, int voices, ALshort *pcm)
 
 static void test_mix_against_board(void)
 {
+    /* Where they differ: Mix ramps a change of gain over 64 frames, the
+     * board steps; Mix's step is 16.16 (32 kHz into 44.1 kHz: 47554/65536,
+     * 0.9/65536 short), the board's 32.32; the board holds a buffer's last
+     * frame where Mix interpolates into the next (README, "What the board
+     * does differently"); AHI's frequencies are whole hertz (16,537.5
+     * plays at 16,538). The limits are a few dB under what was measured. */
     static const struct scene scenes[] = {
-        { "a 440 Hz tone at 44.1 kHz", 44100, 60.0, 2, scene_tone },
-        { "a sweep round the listener (22.05 kHz)", 4 * 44100, 35.0, -1, scene_sweep },
-        { "a stereo stream at 32 kHz", 45000, 20.0, -1, scene_stream },
-        { "six sources, one with Doppler", 2 * 44100, 15.0, -1, scene_crowd },
-        { "8-bit at 11025 Hz, pitch 1.5", 44100, 20.0, -1, scene_eight_bit },
+        { "a 440 Hz tone at 44.1 kHz", 44100, 80.0, 1, scene_tone },
+        { "a sweep round the listener (22.05 kHz)", 4 * 44100, 48.0, -1, scene_sweep },
+        { "a stereo stream at 32 kHz", 45000, 36.0, -1, scene_stream },
+        { "six sources, one with Doppler", 2 * 44100, 46.0, -1, scene_crowd },
+        { "8-bit at 11025 Hz, pitch 1.5", 44100, 29.0, -1, scene_eight_bit },
     };
     size_t k;
     for (k = 0; k < sizeof scenes / sizeof scenes[0]; k++) {
