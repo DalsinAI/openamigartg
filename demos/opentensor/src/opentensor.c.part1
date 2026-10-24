@@ -56,6 +56,7 @@ struct Library *CyberGfxBase = NULL;
 struct Mesh {
     GLfloat *v;
     GLfloat *c;
+    uint16_t *radial;
     GLsizei count;
     GLenum mode;
 };

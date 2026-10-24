@@ -118,6 +118,7 @@ static void ot_mesh_free(struct Mesh *m)
 {
     if (m->v) FreeVec(m->v);
     if (m->c) FreeVec(m->c);
+    if (m->radial) FreeVec(m->radial);
     memset(m, 0, sizeof(*m));
 }
 
@@ -150,7 +151,7 @@ static void ot_ground_vertex(struct Mesh *m, int n, float x, float z, int pale)
 static int ot_build_ground(struct Mesh *m)
 {
     const int nx = 32, nz = 40;
-    const float x0 = -24.0f, z0 = -54.0f, cell = 1.5f;
+    const float x0 = -24.0f, z0 = -55.0f, cell = 1.5f;
     int x, z, n = 0;
     if (!ot_mesh_alloc(m, nx*nz*12, GL_TRIANGLES)) return 0;
     for (z=0; z<nz; ++z) for (x=0; x<nx; ++x) {
@@ -165,6 +166,12 @@ static int ot_build_ground(struct Mesh *m)
         EDGE(xa,za); EDGE(xb,za); EDGE(xb,za+0.018f);
         EDGE(xa,za); EDGE(xa+0.018f,zb); EDGE(xa,zb);
 #undef EDGE
+    }
+    m->radial = (uint16_t *)AllocVec((ULONG)m->count * sizeof(uint16_t), MEMF_ANY);
+    if (!m->radial) { ot_mesh_free(m); return 0; }
+    for (n=0;n<m->count;++n) {
+        float dx=m->v[n*3], dz=m->v[n*3+2]+13.0f;
+        m->radial[n]=(uint16_t)OT_MIN(511,(int)(sqrt(dx*dx+dz*dz)*8));
     }
     return 1;
 }
@@ -199,7 +206,7 @@ static int ot_build_ball(struct Mesh *m)
 
 static int ot_build_stars(struct Mesh *m)
 {
-    const int count = 1200;
+    const int count = 720;
     uint32_t rng = 0xC001D00DUL;
     int i;
     if (!ot_mesh_alloc(m, count, GL_POINTS)) return 0;
@@ -210,13 +217,14 @@ static int ot_build_stars(struct Mesh *m)
         rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
         y = ((float)(rng & 0xffffU) / 65535.0f - 0.5f) * 35.0f;
         rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
-        z = -3.0f - (float)(rng & 0xffffU) / 65535.0f * 90.0f;
+        z = -3.0f - (float)((i*7919)%9000)*0.01f;
+        x *= -z/28.0f; y *= -z/28.0f;
         q = 0.18f + (float)((rng >> 24) & 255U) / 330.0f;
         /* Warm giants among the blue-white stars; brightness spans depth. */
         ot_put_vertex(m, i, x, y, z,
-                      q * ((i % 7) ? 0.66f : 1.0f),
-                      q * ((i % 7) ? 0.81f : 0.72f),
-                      q * ((i % 7) ? 1.0f : 0.43f), 1.0f);
+                      q * ((i % 11) ? 0.90f : 1.0f),
+                      q * ((i % 11) ? 0.94f : 0.84f),
+                      q * ((i % 11) ? 1.0f : 0.63f), 1.0f);
     }
     return 1;
 }

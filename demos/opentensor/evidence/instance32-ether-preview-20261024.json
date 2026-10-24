@@ -1,0 +1,26 @@
+{
+  "instance": "Instance-32",
+  "version": "0.3.1",
+  "destination": "DH1:OpenTensor-Preview",
+  "previous_preview_archive": "archive/opentensor-preview-before-0.3.1-20261024T032214Z",
+  "files": {
+    "BUILD-INFO.txt": "ea89745eeca0fd247daf7bddaa41d0cf09743f6d84134d9ab3b933d1f26666f9",
+    "Launch": "1760e57ed6d16620e9de353d723bd9b96389508d7090383a186dd1530af65568",
+    "Launch-ActII": "a2ad1001ac5fb0b13ae43c5c6fb4e9446dfae9b3d38a756109fc8098df3e94be",
+    "Launch-ActII.info": "601056e487394a384ad8ac1f07a6c773312fad4245df2246dc15f738d1db38de",
+    "Launch-Form": "411bc38e5514d4551a055ea2c8101fb4d041af4851c7a6111777469681f42e82",
+    "Launch-Form.info": "633f770550ba1a465148b0893c1b3ebe9228b20e72154733273ac27a43d041da",
+    "Launch-New-Look": "2c8a05f47f4d2100ee24a32a48f2916f1f5a3e30592e9510de8b12fbed4149f7",
+    "Launch-New-Look.info": "633f770550ba1a465148b0893c1b3ebe9228b20e72154733273ac27a43d041da",
+    "Launch-Storm": "f3c9428a35b56018763abb58becd5d6f42551ef4699df57386fcb1f484ab2319",
+    "Launch-Storm.info": "633f770550ba1a465148b0893c1b3ebe9228b20e72154733273ac27a43d041da",
+    "Launch.info": "633f770550ba1a465148b0893c1b3ebe9228b20e72154733273ac27a43d041da",
+    "OpenTensor": "4ead44ef9a053754c47628c220748c8a3084c6a57ad49647ac02145b47e5f687",
+    "OpenTensor.info": "02560ad3586e081082ad57b2d74c2f1d6546119702818f7bb3dc6311f93f6827",
+    "PREVIEW.txt": "b79498527f59f07e00abc1436542a6b7f4e989299c5e5e6b80b5fc64dc698934",
+    "README.txt": "9a54f9c634ae609454bd9ee35303a95120303157847e1644ed9ef4413d7d946e"
+  },
+  "original_binary_sha256_before_and_after": "6e60945ad082e68de91a81f59cb0f1685732b1ea450e20547fe2fa8cb8a8f939",
+  "preview_binary_sha256": "4ead44ef9a053754c47628c220748c8a3084c6a57ad49647ac02145b47e5f687",
+  "live_launch_or_restart": false
+}
