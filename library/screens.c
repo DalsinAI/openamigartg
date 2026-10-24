@@ -271,6 +271,8 @@ struct scr_g {
     UBYTE *stage;               /* STAGE_BYTES of public memory: sources copied at submit (stage_copy) */
     ULONG stage_at;             /* its next free byte */
     UBYTE stage_used[STAGE_PARTS];   /* a part holds sources of batches not yet waited for */
+    UWORD stage_open[STAGE_PARTS];   /* ... of batches not yet sent (stage_release) */
+    ULONG stage_gen[STAGE_PARTS];    /* room taken in the part: counted */
     waittof_fn old_waittof;
 #ifdef ORTG_MOUSE_HANDLER
     struct Interrupt mouse_irq;
@@ -766,11 +768,19 @@ static int ogpu_submit_batch(struct OGPUBatch *b)
 
 /* Every batch submitted so far is done: OpenRTG's and the others' (layers'
  * composes), with opengpu.library 0.20's OGPU_FENCE_ALL; with an older one,
- * OpenRTG's own last. */
+ * OpenRTG's own last. A part of the staging block is free again when every
+ * batch reading it had been sent before the wait, and no room was taken in
+ * it since: one still being built (another task's, or a call's gathered
+ * Text batch) keeps it. */
 void ortg_ogpu_settle(void)
 {
     struct Library *g = ortg_S->opengpu;
+    ULONG gen[STAGE_PARTS];
+    UBYTE sent[STAGE_PARTS];
     if (!g) return;
+    Forbid();
+    for (int p = 0; p < STAGE_PARTS; p++) { gen[p] = SC->stage_gen[p]; sent[p] = SC->stage_open[p] == 0; }
+    Permit();
     if (g->lib_Version > 0 || g->lib_Revision >= OGPU_FENCE_ALL_REVISION) {
         (void)OGPU_Wait(OGPU_FENCE_ALL);
         ortg_stats[ORTG_STAT_WAIT][1]++;
@@ -779,7 +789,10 @@ void ortg_ogpu_settle(void)
         ortg_stats[ORTG_STAT_WAIT][1]++;
     }
     SC->ogpu_pend = 0;
-    for (int p = 0; p < STAGE_PARTS; p++) SC->stage_used[p] = 0;   /* their batches are done */
+    Forbid();
+    for (int p = 0; p < STAGE_PARTS; p++)
+        if (sent[p] && SC->stage_gen[p] == gen[p]) SC->stage_used[p] = 0;   /* their batches are done */
+    Permit();
 }
 
 /* A batch not waited for; 1 when it went (its sources must outlive it:
@@ -799,8 +812,9 @@ static int ogpu_submit_async(struct OGPUBatch *b)
  * block, or NULL. It is used round and round in four parts; a part is used
  * again only once its batches are done, waited for here if they may not be
  * (ortg_ogpu_settle). Several tasks draw at once (console, Intuition's
- * drags): the room is taken under Forbid. */
-static UBYTE *stage_room(ULONG n)
+ * drags): the room is taken under Forbid. The parts it is in are held (bit
+ * q of *held) until the batch reading them has been sent: stage_release. */
+static UBYTE *stage_room(ULONG n, ULONG *held)
 {
     UBYTE *p = NULL;
     n = (n + 3) & ~3UL;
@@ -813,7 +827,7 @@ static UBYTE *stage_room(ULONG n)
         if (s) FreeVec(s);
         if (!SC->stage) return NULL;
     }
-    for (;;) {
+    for (int tries = 0; tries < 2; tries++) {
         ULONG at, first, last;
         int busy = 0;
         Forbid();
@@ -824,24 +838,39 @@ static UBYTE *stage_room(ULONG n)
         for (ULONG q = first; q <= last; q++)
             if (SC->stage_used[q] && !(at && q == (SC->stage_at - 1) / STAGE_PART && at == SC->stage_at)) busy = 1;
         if (!busy) {
-            for (ULONG q = first; q <= last; q++) SC->stage_used[q] = 1;
+            for (ULONG q = first; q <= last; q++) {
+                SC->stage_used[q] = 1;
+                SC->stage_gen[q]++;
+                if (!(*held & (1UL << q))) { SC->stage_open[q]++; *held |= 1UL << q; }
+            }
             SC->stage_at = at + n;
             p = SC->stage + at;
         }
         Permit();
         if (p) break;
-        ortg_ogpu_settle();
+        if (!tries) ortg_ogpu_settle();     /* still busy after it: held by batches being built; the caller waits */
     }
-    ortg_stats[ORTG_STAT_WAIT][2] += n;
+    if (p) ortg_stats[ORTG_STAT_WAIT][2] += n;
     return p;
+}
+
+/* The batch that read the parts in *held has been sent (or given up). */
+static void stage_release(ULONG *held)
+{
+    if (!*held) return;
+    Forbid();
+    for (int q = 0; q < STAGE_PARTS; q++)
+        if ((*held & (1UL << q)) && SC->stage_open[q]) SC->stage_open[q]--;
+    Permit();
+    *held = 0;
 }
 
 /* rows rows of bytes bytes, bpr apart from src, copied together into the
  * staging block (bytes apart), or NULL. */
-static const UBYTE *stage_copy(const UBYTE *src, LONG bpr, ULONG bytes, ULONG rows)
+static const UBYTE *stage_copy(const UBYTE *src, LONG bpr, ULONG bytes, ULONG rows, ULONG *held)
 {
     UBYTE *d, *p;
-    if (!bytes || !rows || bytes * rows > STAGE_MAX || !(d = stage_room(bytes * rows))) return NULL;
+    if (!bytes || !rows || bytes * rows > STAGE_MAX || !(d = stage_room(bytes * rows, held))) return NULL;
     p = d;
     if (bpr == (LONG)bytes) CopyMem((APTR)src, d, bytes * rows);
     else for (ULONG r = 0; r < rows; r++, p += bytes) CopyMem((APTR)(src + (LONG)r * bpr), p, bytes);
@@ -912,21 +941,30 @@ static ULONG src_bpp(int format)
 /* A colour table a batch may read after the call returns: OpenRTG's pen
  * tables (changed only after a settle, palette_changed), or a copy of the
  * caller's; NULL when it can't be copied. */
-static const void *stage_table(const void *table)
+static const void *stage_table(const void *table, ULONG *held)
 {
     const UBYTE *t = table, *pens = (const UBYTE *)SC->pen_rgb;
     if (!t || (t >= pens && t < pens + sizeof SC->pen_rgb)) return table;
-    return stage_copy(t, 1024, 1024, 1);
+    return stage_copy(t, 1024, 1024, 1, held);
 }
 
 /* src's w x h pixels of bpp bytes, src_bpr apart, where a batch left
  * running reads them: copied (*bpr their new row's bytes), or NULL when too
  * big (the batch is waited for). */
-static const UBYTE *stage_pixels(const void *src, ULONG src_bpr, LONG w, LONG h, ULONG bpp, ULONG *bpr)
+static const UBYTE *stage_pixels(const void *src, ULONG src_bpr, LONG w, LONG h, ULONG bpp, ULONG *bpr, ULONG *held)
 {
-    const UBYTE *s = stage_copy(src, (LONG)src_bpr, (ULONG)w * bpp, (ULONG)h);
+    const UBYTE *s = stage_copy(src, (LONG)src_bpr, (ULONG)w * bpp, (ULONG)h, held);
     if (s) *bpr = (ULONG)w * bpp;
     return s;
+}
+
+/* A batch whose sources were copied (s) is left running, else waited for;
+ * either way the staging parts it held are let go once it is sent. */
+static int stage_submit(struct OGPUBatch *b, const void *s, ULONG *held)
+{
+    int rc = s ? ogpu_submit_async(b) : ogpu_submit_batch(b);
+    stage_release(held);
+    return rc;
 }
 
 /* Pixels in memory, 1:1, into a rectangle: OGPU's PIXELS (format an
@@ -940,15 +978,15 @@ static int ogpu_pixels_from(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, L
 {
     UBYTE stream[ORTG_OGPU_WORDS * 4];
     struct OGPUBatch b;
-    ULONG bpr = src_bpr;
+    ULONG bpr = src_bpr, held = 0;
     const UBYTE *s = kept ? src : NULL;
     const void *t = table;
     if (!ogpu_can(OGPU_OP_PIXELS, bm)) return 0;
-    if (!s) s = stage_pixels(src, src_bpr, x1 - x0 + 1, y1 - y0 + 1, src_bpp(format), &bpr);
-    if (s && table && !(t = stage_table(table))) s = NULL;
+    if (!s) s = stage_pixels(src, src_bpr, x1 - x0 + 1, y1 - y0 + 1, src_bpp(format), &bpr, &held);
+    if (s && table && !(t = stage_table(table, &held))) s = NULL;
     ogpu_begin(&b, stream, bm);
     ogpu_pixels(&b, (ULONG)(s ? s : src), s ? bpr : src_bpr, format, (ULONG)(s ? t : table), x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-    return s ? ogpu_submit_async(&b) : ogpu_submit_batch(&b);
+    return stage_submit(&b, s, &held);
 }
 
 int ortg_ogpu_pixels(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
@@ -971,17 +1009,17 @@ int ortg_ogpu_pixels_xrgb(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LON
 {
     UBYTE stream[ORTG_OGPU_WORDS * 4];
     struct OGPUBatch b;
-    ULONG bpr = src_bpr;
+    ULONG bpr = src_bpr, held = 0;
     const UBYTE *s;
     const void *t = table;
     if (!ortg_ogpu_xrgb(bm)) return 0;
-    s = stage_pixels(src, src_bpr, x1 - x0 + 1, y1 - y0 + 1, src_bpp(format), &bpr);   /* 0.21, as ortg_ogpu_pixels */
-    if (s && table && !(t = stage_table(table))) s = NULL;
+    s = stage_pixels(src, src_bpr, x1 - x0 + 1, y1 - y0 + 1, src_bpp(format), &bpr, &held);   /* 0.21, as ortg_ogpu_pixels */
+    if (s && table && !(t = stage_table(table, &held))) s = NULL;
     ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
     ogpu_surface(&b, 0, (ULONG)bm->mem, bm->stride, bm->width, bm->height, OGPU_FMT_XRGB32);
     ogpu_target(&b, 0);
     ogpu_pixels(&b, (ULONG)(s ? s : src), s ? bpr : src_bpr, format, (ULONG)(s ? t : table), x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-    return s ? ogpu_submit_async(&b) : ogpu_submit_batch(&b);
+    return stage_submit(&b, s, &held);
 }
 
 /* A rectangle of the bitmap copied, raw, into memory (ORTG_ReadPixels' RAW
@@ -1025,16 +1063,16 @@ int ortg_ogpu_alpha(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
     UBYTE stream[ORTG_OGPU_WORDS * 4];
     struct OGPUBatch b;
     LONG w = x1 - x0 + 1, h = y1 - y0 + 1;
-    ULONG bpr = src_bpr;
+    ULONG bpr = src_bpr, held = 0;
     const UBYTE *s;
     if (bm->bpp == 1 || !ogpu_can(OGPU_OP_COMPOSITE, bm)) return 0;
-    s = stage_pixels(src, src_bpr, w, h, 4, &bpr);     /* 0.21: copied and left running, when small */
+    s = stage_pixels(src, src_bpr, w, h, 4, &bpr, &held);     /* 0.21: copied and left running, when small */
     ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
     ogpu_target_bitmap(&b, 0, bm);
     ogpu_surface(&b, 1, (ULONG)(s ? s : src), s ? bpr : src_bpr, w, h, OGPU_FMT_ARGB32);
     ogpu_target(&b, 0);
     ogpu_composite(&b, 1, 0, 0, w, h, x0, y0, w, h, (int)(alpha & 255), OGPU_COMP_SRCALPHA);
-    return s ? ogpu_submit_async(&b) : ogpu_submit_batch(&b);
+    return stage_submit(&b, s, &held);
 }
 
 /* Pixels in memory drawn at another size (ORTG_WritePixels with a dest_width
@@ -1071,8 +1109,8 @@ int ortg_ogpu_scale(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
         } else return 0;
     } else return 0;
     {
-        ULONG bpr = src_bpr;
-        const UBYTE *s = stage_pixels(src, src_bpr, sw, sh, src_bpp(format), &bpr);   /* 0.21, when small */
+        ULONG bpr = src_bpr, held = 0;
+        const UBYTE *s = stage_pixels(src, src_bpr, sw, sh, src_bpp(format), &bpr, &held);   /* 0.21, when small */
         ogpu_batch_init(&b, stream, ORTG_OGPU_WORDS);
         ogpu_surface(&b, 0, (ULONG)bm->mem, bm->stride, bm->width, bm->height, tf);
         ogpu_surface(&b, 1, (ULONG)(s ? s : src), s ? bpr : src_bpr, sw, sh, format);
@@ -1080,7 +1118,7 @@ int ortg_ogpu_scale(struct ortg_bitmap *bm, LONG x0, LONG y0, LONG x1, LONG y1,
         ogpu_clip(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
         ogpu_composite(&b, 1, 0, 0, sw, sh, dx, dy, dw, dh, 255, 0);
         if (clear_top) ogpu_invert(&b, x0, y0, x1 - x0 + 1, y1 - y0 + 1, 0xFF000000UL);
-        return s ? ogpu_submit_async(&b) : ogpu_submit_batch(&b);
+        return stage_submit(&b, s, &held);
     }
 }
 
@@ -1111,12 +1149,13 @@ static int ogpu_pattern_piece(struct ortg_bitmap *bm,
     }
     {
         /* 0.21: the rows (on the stack, or the RastPort's) copied, and the batch left running */
-        const UWORD *s = (const UWORD *)stage_copy((const UBYTE *)ptrn, (LONG)f->ptsz * 2, (ULONG)f->ptsz * 2, 1);
+        ULONG held = 0;
+        const UWORD *s = (const UWORD *)stage_copy((const UBYTE *)ptrn, (LONG)f->ptsz * 2, (ULONG)f->ptsz * 2, 1, &held);
         ogpu_begin(&b, stream, bm);
         ogpu_pattern(&b, (ULONG)(s ? s : ptrn), (ULONG)f->ptsz,
                      x0, y0, x1 - x0 + 1, y1 - y0 + 1,
                      k->a, k->b, k->mode & ~INVERSVID);
-        return s ? ogpu_submit_async(&b) : ogpu_submit_batch(&b);
+        return stage_submit(&b, s, &held);
     }
 }
 
@@ -1128,10 +1167,11 @@ struct obatch {
     struct OGPUBatch b;
     const struct ortg_bitmap *tgt;
     int failed, wait;
+    ULONG held;                 /* the staging parts its copied rows are in (stage_room) */
     UBYTE buf[OB_WORDS * 4];
 };
 
-static void ob_init(struct obatch *o) { ogpu_batch_init(&o->b, o->buf, OB_WORDS); o->tgt = NULL; o->failed = 0; o->wait = 0; }
+static void ob_init(struct obatch *o) { ogpu_batch_init(&o->b, o->buf, OB_WORDS); o->tgt = NULL; o->failed = 0; o->wait = 0; o->held = 0; }
 
 static void ob_flush(struct obatch *o)
 {
@@ -1141,6 +1181,7 @@ static void ob_flush(struct obatch *o)
         o->tgt = NULL;
         o->wait = 0;
     }
+    if (o) stage_release(&o->held);
 }
 
 /* Room for `words` more, drawing on bm. */
@@ -1175,12 +1216,16 @@ static int ogpu_template_piece(struct ortg_bitmap *bm,
          * glyphs are out of a host back end's reach), so the batch is left
          * running and the caller may change or free its template */
         LONG h = y1 - y0 + 1, bytes = ((first & 7) + (x1 - x0 + 1) + 7) >> 3;
-        const UBYTE *s = stage_copy(src + (first >> 3), t->mod, (ULONG)bytes, (ULONG)h);
+        ULONG held = 0;
+        const UBYTE *s;
+        /* gathered into the call's batch: room in it first (a full one goes
+         * now), then the rows, held with the batch they are in */
+        if (t->ob) ob_room(t->ob, bm, 9);
+        s = stage_copy(src + (first >> 3), t->mod, (ULONG)bytes, (ULONG)h, t->ob ? &t->ob->held : &held);
         if (s) { src = s; mod = bytes; first &= 7; }
         if (t->ob) {
-            /* gathered into the call's batch; a source not copied stays where it is, and the batch is waited for */
+            /* a source not copied stays where it is, and the batch is waited for */
             if (!s && !TypeOfMem((APTR)src)) return 0;
-            ob_room(t->ob, bm, 9);
             if (!s) t->ob->wait = 1;
             ogpu_template(&t->ob->b, (ULONG)src, (ULONG)mod, (ULONG)first, x0, y0, x1 - x0 + 1, y1 - y0 + 1,
                           k->a, k->b, k->mode & ~INVERSVID);
@@ -1198,7 +1243,7 @@ static int ogpu_template_piece(struct ortg_bitmap *bm,
         ogpu_template(&b, (ULONG)src, (ULONG)mod, (ULONG)first,
                       x0, y0, x1 - x0 + 1, y1 - y0 + 1,
                       k->a, k->b, k->mode & ~INVERSVID);
-        return s ? ogpu_submit_async(&b) : ogpu_submit_batch(&b);
+        return stage_submit(&b, s, &held);
     }
 }
 
