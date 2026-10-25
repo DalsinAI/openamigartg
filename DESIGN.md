@@ -418,6 +418,29 @@ to put its patches in.
   host (Team, 12 October 2026: "use opengpu to do the leg work").
   `ortg_ogpu_scale()` in `library/screens.c`, `scaled()` and
   `scaled_source()` in `library/pixels.c`; checked by `OpenRTGScaleExact`.
+- **A 32-bit pixel's alpha byte, written and read (a contract, 25 October
+  2026):** OpenRTG's 32-bit pixels keep their top byte 0, and every way of
+  drawing in a colour keeps it so: pens, FILL, `RECTFMT_ARGB` and `0RGB`
+  (`ORTG_PIX_ARGB`), colour tables. The one way to put a byte there is the
+  bitmap's own pixels: `WritePixelArray(RECTFMT_RAW)` (`ORTG_WritePixels`
+  with `ORTG_PIX_RAW`) writes each source long as it is, alpha included,
+  1:1, through OpenGPU's PIXELS from ARGB32 into the bitmap as ARGB32, or on
+  the CPU (`write_piece`'s `ortg_put`). `ReadPixelArray(RECTFMT_RAW)` reads
+  the four bytes back (a COPY into memory, or the CPU). `RECTFMT_ARGB`
+  reads give alpha 255 whatever the byte is. The screen shows a 32-bit
+  bitmap as XRGB32, so the byte is never seen there; it counts only in a
+  surface OpenLayers composes with its own alpha (`LAYERLOOK_ALPHA`, or
+  47.107's `LAYERLOOK_KEYED`). Intuition keys the see-through bar's layer
+  this way (`ICTRL_BarOpacity`), and OpenTitle 0.7.5 its windows on the bar.
+  Held by `tests/test_opengpu.c`'s `test_raw_alpha` (the commands both
+  paths use, and the keyed compose OpenLayers builds from them), by
+  `tests/test_opengpu_vk.c`, whose random streams and golden scene write
+  ARGB32 with alpha into ARGB32 and must match the core byte for byte on
+  the Vulkan back end, and, on a running system, by amigachrome-guest's
+  `BarOpacityTest RAW` (an off-screen friend bitmap and a window's layer).
+  A COPY of such a surface onto the screen (an opaque layer) carries the
+  byte into the screen's bitmap, where the display, which reads it as
+  XRGB32, and `ortg_decode` drop it.
 - **Native modes (0.17, 12 October 2026; the native screen mode's step 3,
   amigachrome `Design-Native-Screen-Mode`):** on an ACRTG board of protocol
   v5 or later, the host's window can ask for the Amiga screen's size

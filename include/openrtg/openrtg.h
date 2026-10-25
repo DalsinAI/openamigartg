@@ -55,7 +55,8 @@ struct OpenRTGPixels {
 #define ORTG_PIX_ARGB     2UL
 #define ORTG_PIX_PEN      3UL     /* 1 byte: the pen itself (CyberGraphX's LUT8) */
 #define ORTG_PIX_GREY     4UL
-#define ORTG_PIX_RAW      5UL     /* the bitmap's own pixels (8-bit: pens) */
+#define ORTG_PIX_RAW      5UL     /* the bitmap's own pixels (8-bit: pens; 32-bit: all four bytes, alpha included,
+                                     written and read as they are: DESIGN.md, "A 32-bit pixel's alpha byte") */
 #define ORTG_PIX_BGR      109UL
 #define ORTG_PIX_BGRA     111UL
 #define ORTG_PIX_ABGR     113UL

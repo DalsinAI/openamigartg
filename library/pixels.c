@@ -307,7 +307,7 @@ static void write_piece(void *v, struct ortg_bitmap *bm, LONG x0, LONG y0, LONG 
                 d[x] = c->mask == 0xFF ? pen : (UBYTE)((d[x] & ~c->mask) | (pen & c->mask));
             } else if (fmt == ORTG_PIX_PEN)
                 ortg_put(bm, x, y, ortg_pen_px(bm, row[sx]));
-            else if (fmt == ORTG_PIX_RAW)          /* the bitmap's own pixels */
+            else if (fmt == ORTG_PIX_RAW)          /* the bitmap's own pixels: 32-bit with their alpha byte (DESIGN.md) */
                 ortg_put(bm, x, y, bm->bpp == 2 ? ((const UWORD *)row)[sx] : ((const ULONG *)row)[sx]);
             else
                 ortg_put(bm, x, y, ortg_encode(bm, src_rgb(c->px, row, sx)));
