@@ -1707,12 +1707,33 @@ OP_FN op_composite_pd(struct ogpu_core *c, const ogpu_u8 *a) {
  * four rows of cells (64 subpixels high), each swept and its winding rule
  * applied alone: area alone can't tell where two pieces overlap inside
  * one pixel (a self-crossing, a stroke's inner join), so a pixel there is
- * wrong by at most what one sub-row holds of it. */
+ * wrong by at most what one sub-row holds of it.
+ *
+ * Team 5, 25 Oct 2026 (for a 68040 without a driver): the path is walked
+ * once, into a list of its edges, and each band is drawn from the list;
+ * a band's cells are cleared only where the walk writes them (a bit a
+ * pixel says which), and the sweep takes the pixels between written ones
+ * as one run of the same coverage. The pixels are the same as before. */
 #define OGPU_SUBROWS 4
+#define OGPU_LIST_BYTES 0x100000UL  /* the most work memory the edge list may take (65536 edges) */
 struct rast {
-    int *cover, *area;      /* the band's cells, w x h x OGPU_SUBROWS */
-    int w, h, eo;           /* eo: the even-odd rule */
+    int *cell;              /* the band's cells: 8 a pixel, its sub-rows' 4 covers, then their 4 areas */
+    ogpu_w32 *seen;         /* a bit a pixel (tw words a row, the row's first pixel the top bit): the
+                               pixels whose cells the walk wrote; the others read as 0. 0: every cell
+                               is cleared before the walk instead */
+    int *list;              /* collecting: the walk's edges (x0, y0, x1, y1 on the target, 24.8) */
+    long nlist, cap;        /* edges walked, and room for cap of them (past it, only counted) */
+    int w, h, eo, tw;       /* eo: the even-odd rule */
+    int collect;            /* 1: edge() adds to the list instead of drawing */
     long ox, oy;            /* the band's corner on the target, 24.8 */
+};
+
+/* bit_of[k]: pixel k of a 32-pixel word of seen bits */
+static const ogpu_w32 bit_of[32] = {
+    0x80000000u, 0x40000000u, 0x20000000u, 0x10000000u, 0x08000000u, 0x04000000u, 0x02000000u, 0x01000000u,
+    0x00800000u, 0x00400000u, 0x00200000u, 0x00100000u, 0x00080000u, 0x00040000u, 0x00020000u, 0x00010000u,
+    0x00008000u, 0x00004000u, 0x00002000u, 0x00001000u, 0x00000800u, 0x00000400u, 0x00000200u, 0x00000100u,
+    0x00000080u, 0x00000040u, 0x00000020u, 0x00000010u, 0x00000008u, 0x00000004u, 0x00000002u, 0x00000001u
 };
 
 /* A cell's sum, past 32 bits only when some 65536 lines meet in one cell:
@@ -1724,12 +1745,36 @@ static int cell_add(int v, int d, int eo) {
     return v + d;
 }
 
+/* sub-row j (0 .. 4h - 1), pixel i */
 static void cell(struct rast *r, long i, int j, int dy, long fx0, long fx1) {
-    long at;
+    int *c;
     if (i >= r->w || !dy) return;   /* right of the band: covers nothing */
-    at = (long)j * r->w + i;
-    r->cover[at] = cell_add(r->cover[at], dy, r->eo);
-    r->area[at] = cell_add(r->area[at], dy * (int)(fx0 + fx1), r->eo);
+    c = r->cell + (((long)MUL16(j >> 2, r->w) + i) << 3);
+    if (r->seen) {                  /* the pixel's first write clears its cells */
+        ogpu_w32 *s = r->seen + MUL16(j >> 2, r->tw) + (i >> 5), b = bit_of[i & 31];
+        if (!(*s & b)) { *s |= b; c[0] = c[1] = c[2] = c[3] = c[4] = c[5] = c[6] = c[7] = 0; }
+    }
+    c += j & 3;
+    c[0] = cell_add(c[0], dy, r->eo);
+    c[4] = cell_add(c[4], dy * (int)(fx0 + fx1), r->eo);
+}
+
+/* How many pixels from i on (to w) the walk didn't write, at least one. */
+static int unseen(const ogpu_w32 *s, int i, int w) {
+    const ogpu_w32 *p = s + (i >> 5);
+    ogpu_w32 v = *p & ((bit_of[i & 31] << 1) - 1);      /* pixel i's bit and those after it */
+    int at = i & ~31;
+    while (!v) {
+        at += 32;
+        if (at >= w) return w - i;
+        v = *++p;
+    }
+    if (!(v & 0xFFFF0000u)) { at += 16; v <<= 16; }      /* the first one set */
+    if (!(v & 0xFF000000u)) { at += 8; v <<= 8; }
+    if (!(v & 0xF0000000u)) { at += 4; v <<= 4; }
+    if (!(v & 0xC0000000u)) { at += 2; v <<= 2; }
+    if (!(v & 0x80000000u)) at += 1;
+    return (at < w ? at : w) - i;
 }
 
 /* the part of a line within row j, from xa to xb (0 .. w * 256), climbing dy */
@@ -1794,6 +1839,16 @@ static void edge_rel(struct rast *r, long x0, long y0, long x1, long y1) {
     rows(r, x0, y0, x1, y1);
 }
 static void edge(struct rast *r, long x0, long y0, long x1, long y1) {
+    if (r->collect) {               /* kept for every band (a level one covers nothing) */
+        if (y0 != y1) {
+            if (r->nlist < r->cap) {
+                int *e = r->list + (r->nlist << 2);
+                e[0] = (int)x0; e[1] = (int)y0; e[2] = (int)x1; e[3] = (int)y1;
+            }
+            r->nlist++;
+        }
+        return;
+    }
     edge_rel(r, x0 - r->ox, y0 - r->oy, x1 - r->ox, y1 - r->oy);
 }
 
@@ -2250,6 +2305,10 @@ static void paint_row(struct paint *p, int x, int y) {
 static void paint_step(struct paint *p) {
     if (p->kind >= 2 && !p->none) { p->gx += p->inv[0]; p->gy += p->inv[3]; p->t24 += p->dt24; }
 }
+/* n steps at once */
+static void paint_skip(struct paint *p, int n) {
+    if (p->kind >= 2 && !p->none) { p->gx += n * p->inv[0]; p->gy += n * p->inv[3]; p->t24 += n * p->dt24; }
+}
 
 /* atan(z) in turns for z in 0..1 (16.16): z/8 + z(1-z)(0.03895 + 0.01055 z), within 0.0003 */
 static long atan_turns(long z) {
@@ -2404,18 +2463,84 @@ static int op_ok(int op) {
     return op < OGPU_PD_OPS || (op >= OGPU_BLEND_MULTIPLY && op <= OGPU_BLEND_LUMINOSITY);
 }
 
+/* The sweep's place in a pixel row, and what it draws with. */
+struct prun {
+    ogpu_u8 *dp;                /* pixel x on the target */
+    int x, y, f, dbpp, op, bounded, mox;
+    const struct ogpu_surface *m;
+    const ogpu_u8 *mrow;        /* the mask's row, or 0 (the mask is 0 there) */
+    struct paint *pt;
+};
+
+/* n pixels from r->x on with coverage al (before the mask), as the
+ * per-pixel form draws them: the paint times the coverage, by the
+ * operator. */
+BIG_FN void put_run(struct prun *r, int n, unsigned al) {
+    struct paint *p = r->pt;
+    struct ch s;
+    int k;
+    if (!r->m) {
+        if (!al && r->bounded) {                        /* nothing to draw */
+            paint_skip(p, n);
+            r->x += n; r->dp += (long)n * r->dbpp;
+            return;
+        }
+    }
+    for (k = 0; k < n; k++, r->x++, r->dp += r->dbpp, paint_step(p)) {
+        unsigned a = al;
+        if (r->m) {
+            int mx = r->x - r->mox;
+            struct ch mp;
+            if (r->mrow && mx >= 0 && mx < r->m->w) { ld(r->mrow + xoff(mx, fmt_bpp[r->m->format]), r->m->format, &mp); a = mul255(a, mp.a); }
+            else a = 0;
+        }
+        if (!a && r->bounded) continue;
+        paint_px(p, r->x, r->y, &s);
+        if (a != 255) { s.a = mul255(s.a, a); s.r = mul255(s.r, a); s.g = mul255(s.g, a); s.b = mul255(s.b, a); }
+        put_op(r->dp, r->f, &s, r->op);
+    }
+}
+
+/* A pixel's coverage, 0-255, from its sub-rows' sums of cover left of it
+ * and their areas in it (ar; 0 when its cells are clear). */
+PX_FN unsigned path_cov(const long *acc, const int *ar, int evenodd) {
+    long cov, sub, a2;
+    int q;
+    for (cov = 0, q = 0; q < OGPU_SUBROWS; q++) {
+        /* each sub-row's coverage, 0 .. 0x4000 (256 x 64 subpixels), in 32
+         * bits: even-odd wants it modulo 0x8000 (so its cells may wrap);
+         * non-zero past 0x4000 is full, and is taken as full from acc * 256
+         * = 2^30 (a winding of some 65536; area / 2 is under 2^30, and near
+         * it only with some 65536 lines in one cell) */
+        a2 = ar ? ar[q] / 2 : 0;
+        if (evenodd) {
+            sub = (long)((((unsigned long)acc[q] << 8) - (unsigned long)a2) & 0x7FFF);
+            if (sub > 0x4000) sub = 0x8000 - sub;
+        } else if (acc[q] >= 0x400000L || acc[q] <= -0x400000L) sub = 0x4000;
+        else {
+            sub = acc[q] * 256 - a2;
+            if (sub < 0) sub = -sub;
+            if (sub > 0x4000) sub = 0x4000;
+        }
+        cov += sub;
+    }
+    return (unsigned)((cov * 255 + 0x8000) >> 16);
+}
+
 /* PATH_FILL and PATH_STROKE (v1.6). */
 OP_FN op_path(struct ogpu_core *c, const ogpu_u8 *a, int stroke) {
     ogpu_u32 fl = rd32(a), mslot = rd32(a + 12), mxy = rd32(a + 16), paddr = rd32(a + 20), pwords = rd32(a + 24);
     ogpu_u32 waddr = rd32(a + 52), wbytes = rd32(a + 56);
     const struct ogpu_surface *t = &c->slot[c->target], *m = 0;
     int op = (int)(fl & 255), evenodd = (fl & OGPU_PATH_EVENODD) != 0, mox = hi_s(mxy), moy = lo_s(mxy);
-    int rx0, ry0, rx1, ry1, w, h, bh, band, i, j, dbpp = bytes_per_pixel(t->format), r, bounded = !unbounded(op);
+    int rx0, ry0, rx1, ry1, w, h, bh, band, i, j, dbpp = bytes_per_pixel(t->format), r, bounded = !unbounded(op), tw;
     long minx = 0x7FFFFFFFL, miny = 0x7FFFFFFFL, maxx = -0x7FFFFFFFL, maxy = -0x7FFFFFFFL, at, x, y, ex, k;
+    ogpu_u32 rowb, len;
     struct pctx pc;
     struct paint pt;
     struct rast rs;
-    ogpu_u8 *work;
+    struct prun pr;
+    ogpu_u8 *work, *cells;
     if (!op_ok(op) || (!is_colour(t->format) && t->format != OGPU_FMT_A8)) return OGPU_ERR_UNSUPPORTED;
     if (fl & OGPU_PATH_MASK) {
         if (mslot >= OGPU_MAX_SLOTS || !c->slot[mslot].pixels) return OGPU_ERR_NOSURFACE;
@@ -2488,62 +2613,74 @@ OP_FN op_path(struct ogpu_core *c, const ogpu_u8 *a, int stroke) {
     if (rx1 <= rx0 || ry1 <= ry0) return OGPU_OK;
     w = rx1 - rx0; h = ry1 - ry0;
     if (wbytes < (ogpu_u32)w * 8 * OGPU_SUBROWS) return OGPU_ERR_UNSUPPORTED;
-    wbytes /= (ogpu_u32)w * 8 * OGPU_SUBROWS;      /* the rows it holds (w x 32 x h may pass 32 bits) */
-    bh = wbytes < (ogpu_u32)h ? (int)wbytes : h;
-    if (!(work = c->map(c->user, waddr, (ogpu_u32)bh * w * 8 * OGPU_SUBROWS))) return OGPU_ERR_NOMAP;
+    /* The work memory: the walk's edges first, then a band's cells and
+     * seen bits (rowb bytes a row). Mapped: what a band of every row takes,
+     * and room for OGPU_LIST_BYTES of edges, or all of it if that is less. */
+    tw = (w + 31) >> 5;
+    rowb = (ogpu_u32)w * 8 * OGPU_SUBROWS + (ogpu_u32)tw * 4;
+    bh = (int)(wbytes / rowb < (ogpu_u32)h ? wbytes / rowb : (ogpu_u32)h);
+    len = (ogpu_u32)bh * rowb;
+    len = wbytes - len > OGPU_LIST_BYTES ? len + OGPU_LIST_BYTES : wbytes;
+    if (!(work = c->map(c->user, waddr, len))) return OGPU_ERR_NOMAP;
     if (!aligned4(work)) return OGPU_ERR_UNSUPPORTED;
-    rs.cover = (int *)(void *)work; rs.area = rs.cover + (long)w * bh * OGPU_SUBROWS; rs.w = w; rs.eo = evenodd;
+    rs.w = w; rs.eo = evenodd; rs.tw = tw; rs.seen = 0; rs.list = 0; rs.nlist = 0; rs.collect = 0;
     pc.r = &rs;
+    if (len >= rowb + 16) {                         /* walked once, into the list */
+        rs.list = (int *)(void *)work; rs.cap = (long)((len - rowb) >> 4); rs.collect = 1;
+        rs.ox = rs.oy = 0;
+        walk(&pc);
+        rs.collect = 0;
+        if (rs.nlist > rs.cap) { rs.list = 0; rs.nlist = 0; }     /* too many: walked again for each band */
+    }
+    cells = work + ((ogpu_u32)rs.nlist << 4);
+    len -= (ogpu_u32)rs.nlist << 4;
+    if (len >= rowb) {
+        bh = (int)(len / rowb < (ogpu_u32)h ? len / rowb : (ogpu_u32)h);
+        rs.seen = (ogpu_w32 *)(void *)(cells + (ogpu_u32)bh * w * 8 * OGPU_SUBROWS);
+    } else {                                        /* no room for the bits: every cell cleared */
+        len /= (ogpu_u32)w * 8 * OGPU_SUBROWS;
+        bh = (int)(len < (ogpu_u32)h ? len : (ogpu_u32)h);
+    }
+    rs.cell = (int *)(void *)cells;
+    pr.f = t->format; pr.dbpp = dbpp; pr.op = op; pr.bounded = bounded; pr.mox = mox; pr.m = m; pr.pt = &pt;
     for (band = ry0; band < ry1; band += bh) {
         rs.h = ry1 - band < bh ? ry1 - band : bh;
         rs.ox = (long)rx0 * 256; rs.oy = (long)band * 256;
-        for (at = 0; at < (long)w * rs.h * OGPU_SUBROWS; at++) rs.cover[at] = rs.area[at] = 0;
-        walk(&pc);
-        /* the sweep, and each pixel drawn */
+        if (rs.seen) for (at = 0; at < (long)tw * rs.h; at++) rs.seen[at] = 0;
+        else for (at = 0; at < (long)w * rs.h * 2 * OGPU_SUBROWS; at++) rs.cell[at] = 0;
+        if (rs.list) {
+            long ylim = rs.oy + ((long)rs.h << 8);
+            const int *e = rs.list;
+            for (at = 0; at < rs.nlist; at++, e += 4) {
+                long ya = e[1], yb = e[3];
+                if ((ya > yb ? ya : yb) <= rs.oy || (ya < yb ? ya : yb) >= ylim) continue;   /* not in the band */
+                edge_rel(&rs, e[0] - rs.ox, ya - rs.oy, e[2] - rs.ox, yb - rs.oy);
+            }
+        } else walk(&pc);
+        /* the sweep: each pixel the walk wrote, and the runs between them,
+         * whose coverage is the sums of cover left of them */
         for (j = 0; j < rs.h; j++) {
-            const int *cv = rs.cover + (long)j * OGPU_SUBROWS * w, *ar = rs.area + (long)j * OGPU_SUBROWS * w;
-            const ogpu_u8 *mrow = 0;
-            ogpu_u8 *dp = px_at(t, rx0, band + j);
-            long acc[OGPU_SUBROWS], cov, sub;
-            int q;
+            const int *cl = rs.cell + ((long)MUL16(j, w) << 3);
+            const ogpu_w32 *sn = rs.seen ? rs.seen + MUL16(j, tw) : 0;
+            long acc[OGPU_SUBROWS];
+            int q, n;
+            unsigned al;
             for (q = 0; q < OGPU_SUBROWS; q++) acc[q] = 0;
             y = band + j;
-            if (m && y - moy >= 0 && y - moy < m->h) mrow = row_at(m, (int)(y - moy));
+            pr.mrow = m && y - moy >= 0 && y - moy < m->h ? row_at(m, (int)(y - moy)) : 0;
+            pr.dp = px_at(t, rx0, (int)y); pr.x = rx0; pr.y = (int)y;
             paint_row(&pt, rx0, (int)y);
-            for (i = 0; i < w; i++, dp += dbpp, paint_step(&pt)) {
-                struct ch s;
-                unsigned al;
-                /* each sub-row's coverage, 0 .. 0x4000 (256 x 64 subpixels) */
-                for (cov = 0, q = 0; q < OGPU_SUBROWS; q++) {
-                    long at = (long)q * w + i;
-                    acc[q] += cv[at];
-                    /* in 32 bits: even-odd wants it modulo 0x8000 (so its
-                     * cells may wrap); non-zero past 0x4000 is full, and is
-                     * taken as full from acc * 256 = 2^30 (a winding of some
-                     * 65536; area / 2 is under 2^30, and near it only with
-                     * some 65536 lines in one cell) */
-                    if (evenodd) {
-                        sub = (long)((((unsigned long)acc[q] << 8) - (unsigned long)(ar[at] / 2)) & 0x7FFF);
-                        if (sub > 0x4000) sub = 0x8000 - sub;
-                    } else if (acc[q] >= 0x400000L || acc[q] <= -0x400000L) sub = 0x4000;
-                    else {
-                        sub = acc[q] * 256 - ar[at] / 2;
-                        if (sub < 0) sub = -sub;
-                        if (sub > 0x4000) sub = 0x4000;
-                    }
-                    cov += sub;
+            for (i = 0; i < w; i += n) {
+                if (sn && !(sn[i >> 5] & bit_of[i & 31])) {
+                    n = unseen(sn, i, w);
+                    al = path_cov(acc, 0, evenodd);
+                } else {
+                    const int *cv = cl + ((long)i << 3);
+                    for (q = 0; q < OGPU_SUBROWS; q++) acc[q] += cv[q];
+                    al = path_cov(acc, cv + 4, evenodd);
+                    n = 1;
                 }
-                al = (unsigned)((cov * 255 + 0x8000) >> 16);
-                if (m) {
-                    int mx = rx0 + i - mox;
-                    struct ch mp;
-                    if (mrow && mx >= 0 && mx < m->w) { ld(mrow + xoff(mx, fmt_bpp[m->format]), m->format, &mp); al = mul255(al, mp.a); }
-                    else al = 0;
-                }
-                if (!al && bounded) continue;
-                paint_px(&pt, rx0 + i, (int)y, &s);
-                if (al != 255) { s.a = mul255(s.a, al); s.r = mul255(s.r, al); s.g = mul255(s.g, al); s.b = mul255(s.b, al); }
-                put_op(dp, t->format, &s, op);
+                put_run(&pr, n, al);
             }
         }
     }
