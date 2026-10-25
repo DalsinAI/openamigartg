@@ -1757,19 +1757,40 @@ static ogpu_s64 floor_div(ogpu_s64 a, ogpu_s64 b) {
     return q;
 }
 
-/* a line in the band, x already inside 0 .. w * 256 */
+/* a line in the band, x already inside 0 .. w * 256. Its x at the top of
+ * each sub-row is x0 + floor((x1 - x0) (y - y0) / (y1 - y0)); from the
+ * second sub-row on it is stepped, a quotient and a remainder carried, so
+ * a sub-row costs no 64-bit multiply or divide (libgcc's, slow on the 68k).
+ * The same x as worked out afresh each time (Team 5, 25 Oct 2026). */
 static void rows(struct rast *r, long x0, long y0, long x1, long y1) {
-    long y, ylim = (long)r->h << 8, t;
-    int sign = 1;
+    long y, yn, ylim = (long)r->h << 8, t, dx, d, xa, xb, q = 0, qs = 0;
+    unsigned long e = 0, es = 0;            /* 0 <= e, es < d */
+    int sign = 1, first = 1;
     if (y0 > y1) { t = x0; x0 = x1; x1 = t; t = y0; y0 = y1; y1 = t; sign = -1; }
     if (y1 <= 0 || y0 >= ylim) return;
-    for (y = y0 < 0 ? 0 : y0; y < y1 && y < ylim;) {
-        long j = y >> 6, yn = (j + 1) << 6, xa, xb;      /* sub-rows */
-        if (yn > y1) yn = y1;
-        xa = y == y0 ? x0 : x0 + (long)floor_div((ogpu_s64)(x1 - x0) * (y - y0), y1 - y0);
-        xb = yn == y1 ? x1 : x0 + (long)floor_div((ogpu_s64)(x1 - x0) * (yn - y0), y1 - y0);
+    dx = x1 - x0; d = y1 - y0;              /* |dx| <= w * 256 (2^22), 0 < d < 2^31 */
+    y = y0 < 0 ? 0 : y0;
+    xa = y == y0 ? x0 : x0 + (long)floor_div((ogpu_s64)dx * (y - y0), d);
+    for (; y < y1 && y < ylim; y = yn, xa = xb) {
+        long j = y >> 6;                    /* sub-rows */
+        yn = (j + 1) << 6;
+        if (yn >= y1) { yn = y1; xb = x1; }
+        else {
+            if (first) {                    /* the first sub-row's end, and the step from one to the next */
+                ogpu_s64 nn = (ogpu_s64)dx * (yn - y0);
+                long s = dx * 64;
+                q = (long)floor_div(nn, d); e = (unsigned long)(nn - (ogpu_s64)q * d);
+                qs = s / d;
+                if (s % d < 0) qs--;
+                es = (unsigned long)(s - qs * d);
+                first = 0;
+            } else {
+                q += qs; e += es;
+                if (e >= (unsigned long)d) { e -= (unsigned long)d; q++; }
+            }
+            xb = x0 + q;
+        }
         row_piece(r, (int)j, xa, xb, sign * (int)(yn - y));
-        y = yn;
     }
 }
 
