@@ -4,3 +4,6 @@ library/modules/sdl2/patches/amigaos3/0003-modifier-focus.patch -whitespace
 
 docs/qualification/sdltext-open2-20261013/** -text
 docs/qualification/sdltext-open2-20261013/*.txt -whitespace
+
+# Unified diff context can contain intentional whitespace.
+library/modules/sdl2/patches/amigaos3/0010-window-resize.patch whitespace=-blank-at-eol,-space-before-tab

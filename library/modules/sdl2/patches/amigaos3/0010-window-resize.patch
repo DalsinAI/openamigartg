@@ -1,0 +1,47 @@
+--- a/src/video/amigaos3/SDL_os3window.c
++++ b/src/video/amigaos3/SDL_os3window.c
+@@ -488,6 +488,24 @@
+     window->driverdata = NULL;
+ }
+ 
++/* SDL changes window->w/h before invoking this callback. SizeWindow takes
++ * outer-size deltas, which equal inner-size deltas with unchanged borders.
++ * Intuition reports completion through IDCMP_NEWSIZE. */
++void OS3_SetWindowSize(_THIS, SDL_Window *window)
++{
++    OS3_WindowData *data = (OS3_WindowData *)window->driverdata;
++    if (!data || !data->window) return;
++    if (data->is_fullscreen) {
++        /* Custom-screen geometry is selected by the fullscreen path. */
++        window->w = data->window->GZZWidth;
++        window->h = data->window->GZZHeight;
++        return;
++    }
++    WindowLimits(data->window, 0, 0, (UWORD)-1, (UWORD)-1);
++    SizeWindow(data->window, window->w - data->window->GZZWidth,
++                            window->h - data->window->GZZHeight);
++}
++
+ void OS3_SetWindowTitle(_THIS, SDL_Window *window)
+ {
+     OS3_WindowData *data = (OS3_WindowData *)window->driverdata;
+--- a/src/video/amigaos3/SDL_os3window.h
++++ b/src/video/amigaos3/SDL_os3window.h
+@@ -10,6 +10,7 @@
+ 
+ extern int  OS3_CreateWindow(_THIS, SDL_Window *window);
+ extern void OS3_DestroyWindow(_THIS, SDL_Window *window);
++extern void OS3_SetWindowSize(_THIS, SDL_Window *window);
+ extern void OS3_SetWindowTitle(_THIS, SDL_Window *window);
+ extern void OS3_SetWindowFullscreen(_THIS, SDL_Window *window,
+                                     SDL_VideoDisplay *display, SDL_bool fullscreen);
+--- a/src/video/amigaos3/SDL_os3video.c
++++ b/src/video/amigaos3/SDL_os3video.c
+@@ -90,6 +90,7 @@
+     device->CreateSDLWindow  = OS3_CreateWindow;
+     device->DestroyWindow    = OS3_DestroyWindow;
+     device->SetWindowTitle   = OS3_SetWindowTitle;
++    device->SetWindowSize    = OS3_SetWindowSize;
+     device->SetWindowFullscreen = OS3_SetWindowFullscreen;
+     device->ShowWindow       = OS3_ShowWindow;
+     device->HideWindow       = OS3_HideWindow;

@@ -49,6 +49,19 @@ jobs:
           test "$(grep -c 'SDL_SendQuit' backend/src/video/amigaos3/SDL_os3events.c)" -eq 1
           test "$(grep -c 'MapRawKey' backend/src/video/amigaos3/SDL_os3events.c)" -ge 2
 
+      - name: Check resize callback placement in patched backend
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          source = Path('backend/src/video/amigaos3/SDL_os3window.c').read_text()
+          name = 'void OS3_SetWindowSize('
+          assert source.count(name) == 1
+          prefix = source[:source.index(name)]
+          assert prefix.count('{') == prefix.count('}'), 'resize callback must be at file scope'
+          device = Path('backend/src/video/amigaos3/SDL_os3video.c').read_text()
+          assert 'device->SetWindowSize    = OS3_SetWindowSize;' in device
+          PYCODE
+
       - name: Syntax-check SDLTextCheck
         shell: bash
         run: |
@@ -62,3 +75,6 @@ jobs:
 
       - name: Exercise the actual text-conversion helpers and modifier contract
         run: python3 -m unittest discover -s tests/sdl2 -p 'test_textinput_patch.py' -v
+
+      - name: Exercise window-resize callback contract
+        run: python3 -m unittest discover -s tests/sdl2 -p 'test_windowresize.py' -v
