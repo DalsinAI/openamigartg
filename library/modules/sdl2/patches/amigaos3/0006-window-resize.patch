@@ -1,0 +1,29 @@
+--- a/src/video/amigaos3/SDL_os3window.c
++++ b/src/video/amigaos3/SDL_os3window.c
+@@ -486,0 +487,18 @@
++/* SDL changes window->w/h before invoking this callback. SizeWindow takes
++ * outer-size deltas, which equal inner-size deltas with unchanged borders.
++ * Intuition reports completion through IDCMP_NEWSIZE. */
++void OS3_SetWindowSize(_THIS, SDL_Window *window)
++{
++    OS3_WindowData *data = (OS3_WindowData *)window->driverdata;
++    if (!data || !data->window) return;
++    if (data->is_fullscreen) {
++        /* Custom-screen geometry is selected by the fullscreen path. */
++        window->w = data->window->GZZWidth;
++        window->h = data->window->GZZHeight;
++        return;
++    }
++    WindowLimits(data->window, 0, 0, (UWORD)-1, (UWORD)-1);
++    SizeWindow(data->window, window->w - data->window->GZZWidth,
++                            window->h - data->window->GZZHeight);
++}
++
+--- a/src/video/amigaos3/SDL_os3window.h
++++ b/src/video/amigaos3/SDL_os3window.h
+@@ -12,0 +13 @@
++extern void OS3_SetWindowSize(_THIS, SDL_Window *window);
+--- a/src/video/amigaos3/SDL_os3video.c
++++ b/src/video/amigaos3/SDL_os3video.c
+@@ -88,0 +89 @@
++    device->SetWindowSize    = OS3_SetWindowSize;
