@@ -1,6 +1,9 @@
 --- a/src/video/amigaos3/SDL_os3window.c
 +++ b/src/video/amigaos3/SDL_os3window.c
-@@ -486,0 +487,18 @@
+@@ -488,6 +488,24 @@
+     window->driverdata = NULL;
+ }
+ 
 +/* SDL changes window->w/h before invoking this callback. SizeWindow takes
 + * outer-size deltas, which equal inner-size deltas with unchanged borders.
 + * Intuition reports completion through IDCMP_NEWSIZE. */
@@ -19,11 +22,26 @@
 +                            window->h - data->window->GZZHeight);
 +}
 +
+ void OS3_SetWindowTitle(_THIS, SDL_Window *window)
+ {
+     OS3_WindowData *data = (OS3_WindowData *)window->driverdata;
 --- a/src/video/amigaos3/SDL_os3window.h
 +++ b/src/video/amigaos3/SDL_os3window.h
-@@ -12,0 +13 @@
+@@ -10,6 +10,7 @@
+ 
+ extern int  OS3_CreateWindow(_THIS, SDL_Window *window);
+ extern void OS3_DestroyWindow(_THIS, SDL_Window *window);
 +extern void OS3_SetWindowSize(_THIS, SDL_Window *window);
+ extern void OS3_SetWindowTitle(_THIS, SDL_Window *window);
+ extern void OS3_SetWindowFullscreen(_THIS, SDL_Window *window,
+                                     SDL_VideoDisplay *display, SDL_bool fullscreen);
 --- a/src/video/amigaos3/SDL_os3video.c
 +++ b/src/video/amigaos3/SDL_os3video.c
-@@ -88,0 +89 @@
+@@ -90,6 +90,7 @@
+     device->CreateSDLWindow  = OS3_CreateWindow;
+     device->DestroyWindow    = OS3_DestroyWindow;
+     device->SetWindowTitle   = OS3_SetWindowTitle;
 +    device->SetWindowSize    = OS3_SetWindowSize;
+     device->SetWindowFullscreen = OS3_SetWindowFullscreen;
+     device->ShowWindow       = OS3_ShowWindow;
+     device->HideWindow       = OS3_HideWindow;
