@@ -8,7 +8,7 @@
  * compared, with the error and where it was. The work memory isn't
  * compared: it is scratch. Written by Team 5 (25 Oct 2026) with the 68040
  * paths; tests/vector_same.sh builds the earlier copy from a git ref.
- *   vector_same [ROUNDS [SEED]]
+ *   vector_same [ROUNDS [SEED [MIX]]]     MIX: 0 both commands (default), 1 paths only, 2 COMPOSITE only
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -278,6 +278,7 @@ static long run_with(ogpu_u8 *mem, int old, struct ogpu_core *c) {
 int main(int argc, char **argv) {
     long rounds = argc > 1 ? atol(argv[1]) : 3000, r, bad = 0, cmds = 0, drawn = 0, failed = 0;
     unsigned long s0 = argc > 2 ? strtoul(argv[2], 0, 10) : 1;
+    int mix = argc > 3 ? atoi(argv[3]) : 0;
     struct ogpu_core co, cn;
     start = calloc(1, ARENA); arena = calloc(1, ARENA); arena2 = calloc(1, ARENA);
     if (!start || !arena || !arena2) return 2;
@@ -301,7 +302,7 @@ int main(int argc, char **argv) {
         if (rn(5) == 0) ogpu_clip(&B, (int)rr(-10, tw), (int)rr(-10, th), (int)rr(0, tw), (int)rr(0, th));
         n = (int)rr(1, 3);
         for (k = 0; k < n; k++) {
-            if (rn(5)) path_cmd(tw, th, bpp); else composite_cmd(tw, th);
+            if (mix == 2 || (mix == 0 && !rn(5))) composite_cmd(tw, th); else path_cmd(tw, th, bpp);
             cmds++;
         }
         memcpy(arena, start, CMP_END); memcpy(arena2, start, CMP_END);
