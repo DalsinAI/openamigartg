@@ -2463,6 +2463,49 @@ static int op_ok(int op) {
     return op < OGPU_PD_OPS || (op >= OGPU_BLEND_MULTIPLY && op <= OGPU_BLEND_LUMINOSITY);
 }
 
+/* n pixels of an ARGB32 (xa 0) or XRGB32 (xa 1) target from dp, by
+ * operator op with the same source s: as put_op draws them, without its
+ * reads and writes of channels. OVER and SRC write whole words where the
+ * result is the same for every pixel, and OVER blends a long run through
+ * a table of what the target's channels keep (Team 5, 25 Oct 2026). */
+static void solid_run(ogpu_u8 *dp, int n, const struct ch *s, int op, int xa) {
+    unsigned sa = s->a, sr = s->r, sg = s->g, sb = s->b, fb;
+    int k;
+    if (op == OGPU_PD_SRC || (op == OGPU_PD_OVER && sa == 255)) {
+        ogpu_u8 b[4];
+        b[0] = (ogpu_u8)(xa ? 0 : op == OGPU_PD_SRC ? sa : 255); b[1] = (ogpu_u8)sr; b[2] = (ogpu_u8)sg; b[3] = (ogpu_u8)sb;
+        if (aligned4(dp)) fill_words((ogpu_w32 *)(void *)dp, word_of(b), n);
+        else for (k = 0; k < n; k++, dp += 4) { dp[0] = b[0]; dp[1] = b[1]; dp[2] = b[2]; dp[3] = b[3]; }
+        return;
+    }
+    if (op != OGPU_PD_OVER) {
+        struct ch c = *s;
+        for (k = 0; k < n; k++, dp += 4) put_op(dp, xa ? OGPU_FMT_XRGB32 : OGPU_FMT_ARGB32, &c, op);
+        return;
+    }
+    /* OVER: d = s + d (255 - sa) / 255 a channel (pd2 with fa 255, as
+     * mul255(x, 255) is x), saturating; XRGB32's X is written 0 */
+    fb = 255 - sa;
+    if (n >= 64) {
+        ogpu_u8 keep[256];
+        unsigned v;
+        for (v = 0; v < 256; v++) keep[v] = (ogpu_u8)mul255(v, fb);
+        for (k = 0; k < n; k++, dp += 4) {
+            dp[0] = (ogpu_u8)(xa ? 0 : sat8(sa + keep[dp[0]]));
+            dp[1] = (ogpu_u8)sat8(sr + keep[dp[1]]);
+            dp[2] = (ogpu_u8)sat8(sg + keep[dp[2]]);
+            dp[3] = (ogpu_u8)sat8(sb + keep[dp[3]]);
+        }
+        return;
+    }
+    for (k = 0; k < n; k++, dp += 4) {
+        dp[0] = (ogpu_u8)(xa ? 0 : sat8(sa + mul255(dp[0], fb)));
+        dp[1] = (ogpu_u8)sat8(sr + mul255(dp[1], fb));
+        dp[2] = (ogpu_u8)sat8(sg + mul255(dp[2], fb));
+        dp[3] = (ogpu_u8)sat8(sb + mul255(dp[3], fb));
+    }
+}
+
 /* The sweep's place in a pixel row, and what it draws with. */
 struct prun {
     ogpu_u8 *dp;                /* pixel x on the target */
@@ -2483,6 +2526,18 @@ BIG_FN void put_run(struct prun *r, int n, unsigned al) {
         if (!al && r->bounded) {                        /* nothing to draw */
             paint_skip(p, n);
             r->x += n; r->dp += (long)n * r->dbpp;
+            return;
+        }
+        if (!p->kind) {                                 /* a colour: the same source for the whole run */
+            ogpu_u8 *dp = r->dp;
+            s = p->col;
+            if (al != 255) { s.a = mul255(s.a, al); s.r = mul255(s.r, al); s.g = mul255(s.g, al); s.b = mul255(s.b, al); }
+            r->x += n; r->dp += (long)n * r->dbpp;
+            if (r->f == OGPU_FMT_ARGB32 || r->f == OGPU_FMT_XRGB32) {
+                solid_run(dp, n, &s, r->op, r->f == OGPU_FMT_XRGB32);
+                return;
+            }
+            for (k = 0; k < n; k++, dp += r->dbpp) put_op(dp, r->f, &s, r->op);
             return;
         }
     }
