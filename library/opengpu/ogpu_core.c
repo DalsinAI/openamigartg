@@ -2556,6 +2556,92 @@ static void grad_run(struct paint *p, ogpu_u8 *dp, int n, unsigned al, int op, i
     p->gx += n * p->inv[0]; p->gy += n * p->inv[3];     /* as n paint_steps (t24 stepped above, or not moving) */
 }
 
+/* One pixel s by SRC or OVER into an ARGB32 (xa 0) or XRGB32 target: put_op's bytes. */
+PX_FN void put_src_over(ogpu_u8 *dp, const struct ch *s, int op, int xa) {
+    unsigned fb;
+    if (op == OGPU_PD_SRC || s->a == 255) {
+        dp[0] = (ogpu_u8)(xa ? 0 : op == OGPU_PD_SRC ? s->a : 255);
+        dp[1] = (ogpu_u8)s->r; dp[2] = (ogpu_u8)s->g; dp[3] = (ogpu_u8)s->b;
+        return;
+    }
+    fb = 255 - s->a;
+    dp[0] = (ogpu_u8)(xa ? 0 : sat8(s->a + mul255(dp[0], fb)));
+    dp[1] = (ogpu_u8)sat8(s->r + mul255(dp[1], fb));
+    dp[2] = (ogpu_u8)sat8(s->g + mul255(dp[2], fb));
+    dp[3] = (ogpu_u8)sat8(s->b + mul255(dp[3], fb));
+}
+
+/* n pixels of a pattern (a picture under a matrix) from an ARGB32 slot,
+ * at coverage al, OVER or SRC into an ARGB32 (xa 0) or XRGB32 target:
+ * paint_px's colour and put_op's bytes. Where all the texels a pixel
+ * reads are inside the pattern's rectangle (where every edge rule reads
+ * them as they are), they are read straight from the slot's rows, and
+ * each mix is a + (b - a) f / 256 with one multiply (mix's number), none
+ * where f is 0 (the second texel isn't read then: mix gives the first);
+ * a texel on or past an edge goes through pat_px as before. The texel
+ * row is worked out once a run where the matrix keeps v along the row (a
+ * picture not turned). Returns 0, drawing nothing, where the pattern's
+ * place along the run would pass paint_px's clamp (Team 5, 25 Oct 2026). */
+static int pattern_run(struct paint *p, ogpu_u8 *dp, int n, unsigned al, int op, int xa) {
+    const struct ogpu_surface *s = p->s;
+    ogpu_s64 ue = p->gx + (ogpu_s64)(n - 1) * p->inv[0], ve = p->gy + (ogpu_s64)(n - 1) * p->inv[3];
+    long u, v, du, dv;
+    const ogpu_u8 *r0 = 0, *r1 = 0;
+    int k, c, y0 = 0, fy = 0, rows_ok = 0;
+    if (p->gx < -0x3FFFFFFFLL || p->gx > 0x3FFFFFFFLL || ue < -0x3FFFFFFFLL || ue > 0x3FFFFFFFLL
+        || p->gy < -0x3FFFFFFFLL || p->gy > 0x3FFFFFFFLL || ve < -0x3FFFFFFFLL || ve > 0x3FFFFFFFLL) return 0;
+    u = (long)p->gx; v = (long)p->gy; du = (long)p->inv[0]; dv = (long)p->inv[3];
+    if (!dv) {                                  /* v the same all along: its texel rows once */
+        long vv = p->bil ? v - 0x8000 : v;
+        y0 = (int)(vv >> 16); fy = p->bil ? (int)((unsigned)(vv >> 8) & 255) : 0;
+        if (y0 >= 0 && y0 + (fy != 0) < p->psh) {
+            rows_ok = 1;
+            r0 = row_at(s, p->psy + y0) + xoff(p->psx, 4);
+            r1 = fy ? row_at(s, p->psy + y0 + 1) + xoff(p->psx, 4) : r0;
+        }
+    }
+    for (k = 0; k < n; k++, dp += 4, u += du, v += dv) {
+        struct ch o;
+        long uu = p->bil ? u - 0x8000 : u, vv = p->bil ? v - 0x8000 : v;
+        int x0 = (int)(uu >> 16), fx = p->bil ? (int)((unsigned)(uu >> 8) & 255) : 0, in;
+        if (dv) {
+            y0 = (int)(vv >> 16); fy = p->bil ? (int)((unsigned)(vv >> 8) & 255) : 0;
+            in = y0 >= 0 && y0 + (fy != 0) < p->psh;
+            if (in) {
+                r0 = row_at(s, p->psy + y0) + xoff(p->psx, 4);
+                r1 = fy ? row_at(s, p->psy + y0 + 1) + xoff(p->psx, 4) : r0;
+            }
+        } else in = rows_ok;
+        if (in && x0 >= 0 && x0 + (fx != 0) < p->psw) {
+            const ogpu_u8 *q0 = r0 + xoff(x0, 4), *q1 = r1 + xoff(x0, 4);
+            unsigned v4[4];
+            for (c = 0; c < 4; c++) {
+                int t0 = q0[c], t1;
+                if (fx) t0 += SMUL16((int)q0[c + 4] - t0, fx) >> 8;
+                if (fy) {
+                    t1 = q1[c];
+                    if (fx) t1 += SMUL16((int)q1[c + 4] - t1, fx) >> 8;
+                    t0 += SMUL16(t1 - t0, fy) >> 8;
+                }
+                v4[c] = (unsigned)t0;
+            }
+            o.a = v4[0]; o.r = v4[1]; o.g = v4[2]; o.b = v4[3];
+        } else if (p->bil) {
+            struct ch q[4], t0, t1;
+            pat_px(p, x0, (int)(vv >> 16), &q[0]); pat_px(p, x0 + 1, (int)(vv >> 16), &q[1]);
+            pat_px(p, x0, (int)(vv >> 16) + 1, &q[2]); pat_px(p, x0 + 1, (int)(vv >> 16) + 1, &q[3]);
+            mix(&t0, &q[0], &q[1], (unsigned)(uu >> 8) & 255);
+            mix(&t1, &q[2], &q[3], (unsigned)(uu >> 8) & 255);
+            mix(&o, &t0, &t1, (unsigned)(vv >> 8) & 255);
+        } else pat_px(p, x0, (int)(vv >> 16), &o);
+        if (p->alpha != 255) { o.a = mul255(o.a, p->alpha); o.r = mul255(o.r, p->alpha); o.g = mul255(o.g, p->alpha); o.b = mul255(o.b, p->alpha); }
+        if (al != 255) { o.a = mul255(o.a, al); o.r = mul255(o.r, al); o.g = mul255(o.g, al); o.b = mul255(o.b, al); }
+        put_src_over(dp, &o, op, xa);
+    }
+    p->gx += n * p->inv[0]; p->gy += n * p->inv[3]; p->t24 += n * p->dt24;     /* as n paint_steps */
+    return 1;
+}
+
 /* The sweep's place in a pixel row, and what it draws with. */
 struct prun {
     ogpu_u8 *dp;                /* pixel x on the target */
@@ -2593,6 +2679,11 @@ BIG_FN void put_run(struct prun *r, int n, unsigned al) {
         if (p->kind == 2 && p->gk == OGPU_GRAD_LINEAR && !p->none && (r->f == OGPU_FMT_ARGB32 || r->f == OGPU_FMT_XRGB32)
             && (r->op == OGPU_PD_OVER || r->op == OGPU_PD_SRC)) {
             grad_run(p, r->dp, n, al, r->op, r->f == OGPU_FMT_XRGB32);
+            r->x += n; r->dp += (long)n * 4;
+            return;
+        }
+        if (p->kind == 3 && !p->none && p->s->format == OGPU_FMT_ARGB32 && (r->f == OGPU_FMT_ARGB32 || r->f == OGPU_FMT_XRGB32)
+            && (r->op == OGPU_PD_OVER || r->op == OGPU_PD_SRC) && pattern_run(p, r->dp, n, al, r->op, r->f == OGPU_FMT_XRGB32)) {
             r->x += n; r->dp += (long)n * 4;
             return;
         }
