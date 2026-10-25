@@ -8,7 +8,8 @@
  * compared, with the error and where it was. The work memory isn't
  * compared: it is scratch. Written by Team 5 (25 Oct 2026) with the 68040
  * paths; tests/vector_same.sh builds the earlier copy from a git ref.
- *   vector_same [ROUNDS [SEED]]
+ *   vector_same [ROUNDS [SEED [MIX]]]     MIX: 0 both commands (default), 1 paths only, 2 COMPOSITE only,
+ *                                         3 paths painted with gradients and patterns, OVER or SRC, into ARGB32 or XRGB32
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,7 +48,7 @@ static ogpu_u8 sbuf[16384];
 /* The non-separable blend modes divide by zero (both copies; on the 68k a
  * trap) where a colour isn't premultiplied (a channel past its alpha): they
  * are only drawn in rounds whose target and paint are premultiplied. */
-static int premul_round, pure_colours;
+static int premul_round, pure_colours, focus, cmd_no;   /* cmd_no: the command's own path and paint memory */
 static struct OGPUBatch B, P, G;
 static const int fmts[] = { OGPU_FMT_ARGB32, OGPU_FMT_ARGB32, OGPU_FMT_ARGB32, OGPU_FMT_XRGB32, OGPU_FMT_XRGB32,
                             OGPU_FMT_RGB565, OGPU_FMT_RGB565PC, OGPU_FMT_RGB555, OGPU_FMT_RGB555PC, OGPU_FMT_A8,
@@ -88,7 +89,7 @@ static long coord(int span) {    /* 24.8, around a target span px wide */
 
 static void path_rand(int w, int h) {
     int sp, nsp = (int)rr(1, rn(3) ? 2 : 5), k, n;
-    ogpu_batch_init(&P, start + PATH, 0x4000);
+    ogpu_batch_init(&P, start + PATH + (unsigned long)cmd_no * 0x4000, 0x1000);
     if (rn(6) == 0) {                                           /* a pixel-aligned rectangle or a circle */
         long x0 = coord(w), y0 = coord(h), x1 = coord(w), y1 = coord(h);
         if (rn(2)) { x0 &= ~255L; y0 &= ~255L; x1 &= ~255L; y1 &= ~255L; }
@@ -144,7 +145,7 @@ static unsigned long paint_rand(unsigned long *flags, int tw, int th, int *px, i
     long m[6], geo[6];
     int k, n, sw, sh;
     *px = *py = 0;
-    switch (rn(8)) {
+    switch (focus ? 4 + (int)rn(4) : (int)rn(8)) {
     case 0: case 1: case 2: return colour_rand();
     case 3:                                                     /* a slot */
         slot_rand(1, SRC, &sw, &sh, 1);
@@ -152,7 +153,7 @@ static unsigned long paint_rand(unsigned long *flags, int tw, int th, int *px, i
         *px = (int)rr(-40, tw); *py = (int)rr(-40, th);
         return 1;
     case 4: case 5:                                             /* a gradient */
-        ogpu_batch_init(&G, start + GRAD, 0x1000);
+        ogpu_batch_init(&G, start + GRAD + (unsigned long)cmd_no * 0x1000, 0x400);
         matrix_rand(m);
         if (rn(2)) { m[0] = m[4] = 0x10000; m[1] = m[3] = m[2] = m[5] = 0; }
         for (k = 0; k < 6; k++) geo[k] = rr(-0x400000, (long)(tw > th ? tw : th) * 0x10000 * 2);
@@ -164,10 +165,10 @@ static unsigned long paint_rand(unsigned long *flags, int tw, int th, int *px, i
         ogpu_gradient(&G, k, (int)rn(3), n, m, geo);
         for (k = 0; k < n; k++) ogpu_gradient_stop(&G, rn(5) ? rr(0, 0x10000) : rr(-0x8000, 0x18000), colour_rand());
         *flags |= OGPU_PATH_GRADIENT;
-        return GRAD;
+        return GRAD + (unsigned long)cmd_no * 0x1000;
     default:                                                    /* a pattern */
         slot_rand(1, SRC, &sw, &sh, rn(4) == 0);
-        ogpu_batch_init(&G, start + GRAD, 0x1000);
+        ogpu_batch_init(&G, start + GRAD + (unsigned long)cmd_no * 0x1000, 0x400);
         matrix_rand(m);
         if (rn(2)) { m[0] = rr(0x2000, 0x30000); m[4] = rr(0x2000, 0x30000); m[1] = m[3] = 0; m[2] = rr(-0x200000, 0x200000); m[5] = rr(-0x200000, 0x200000); }
         {
@@ -176,13 +177,13 @@ static unsigned long paint_rand(unsigned long *flags, int tw, int th, int *px, i
                              rn(4) ? 0 : (int)rr(1, sw - x), rn(4) ? 0 : (int)rr(1, sh - y), m, rn(3) ? 255 : (int)rn(256));
         }
         *flags |= OGPU_PATH_PATTERN;
-        return GRAD;
+        return GRAD + (unsigned long)cmd_no * 0x1000;
     }
 }
 
 static int op_rand(void) {
     static const int common[] = { OGPU_PD_OVER, OGPU_PD_OVER, OGPU_PD_OVER, OGPU_PD_SRC, OGPU_PD_SRC };
-    if (rn(2)) return common[rn(5)];
+    if (rn(2) || (focus && rn(8))) return common[rn(5)];
     if (rn(4)) return (int)rn(OGPU_PD_OPS);
     if (rn(8) == 0) return OGPU_BLEND_LUMINOSITY + 1;                   /* not an operator */
     return (int)rr(OGPU_BLEND_MULTIPLY, premul_round ? OGPU_BLEND_LUMINOSITY : OGPU_BLEND_HUE - 1);
@@ -216,18 +217,18 @@ static void path_cmd(int tw, int th, int tbpp) {
     default: wb = 0x300000UL; break;
     }
     if (!stroke)
-        ogpu_path_fill(&B, flags, paint, px, py, 2, mx, my, PATH, (unsigned long)P.words, m, WORK, wb);
+        ogpu_path_fill(&B, flags, paint, px, py, 2, mx, my, PATH + (unsigned long)cmd_no * 0x4000, (unsigned long)P.words, m, WORK, wb);
     else {
         long width = rn(8) == 0 ? rr(-0x10000, 0x8000) : rr(0x1000, rn(3) ? 0x60000 : 0x200000);
         unsigned long style = (unsigned long)rn(rn(20) ? 3 : 4) | ((unsigned long)rn(rn(20) ? 3 : 4) << 4);
         unsigned long nd = rn(3) ? 0 : (unsigned long)rr(1, 6), k;
         for (k = 0; k < nd; k++) {          /* the lengths, 16.16, big-endian */
             long v = rn(6) ? rr(0x8000, 0x200000) : rr(-0x10000, 0x10000);
-            ogpu_u8 *q = start + DASH + k * 4;
+            ogpu_u8 *q = start + DASH + (unsigned long)cmd_no * 64 + k * 4;
             q[0] = (ogpu_u8)((unsigned long)v >> 24); q[1] = (ogpu_u8)((unsigned long)v >> 16); q[2] = (ogpu_u8)((unsigned long)v >> 8); q[3] = (ogpu_u8)v;
         }
-        ogpu_path_stroke(&B, flags, paint, px, py, 2, mx, my, PATH, (unsigned long)P.words, m, WORK, wb, width, style,
-                         rr(0x10000, 0xA0000), DASH, nd, rr(-0x400000, 0x400000));
+        ogpu_path_stroke(&B, flags, paint, px, py, 2, mx, my, PATH + (unsigned long)cmd_no * 0x4000, (unsigned long)P.words, m, WORK, wb, width, style,
+                         rr(0x10000, 0xA0000), DASH + (unsigned long)cmd_no * 64, nd, rr(-0x400000, 0x400000));
     }
 }
 
@@ -278,6 +279,8 @@ static long run_with(ogpu_u8 *mem, int old, struct ogpu_core *c) {
 int main(int argc, char **argv) {
     long rounds = argc > 1 ? atol(argv[1]) : 3000, r, bad = 0, cmds = 0, drawn = 0, failed = 0;
     unsigned long s0 = argc > 2 ? strtoul(argv[2], 0, 10) : 1;
+    int mix = argc > 3 ? atoi(argv[3]) : 0;
+    focus = mix == 3;
     struct ogpu_core co, cn;
     start = calloc(1, ARENA); arena = calloc(1, ARENA); arena2 = calloc(1, ARENA);
     if (!start || !arena || !arena2) return 2;
@@ -288,8 +291,8 @@ int main(int argc, char **argv) {
         seed = s0 * 1000003UL + (unsigned long)r;
         memset(start, 0, CMP_END);
         ogpu_batch_init(&B, sbuf, (long)sizeof sbuf / 4);
-        tw = (int)rr(1, rn(3) ? 120 : 256); th = (int)rr(1, rn(3) ? 120 : 256);
-        f = fmts[rn(rn(10) ? 13 : 14)];
+        tw = (int)rr(1, rn(3) ? 120 : 250); th = (int)rr(1, rn(3) ? 120 : 250);
+        f = focus && rn(8) ? fmts[rn(5)] : fmts[rn(rn(10) ? 13 : 14)];
         bpp = bpp_of(f);
         bpr = (long)tw * bpp + (rn(4) ? 0 : rn(8));
         premul_round = bpp == 4 && rn(3) == 0;
@@ -301,7 +304,8 @@ int main(int argc, char **argv) {
         if (rn(5) == 0) ogpu_clip(&B, (int)rr(-10, tw), (int)rr(-10, th), (int)rr(0, tw), (int)rr(0, th));
         n = (int)rr(1, 3);
         for (k = 0; k < n; k++) {
-            if (rn(5)) path_cmd(tw, th, bpp); else composite_cmd(tw, th);
+            cmd_no = k;
+            if (mix == 2 || (mix == 0 && !rn(5))) composite_cmd(tw, th); else path_cmd(tw, th, bpp);
             cmds++;
         }
         memcpy(arena, start, CMP_END); memcpy(arena2, start, CMP_END);
