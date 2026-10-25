@@ -840,6 +840,81 @@ PX_FN void sample_bi(const struct ogpu_surface *s, const ogpu_u8 *r0, const ogpu
     mix(o, &t0, &t1, wy);
 }
 
+/* COMPOSITE's bilinear scale of an ARGB32 slot into an ARGB32 or XRGB32
+ * target (Team 5, 25 Oct 2026): sample_bi's pixels, worked out as
+ * - the two mixes along a source row first, then the one between the rows,
+ *   as sample_bi does, each a + (b - a) f / 256 with one 16-bit multiply
+ *   (the same number as mix1's (a (256 - f) + b f) / 256, rounded down);
+ * - a source row's mixes kept for the next target row that reads that row
+ *   (a picture shown at 50% to 100% reads each source row for about two
+ *   target rows), CW columns at a time so they fit on the stack;
+ * - no mix where its weight is 0 (it gives a), and no A where the result
+ *   doesn't read it (an opaque COMPOSITE writes A 255);
+ * then blend11 as before, or A 255 and the colour where that is all it
+ * does. The columns' place in the source is worked out once a CW columns. */
+#define COMP_CW 32
+PX_FN void comp_hrow(ogpu_u8 *hb, const ogpu_u8 *srow, const unsigned short *xi, const ogpu_u8 *wxs, int cw, int k0) {
+    int k, c;
+    for (k = 0; k < cw; k++, hb += 4) {
+        const ogpu_u8 *q = srow + xoff(xi[k], 4);
+        int wx = wxs[k];
+        if (!wx) { for (c = k0; c < 4; c++) hb[c] = q[c]; continue; }
+        for (c = k0; c < 4; c++) { int t0 = q[c]; hb[c] = (ogpu_u8)(t0 + (SMUL16((int)q[c + 4] - t0, wx) >> 8)); }
+    }
+}
+static void comp_bilinear(const struct ogpu_surface *s, const struct ogpu_surface *t, ogpu_u8 *drow, int sx, int sy, int sw,
+                          int sh, int w, int h, int ox, int oy, ogpu_u32 stepx, ogpu_u32 stepy, unsigned alpha, int srcalpha,
+                          ogpu_u32 flags) {
+    int opaque = !srcalpha && alpha == 255, xa = t->format == OGPU_FMT_XRGB32, k0 = opaque ? 1 : 0, i0, j, k, c;
+    for (i0 = 0; i0 < w; i0 += COMP_CW) {
+        int cw = w - i0 < COMP_CW ? w - i0 : COMP_CW;
+        unsigned short xi[COMP_CW];
+        ogpu_u8 wxs[COMP_CW], hb[2][COMP_CW * 4], *dp, *drw = drow + xoff(i0, 4);
+        long tag[2];
+        ogpu_u32 px = (ogpu_u32)(ox + i0) * stepx + (stepx >> 1);   /* 16.16, the pixel's centre, as stepped */
+        for (k = 0; k < cw; k++, px += stepx) {
+            long fx = (long)px - 0x8000L;
+            int x0;
+            unsigned wx;
+            if (fx < 0) fx = 0;
+            x0 = (int)(fx >> 16); wx = (unsigned)(fx >> 8) & 255;
+            if (x0 >= sw - 1) { x0 = sw - 1; wx = 0; }
+            xi[k] = (unsigned short)(sx + x0); wxs[k] = (ogpu_u8)wx;
+        }
+        tag[0] = tag[1] = -1;
+        for (j = 0; j < h; j++, drw += t->bpr) {
+            ogpu_u32 py = (ogpu_u32)(oy + j) * stepy + (stepy >> 1);
+            long fy = (long)py - 0x8000L;
+            int y0, y1, sa, sb;
+            unsigned wy;
+            const ogpu_u8 *ha, *hbb;
+            if (fy < 0) fy = 0;
+            y0 = (int)(fy >> 16); wy = (unsigned)(fy >> 8) & 255;
+            if (y0 >= sh - 1) { y0 = sh - 1; wy = 0; }
+            y1 = y0 + 1 < sh ? y0 + 1 : y0;
+            sa = tag[0] == y0 ? 0 : tag[1] == y0 ? 1 : -1;
+            sb = !wy ? -1 : tag[0] == y1 ? 0 : tag[1] == y1 ? 1 : -1;
+            if (sa < 0) { sa = sb == 0 ? 1 : 0; comp_hrow(hb[sa], px_at(s, 0, sy + y0), xi, wxs, cw, k0); tag[sa] = y0; }
+            if (wy && sb < 0) { sb = 1 - sa; comp_hrow(hb[sb], px_at(s, 0, sy + y1), xi, wxs, cw, k0); tag[sb] = y1; }
+            ha = hb[sa]; hbb = wy ? hb[sb] : ha;
+            for (k = 0, dp = drw; k < cw; k++, dp += 4, ha += 4, hbb += 4) {
+                unsigned v[4];
+                for (c = k0; c < 4; c++) {
+                    int t0 = ha[c];
+                    if (wy) t0 += SMUL16((int)hbb[c] - t0, (int)wy) >> 8;
+                    v[c] = (unsigned)t0;
+                }
+                if (opaque) { dp[0] = (ogpu_u8)(xa ? 0 : 255); dp[1] = (ogpu_u8)v[1]; dp[2] = (ogpu_u8)v[2]; dp[3] = (ogpu_u8)v[3]; }
+                else {
+                    struct ch sp;
+                    sp.a = v[0]; sp.r = v[1]; sp.g = v[2]; sp.b = v[3];
+                    blend11(dp, t->format, &sp, mul255(srcalpha ? sp.a : 255, alpha), flags);
+                }
+            }
+        }
+    }
+}
+
 OP_FN op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
     ogpu_u32 slot = rd32(a), sxy = rd32(a + 4), swh = rd32(a + 8), dxy = rd32(a + 12), dwh = rd32(a + 16);
     ogpu_u32 alpha = rd32(a + 20) & 255, flags = rd32(a + 24);
@@ -880,13 +955,15 @@ OP_FN op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
            && mode < 0 && !m && !(flags & (OGPU_COMP_ADD | OGPU_COMP_IN | OGPU_COMP_BILINEAR | OGPU_COMP_PIXELART));
     srcalpha = (flags & OGPU_COMP_SRCALPHA) != 0;
     /* ARGB32 scaled bilinear into ARGB32 or XRGB32 (a picture shown smooth):
-     * sample_bi's mixes, each a + (b - a) f / 256 with one multiply (the same
-     * value as (a (256 - f) + b f) / 256, rounded down), none where a weight
-     * is 0, and A only where the blend reads it (Team 5, 25 Oct 2026) */
+     * comp_bilinear */
     bifast = (flags & OGPU_COMP_BILINEAR) && s->format == OGPU_FMT_ARGB32
              && (t->format == OGPU_FMT_ARGB32 || t->format == OGPU_FMT_XRGB32)
              && mode < 0 && !m && !(flags & (OGPU_COMP_ADD | OGPU_COMP_IN));
     drow = px_at(t, x, y);
+    if (bifast) {
+        comp_bilinear(s, t, drow, sx, sy, sw, sh, w, h, ox, oy, stepx, stepy, (unsigned)alpha, srcalpha, flags);
+        return OGPU_OK;
+    }
     for (j = 0; j < h; j++, drow += t->bpr) {
         ogpu_u32 py = (ogpu_u32)(oy + j) * stepy + (stepy >> 1);    /* 16.16, the pixel's centre */
         ogpu_u32 px = (ogpu_u32)ox * stepx + (stepx >> 1);
@@ -917,38 +994,6 @@ OP_FN op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
         }
         r0 = px_at(s, 0, sy + y0);                      /* once a row */
         r1 = y1 == y0 ? r0 : px_at(s, 0, sy + y1);
-        if (bifast) {
-            const ogpu_u8 *s0 = r0 + xoff(sx, 4), *s1 = r1 + xoff(sx, 4);
-            int opaque = !srcalpha && alpha == 255, xa = t->format == OGPU_FMT_XRGB32, k0 = opaque ? 1 : 0, k;
-            for (i = 0; i < w; i++, dp += 4, px += stepx) {
-                long fx = (long)px - 0x8000L;
-                const ogpu_u8 *q0, *q1;
-                int x0, nx;
-                unsigned wx, v[4];
-                if (fx < 0) fx = 0;
-                x0 = (int)(fx >> 16); wx = (unsigned)(fx >> 8) & 255;
-                if (x0 >= sw - 1) { x0 = sw - 1; wx = 0; }
-                nx = wx ? 4 : 0;                            /* x1's offset (x1 is x0 where wx is 0) */
-                q0 = s0 + xoff(x0, 4); q1 = s1 + xoff(x0, 4);
-                for (k = k0; k < 4; k++) {
-                    int t0 = q0[k], t1;
-                    if (nx) t0 += SMUL16((int)q0[k + 4] - t0, (int)wx) >> 8;
-                    if (wy) {
-                        t1 = q1[k];
-                        if (nx) t1 += SMUL16((int)q1[k + 4] - t1, (int)wx) >> 8;
-                        t0 += SMUL16(t1 - t0, (int)wy) >> 8;
-                    }
-                    v[k] = (unsigned)t0;
-                }
-                if (opaque) { dp[0] = (ogpu_u8)(xa ? 0 : 255); dp[1] = (ogpu_u8)v[1]; dp[2] = (ogpu_u8)v[2]; dp[3] = (ogpu_u8)v[3]; }
-                else {
-                    struct ch sp;
-                    sp.a = v[0]; sp.r = v[1]; sp.g = v[2]; sp.b = v[3];
-                    blend11(dp, t->format, &sp, mul255(srcalpha ? sp.a : 255, alpha), flags);
-                }
-            }
-            continue;
-        }
         if (fast) {
             /* ARGB32 over ARGB32 or RGB565, nearest, OVER: the common case, without the
              * general reads and writes. */
