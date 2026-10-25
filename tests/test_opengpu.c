@@ -731,6 +731,75 @@ static void test_xrgb32(void) {
           && ogpu_core_supports(OGPU_OP_COMPOSITE, OGPU_FMT_XRGB32) == OGPU_FULL, "XRGB32 supported");
 }
 
+/* The 32-bit alpha byte's contract (DESIGN.md, "A 32-bit pixel's alpha byte"): OpenRTG's
+ * WritePixelArray(RECTFMT_RAW) on a 32-bit bitmap is PIXELS from ARGB32 into the bitmap as
+ * ARGB32, and ReadPixelArray(RECTFMT_RAW) a COPY into memory as ARGB32: both keep every
+ * byte. Then the keyed compose OpenLayers 47.107 builds from such a surface
+ * (LAYERLOOK_KEYED): a COMPOSITE of it as XRGB32 at the layer's opacity onto the screen
+ * (XRGB32), then of it as ARGB32 with SRCALPHA at 255. */
+static void test_raw_alpha(void) {
+    static const unsigned long src[8] = { 0x00FFFFFFUL, 0xFF000000UL, 0x5A123456UL, 0x01ABCDEFUL,
+                                          0x80808080UL, 0xFE010203UL, 0x7F7F7F7FUL, 0xFFFFFFFFUL };
+    static const unsigned long bar[4] = { 0xFF203040UL, 0x00203040UL, 0x80203040UL, 0x00F0F0F0UL };
+    long bpr = W * 4;
+    int x, ok;
+    unsigned long d, want;
+    for (x = 0; x < 8; x++) setpx(D0, 32, OGPU_FMT_ARGB32, x, 0, src[x]);
+    memset(arena + T0, 0xEE, (size_t)(bpr * H));
+    memset(arena + S0, 0x11, 64);
+    begin();
+    ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_ARGB32); ogpu_target(&B, 0);
+    ogpu_pixels(&B, D0, 32, OGPU_FMT_ARGB32, 0, 3, 2, 8, 1);                  /* RECTFMT_RAW's write */
+    ogpu_surface(&B, 1, S0, 32, 8, 1, OGPU_FMT_ARGB32); ogpu_target(&B, 1);
+    ogpu_copy(&B, 0, 3, 2, 0, 0, 8, 1);                                         /* RECTFMT_RAW's read */
+    run();
+    CHECK(C.last_error == OGPU_OK, "raw alpha ran (%d)", C.last_error);
+    for (ok = 1, x = 0; x < 8; x++) ok &= raw32(T0 + 2 * bpr, 3 + x) == src[x];
+    CHECK(ok, "PIXELS ARGB32 into ARGB32 keeps the alpha byte: %08lx %08lx", raw32(T0 + 2 * bpr, 5), raw32(T0 + 2 * bpr, 6));
+    for (ok = 1, x = 0; x < 8; x++) ok &= raw32(S0, x) == src[x];
+    CHECK(ok, "COPY of ARGB32 into memory keeps the alpha byte: %08lx", raw32(S0, 2));
+    /* keyed: the bar's layer (alpha 255, 0, 128, 0) over a screen of 0x00C06000, at 102, at 0 and at 255 */
+    {
+        static const unsigned v[3] = { 102, 0, 255 };
+        int k;
+        for (k = 0; k < 3; k++) {
+            for (x = 0; x < 4; x++) setpx(S0, 16, OGPU_FMT_ARGB32, x, 0, bar[x]);
+            for (x = 0; x < 4; x++) setpx(T0, bpr, OGPU_FMT_ARGB32, x, 0, 0x00C06000UL);
+            begin();
+            ogpu_surface(&B, 0, T0, bpr, W, H, OGPU_FMT_XRGB32); ogpu_target(&B, 0);
+            if (v[k] == 255) {                                                  /* opaque: a COPY, as before */
+                ogpu_surface(&B, 1, S0, 16, 4, 1, OGPU_FMT_XRGB32);
+                ogpu_copy(&B, 1, 0, 0, 0, 0, 4, 1);
+            } else {
+                ogpu_surface(&B, 1, S0, 16, 4, 1, OGPU_FMT_XRGB32);
+                ogpu_composite(&B, 1, 0, 0, 4, 1, 0, 0, 4, 1, (int)v[k], 0);
+                ogpu_surface(&B, 1, S0, 16, 4, 1, OGPU_FMT_ARGB32);
+                ogpu_composite(&B, 1, 0, 0, 4, 1, 0, 0, 4, 1, 255, OGPU_COMP_SRCALPHA);
+            }
+            run();
+            CHECK(C.last_error == OGPU_OK, "keyed compose ran at %u (%d)", v[k], C.last_error);
+            for (x = 0; x < 4; x++) {
+                unsigned long a = bar[x] >> 24, c = bar[x] & 0xFFFFFFUL, under = 0xC06000UL, mixed = 0, out = 0;
+                int i;
+                d = raw32(T0, x);
+                for (i = 0; i < 24; i += 8)
+                    mixed |= (m255((c >> i) & 255, v[k]) + m255((under >> i) & 255, 255 - v[k])) << i;
+                if (v[k] == 255 || a == 255) want = c;
+                else if (a == 0) want = mixed;
+                else {
+                    for (i = 0; i < 24; i += 8)
+                        out |= (m255((c >> i) & 255, a) + m255((mixed >> i) & 255, 255 - a)) << i;
+                    want = out;
+                }
+                /* a COPY carries the layer's top byte into the screen, which shows it as XRGB32 (not seen);
+                 * COMPOSITE onto XRGB32 writes it 0 */
+                if (v[k] == 255) d &= 0xFFFFFFUL;
+                CHECK(d == want, "keyed at %u, alpha %02lx: %08lx, want %08lx", v[k], a, d, want);
+            }
+        }
+    }
+}
+
 static void test_composite_v11(void) {
     long bpr = W * 4, abpr = W;
     unsigned long d;
@@ -988,6 +1057,7 @@ int main(int argc, char **argv) {
     test_yuv_scaled();
     test_formats_v12();
     test_xrgb32();
+    test_raw_alpha();
     test_errors();
     test_ext();
     test_random_streams();
