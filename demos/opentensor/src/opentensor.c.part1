@@ -45,7 +45,7 @@ struct Library *CyberGfxBase = NULL;
 #define OT_PI 3.14159265358979323846f
 #define OT_TAU 6.28318530717958647692f
 #define OT_AUDIO_RATE 44100UL
-#define OT_AUDIO_FRAMES 4096UL
+#define OT_AUDIO_FRAMES 8192UL
 #define OT_AUDIO_WORDS (OT_AUDIO_FRAMES * 2UL)
 #define OT_SEQUENCE_SECONDS 164.0f
 #define OT_SCENE_COUNT 11
@@ -56,9 +56,12 @@ struct Library *CyberGfxBase = NULL;
 struct Mesh {
     GLfloat *v;
     GLfloat *c;
+    uint16_t *radial;
     GLsizei count;
     GLenum mode;
 };
+
+#include "opentensor_score.h"
 
 struct AudioState {
     struct MsgPort *port;
@@ -68,14 +71,8 @@ struct AudioState {
     int ready;
     ULONG underruns;
     uint64_t sample_cursor;
-    uint32_t lead_phase;
-    uint32_t bass_phase;
-    uint32_t pad_phase;
-    uint32_t kick_phase;
-    uint32_t noise;
-    ULONG last_step;
-    ULONG kick_age;
-    ULONG hat_age;
+    struct OtScore score;
+
 };
 
 struct Demo {
@@ -164,122 +161,8 @@ static int ot_clampi(int v, int lo, int hi)
     return v;
 }
 
-static WORD ot_clip16(int32_t v)
-{
-    if (v > 32767) return 32767;
-    if (v < -32768) return -32768;
-    return (WORD)v;
-}
-
-static int32_t ot_triangle(uint32_t phase)
-{
-    uint32_t x = phase >> 16;
-    int32_t y = (x < 32768U) ? (int32_t)x : (int32_t)(65535U - x);
-    return (y << 1) - 32767;
-}
-
-static int32_t ot_saw(uint32_t phase)
-{
-    return (int32_t)(phase >> 16) - 32768;
-}
-
-static uint32_t ot_noise(struct AudioState *a)
-{
-    uint32_t x = a->noise ? a->noise : 0x13579BDFUL;
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    a->noise = x;
-    return x;
-}
-
-/* 32-bit phase increments at 44.1 kHz. The sequence intentionally sounds
- * like a tracker tune: square arpeggio, triangle bass, saw pad, kick and hat. */
-static const uint32_t ot_notes[] = {
-    6370000UL, 7150000UL, 8025000UL, 9544000UL,
-    10713000UL, 12740000UL, 14300000UL, 16050000UL,
-    19089000UL, 21426000UL, 25481000UL, 28600000UL,
-    32102000UL, 38177000UL, 42752000UL, 50962000UL
-};
-
 static void ot_audio_fill(struct AudioState *a, WORD *dst)
 {
-    const ULONG step_samples = 5168UL;
-    ULONG i;
-    ULONG cycle_second = (ULONG)(a->sample_cursor / OT_AUDIO_RATE) % (ULONG)OT_SEQUENCE_SECONDS;
-    static const UBYTE progression[32] = {
-        8, 10, 12, 15, 8, 10, 13, 15,
-        5,  8, 10, 13, 5,  8, 12, 13,
-        3,  7, 10, 12, 3,  7, 10, 14,
-        5,  8, 12, 15, 7, 10, 13, 15
-    };
-    static const UBYTE bassline[8] = { 0, 0, 3, 3, 5, 5, 3, 7 };
-
-    for (i = 0; i < OT_AUDIO_FRAMES; i++, a->sample_cursor++) {
-        ULONG step = (ULONG)(a->sample_cursor / step_samples);
-        ULONG within = (ULONG)(a->sample_cursor % step_samples);
-        ULONG beat_step = step & 3UL;
-        uint32_t lead_inc = ot_notes[progression[step & 31UL]];
-        uint32_t bass_inc = ot_notes[bassline[(step >> 2) & 7UL]] >> 1;
-        int32_t lead, bass, pad, kick = 0, hat = 0;
-        int32_t left, right;
-
-        if (step != a->last_step) {
-            a->last_step = step;
-            if (beat_step == 0) {
-                a->kick_age = 0;
-                a->kick_phase = 0;
-            }
-            if ((step & 1UL) == 0)
-                a->hat_age = 0;
-        }
-
-        a->lead_phase += lead_inc;
-        a->bass_phase += bass_inc;
-        a->pad_phase += ot_notes[(progression[(step >> 2) & 31UL] + 4) & 15UL] >> 2;
-
-        lead = (a->lead_phase & 0x80000000UL) ? 5200 : -5200;
-        if (within > step_samples * 3UL / 4UL)
-            lead = lead * (int32_t)(step_samples - within) / (int32_t)(step_samples / 4UL);
-        bass = ot_triangle(a->bass_phase) * 3600 / 32768;
-        pad = ot_saw(a->pad_phase) * 1300 / 32768;
-
-        if (a->kick_age < OT_AUDIO_RATE / 5UL) {
-            ULONG remain = OT_AUDIO_RATE / 5UL - a->kick_age;
-            uint32_t kinc = 12600000UL + (uint32_t)(remain * 120UL);
-            a->kick_phase += kinc;
-            kick = ot_triangle(a->kick_phase) * (int32_t)remain /
-                   (int32_t)(OT_AUDIO_RATE / 5UL) * 9000 / 32768;
-            a->kick_age++;
-        }
-
-        if (a->hat_age < OT_AUDIO_RATE / 20UL) {
-            ULONG remain = OT_AUDIO_RATE / 20UL - a->hat_age;
-            int32_t n = (int32_t)(ot_noise(a) >> 16) - 32768;
-            hat = n * (int32_t)remain / (int32_t)(OT_AUDIO_RATE / 20UL) * 2300 / 32768;
-            a->hat_age++;
-        }
-
-        left  = bass + kick + pad + hat + lead * 3 / 4;
-        right = bass + kick + pad - hat / 2 + lead;
-
-        if (cycle_second >= 64 && cycle_second < 78) {
-            int32_t click = within < 180 ? (int32_t)(180 - within) * 26 : 0;
-            left = left * 2 / 5 + click;
-            right = right * 2 / 5 - click / 2;
-        } else if (cycle_second >= 78 && cycle_second < 96) {
-            int32_t pan = ot_triangle(a->lead_phase >> 1);
-            left += lead * (32767 - pan) / 65534;
-            right += lead * (32767 + pan) / 65534;
-            left += pad; right += pad;
-        } else if (cycle_second >= 96 && cycle_second < 114) {
-            left = left * 5 / 4 + bass / 2 + pad;
-            right = right * 5 / 4 + bass / 2 + pad;
-        } else if (cycle_second >= 114 && cycle_second < 130) {
-            int32_t mono = (left + right) / 2;
-            left = mono + hat / 5;
-            right = mono - hat / 5;
-        } else if (cycle_second >= 130) {
-            left = left * 6 / 5 + pad;
-            right = right * 6 / 5 + pad;
-        }
+    ot_score_render(&a->score, (int16_t *)dst, OT_AUDIO_FRAMES);
+    a->sample_cursor += OT_AUDIO_FRAMES;
+}
