@@ -850,10 +850,11 @@ PX_FN void sample_bi(const struct ogpu_surface *s, const ogpu_u8 *r0, const ogpu
  *   target rows), CW columns at a time so they fit on the stack;
  * - no mix where its weight is 0 (it gives a), and no A where the result
  *   doesn't read it (an opaque COMPOSITE writes A 255);
- * then blend11 as before, or A 255 and the colour where that is all it
- * does. The columns' place in the source is worked out once a CW columns. */
+ * then blend11's OVER, written out for these two formats, or A 255 and the
+ * colour where that is all it does. The columns' place in the source is
+ * worked out once a CW columns. */
 #define COMP_CW 32
-PX_FN void comp_hrow(ogpu_u8 *hb, const ogpu_u8 *srow, const unsigned short *xi, const ogpu_u8 *wxs, int cw, int k0) {
+static __attribute__((noinline)) void comp_hrow(ogpu_u8 *hb, const ogpu_u8 *srow, const unsigned short *xi, const ogpu_u8 *wxs, int cw, int k0) {
     int k, c;
     for (k = 0; k < cw; k++, hb += 4) {
         const ogpu_u8 *q = srow + xoff(xi[k], 4);
@@ -862,9 +863,8 @@ PX_FN void comp_hrow(ogpu_u8 *hb, const ogpu_u8 *srow, const unsigned short *xi,
         for (c = k0; c < 4; c++) { int t0 = q[c]; hb[c] = (ogpu_u8)(t0 + (SMUL16((int)q[c + 4] - t0, wx) >> 8)); }
     }
 }
-static void comp_bilinear(const struct ogpu_surface *s, const struct ogpu_surface *t, ogpu_u8 *drow, int sx, int sy, int sw,
-                          int sh, int w, int h, int ox, int oy, ogpu_u32 stepx, ogpu_u32 stepy, unsigned alpha, int srcalpha,
-                          ogpu_u32 flags) {
+static __attribute__((noinline)) void comp_bilinear(const struct ogpu_surface *s, const struct ogpu_surface *t, ogpu_u8 *drow, int sx, int sy, int sw,
+                          int sh, int w, int h, int ox, int oy, ogpu_u32 stepx, ogpu_u32 stepy, unsigned alpha, int srcalpha) {
     int opaque = !srcalpha && alpha == 255, xa = t->format == OGPU_FMT_XRGB32, k0 = opaque ? 1 : 0, i0, j, k, c;
     for (i0 = 0; i0 < w; i0 += COMP_CW) {
         int cw = w - i0 < COMP_CW ? w - i0 : COMP_CW;
@@ -905,10 +905,17 @@ static void comp_bilinear(const struct ogpu_surface *s, const struct ogpu_surfac
                     v[c] = (unsigned)t0;
                 }
                 if (opaque) { dp[0] = (ogpu_u8)(xa ? 0 : 255); dp[1] = (ogpu_u8)v[1]; dp[2] = (ogpu_u8)v[2]; dp[3] = (ogpu_u8)v[3]; }
-                else {
-                    struct ch sp;
-                    sp.a = v[0]; sp.r = v[1]; sp.g = v[2]; sp.b = v[3];
-                    blend11(dp, t->format, &sp, mul255(srcalpha ? sp.a : 255, alpha), flags);
+                else {                              /* blend11's OVER into ARGB32 or XRGB32 */
+                    unsigned ea = mul255(srcalpha ? v[0] : 255, alpha), ia, r, g, b, oa;
+                    if (ea == 255) { dp[0] = (ogpu_u8)(xa ? 0 : 255); dp[1] = (ogpu_u8)v[1]; dp[2] = (ogpu_u8)v[2]; dp[3] = (ogpu_u8)v[3]; continue; }
+                    if (!ea) continue;
+                    ia = 255 - ea;
+                    r = mul255(v[1], ea) + mul255(dp[1], ia);
+                    g = mul255(v[2], ea) + mul255(dp[2], ia);
+                    b = mul255(v[3], ea) + mul255(dp[3], ia);
+                    oa = ea + mul255(xa ? 255 : dp[0], ia);
+                    dp[0] = (ogpu_u8)(xa ? 0 : oa > 255 ? 255 : oa);
+                    dp[1] = (ogpu_u8)(r > 255 ? 255 : r); dp[2] = (ogpu_u8)(g > 255 ? 255 : g); dp[3] = (ogpu_u8)(b > 255 ? 255 : b);
                 }
             }
         }
@@ -961,7 +968,7 @@ OP_FN op_composite(struct ogpu_core *c, const ogpu_u8 *a) {
              && mode < 0 && !m && !(flags & (OGPU_COMP_ADD | OGPU_COMP_IN));
     drow = px_at(t, x, y);
     if (bifast) {
-        comp_bilinear(s, t, drow, sx, sy, sw, sh, w, h, ox, oy, stepx, stepy, (unsigned)alpha, srcalpha, flags);
+        comp_bilinear(s, t, drow, sx, sy, sw, sh, w, h, ox, oy, stepx, stepy, (unsigned)alpha, srcalpha);
         return OGPU_OK;
     }
     for (j = 0; j < h; j++, drow += t->bpr) {
