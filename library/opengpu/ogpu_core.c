@@ -1573,9 +1573,13 @@ static void bl_setlum(long *c, long a, long l) {
     for (k = 0; k < 3; k++) c[k] += l;
     l = bl_lum(c); n = x = c[0];
     for (k = 1; k < 3; k++) { if (c[k] < n) n = c[k]; if (c[k] > x) x = c[k]; }
-    for (k = 0; k < 3; k++) {       /* ClipColor */
-        if (n < 0) c[k] = l + (long)((ogpu_s64)(c[k] - l) * l / (l - n));
-        if (x > a) c[k] = l + (long)((ogpu_s64)(c[k] - l) * (a - l) / (x - l));
+    /* ClipColor. l == n or l == x only where the three are equal: a grey out
+     * of range (from a colour past its alpha). It goes to the edge it passed,
+     * 0 or a, as the scaling takes the lowest channel to 0 and the highest to
+     * a, instead of dividing by 0 (a trap on the 68k). */
+    for (k = 0; k < 3; k++) {
+        if (n < 0) c[k] = l == n ? 0 : l + (long)((ogpu_s64)(c[k] - l) * l / (l - n));
+        if (x > a) c[k] = l == x ? a : l + (long)((ogpu_s64)(c[k] - l) * (a - l) / (x - l));
     }
 }
 static long bl_sat(const long *c) {

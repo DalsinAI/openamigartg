@@ -988,6 +988,47 @@ static double sep(int op, double cs, double cb) {
     }
 }
 
+/* d, one ARGB32 pixel (A, R, G, B), under the solid source s by the core's
+ * COMPOSITE_PD in the blend mode op: the core's error, the pixel left in d */
+static int core_blend(int op, const unsigned *s, unsigned *d) {
+    int k, e;
+    for (k = 0; k < 4; k++) arena[TGT + k] = (ogpu_u8)d[k];
+    begin();
+    ogpu_surface(&B, 0, TGT, 4, 1, 1, OGPU_FMT_ARGB32);
+    ogpu_target(&B, 0);
+    ogpu_composite_pd(&B, (unsigned long)op | OGPU_PD_SOLID, (unsigned long)s[0] << 24 | s[1] << 16 | s[2] << 8 | s[3],
+                      0, 0, 0, 0, 0, 0, 0, 1, 1);
+    e = run();
+    for (k = 0; k < 4; k++) d[k] = arena[TGT + k];
+    return e;
+}
+/* the largest difference of the core's pixel from the reference's (the W3C
+ * formulas on the colours unpremultiplied, each held to 1); 999 for an error */
+static int blend_diff(int op, const unsigned *s, const unsigned *d) {
+    double as = s[0] / 255.0, ad = d[0] / 255.0, Cs[3], Cb[3], Bl[3], o[4];
+    unsigned q[4];
+    int k, maxd = 0;
+    for (k = 0; k < 4; k++) q[k] = d[k];
+    if (core_blend(op, s, q) != OGPU_OK) return 999;
+    for (k = 0; k < 3; k++) { Cs[k] = as > 0 ? s[k + 1] / 255.0 / as : 0; Cb[k] = ad > 0 ? d[k + 1] / 255.0 / ad : 0; }
+    for (k = 0; k < 3; k++) { if (Cs[k] > 1) Cs[k] = 1; if (Cb[k] > 1) Cb[k] = 1; }
+    if (op < OGPU_BLEND_HUE) for (k = 0; k < 3; k++) Bl[k] = sep(op, Cs[k], Cb[k]);
+    else {
+        for (k = 0; k < 3; k++) Bl[k] = op == OGPU_BLEND_SATURATION || op == OGPU_BLEND_LUMINOSITY ? Cb[k] : Cs[k];
+        if (op == OGPU_BLEND_HUE) { setsat(Bl, satc(Cb)); setlum(Bl, lum(Cb)); }
+        else if (op == OGPU_BLEND_SATURATION) { setsat(Bl, satc(Cs)); setlum(Bl, lum(Cb)); }
+        else if (op == OGPU_BLEND_COLOR) setlum(Bl, lum(Cb));
+        else setlum(Bl, lum(Cs));
+    }
+    o[0] = (as + ad - as * ad) * 255;
+    for (k = 0; k < 3; k++) o[k + 1] = (s[k + 1] / 255.0 * (1 - ad) + d[k + 1] / 255.0 * (1 - as) + as * ad * Bl[k]) * 255;
+    for (k = 0; k < 4; k++) {
+        int dd = abs((int)floor(o[k] + 0.5) - (int)q[k]);
+        if (dd > maxd) maxd = dd;
+    }
+    return maxd;
+}
+
 static void test_blends(void) {
     static const char *names[15] = { "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn",
                                      "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation",
@@ -996,10 +1037,9 @@ static void test_blends(void) {
     char buf[160];
     unsigned rs = 99;
     for (op = OGPU_BLEND_MULTIPLY; op <= OGPU_BLEND_LUMINOSITY; op++) {
-        int maxd = 0, tol = op == OGPU_BLEND_SOFT_LIGHT || op >= OGPU_BLEND_HUE ? 2 : 1;
+        int maxd = 0, tol = op == OGPU_BLEND_SOFT_LIGHT || op >= OGPU_BLEND_HUE ? 2 : 1, dd;
         for (it = 0; it < 3000; it++) {
             unsigned s[4], d[4];
-            double as, ad, Cs[3], Cb[3], Bl[3], o[4];
             for (k = 0; k < 2; k++) {
                 unsigned *p = k ? d : s, a, j;
                 rs = rs * 1103515245u + 12345u;
@@ -1007,35 +1047,51 @@ static void test_blends(void) {
                 p[0] = a;
                 for (j = 1; j < 4; j++) { rs = rs * 1103515245u + 12345u; p[j] = a ? ((rs >> 8) & 0xFFFF) % (a + 1) : 0; }
             }
-            /* the core: COMPOSITE_PD, solid source, one ARGB32 pixel */
-            for (k = 0; k < 4; k++) arena[TGT + k] = (ogpu_u8)d[k];
-            begin();
-            ogpu_surface(&B, 0, TGT, 4, 1, 1, OGPU_FMT_ARGB32);
-            ogpu_target(&B, 0);
-            ogpu_composite_pd(&B, (unsigned long)op | OGPU_PD_SOLID, (unsigned long)s[0] << 24 | s[1] << 16 | s[2] << 8 | s[3],
-                              0, 0, 0, 0, 0, 0, 0, 1, 1);
-            if (run() != OGPU_OK) { maxd = 999; break; }
-            /* the reference */
-            as = s[0] / 255.0; ad = d[0] / 255.0;
-            for (k = 0; k < 3; k++) { Cs[k] = as > 0 ? s[k + 1] / 255.0 / as : 0; Cb[k] = ad > 0 ? d[k + 1] / 255.0 / ad : 0; }
-            for (k = 0; k < 3; k++) { if (Cs[k] > 1) Cs[k] = 1; if (Cb[k] > 1) Cb[k] = 1; }
-            if (op < OGPU_BLEND_HUE) for (k = 0; k < 3; k++) Bl[k] = sep(op, Cs[k], Cb[k]);
-            else {
-                for (k = 0; k < 3; k++) Bl[k] = op == OGPU_BLEND_SATURATION || op == OGPU_BLEND_LUMINOSITY ? Cb[k] : Cs[k];
-                if (op == OGPU_BLEND_HUE) { setsat(Bl, satc(Cb)); setlum(Bl, lum(Cb)); }
-                else if (op == OGPU_BLEND_SATURATION) { setsat(Bl, satc(Cs)); setlum(Bl, lum(Cb)); }
-                else if (op == OGPU_BLEND_COLOR) setlum(Bl, lum(Cb));
-                else setlum(Bl, lum(Cs));
-            }
-            o[0] = (as + ad - as * ad) * 255;
-            for (k = 0; k < 3; k++) o[k + 1] = (s[k + 1] / 255.0 * (1 - ad) + d[k + 1] / 255.0 * (1 - as) + as * ad * Bl[k]) * 255;
-            for (k = 0; k < 4; k++) {
-                int dd = abs((int)floor(o[k] + 0.5) - arena[TGT + k]);
-                if (dd > maxd) maxd = dd;
-            }
+            dd = blend_diff(op, s, d);
+            if (dd > maxd) maxd = dd;
+            if (dd == 999) break;
         }
         snprintf(buf, sizeof buf, "blend mode %s: largest difference %d over 3000 pixels (tolerance %d)", names[op - OGPU_BLEND_MULTIPLY], maxd, tol);
         check(maxd <= tol, buf);
+    }
+    /* colours past their alpha, not premultiplied: the non-separable modes
+     * made a grey out of range there, and ClipColor divided by 0 (a trap on
+     * the 68k; Team 5's fuzzing of the 68040 paths found it, seed 301). None
+     * may trap; a grey goes to the edge it passed, as the reference's colour
+     * held to 1 */
+    {
+        static const unsigned grey[7][4] = { { 0, 192, 192, 192 }, { 0, 255, 255, 255 }, { 16, 255, 255, 255 }, { 64, 192, 192, 192 },
+                                             { 1, 2, 2, 2 }, { 0, 1, 1, 1 }, { 128, 200, 200, 200 } };
+        static const unsigned src[10][4] = { { 255, 128, 128, 128 }, { 255, 0, 128, 255 }, { 128, 64, 64, 0 }, { 64, 16, 32, 48 },
+                                             { 255, 255, 255, 255 }, { 0, 0, 0, 0 }, { 1, 1, 0, 1 },
+                                             { 0, 255, 255, 255 }, { 10, 200, 30, 30 }, { 100, 255, 0, 100 } };
+        static const unsigned lv[5] = { 0, 1, 100, 254, 255 };
+        int i, j, maxd = 0, errs = 0, runs = 0;
+        for (op = OGPU_BLEND_HUE; op <= OGPU_BLEND_LUMINOSITY; op++) {
+            for (i = 0; i < 7; i++)
+                for (j = 0; j < 7; j++) {       /* COLOR keeps the source's colour: a grey only from a grey source */
+                    int dd = op == OGPU_BLEND_COLOR && (src[j][1] != src[j][2] || src[j][2] != src[j][3]) ? 0 : blend_diff(op, src[j], grey[i]);
+                    if (dd > maxd) maxd = dd;
+                }
+            for (i = 0; i < 5 * 5 * 5 * 5; i++)
+                for (j = 0; j < 10; j++) {
+                    unsigned d[4];
+                    d[0] = lv[i % 5]; d[1] = lv[i / 5 % 5]; d[2] = lv[i / 25 % 5]; d[3] = lv[i / 125];
+                    errs += core_blend(op, src[j], d) != OGPU_OK;
+                    runs++;
+                }
+        }
+        snprintf(buf, sizeof buf, "the non-separable modes over a grey past its alpha: largest difference %d (tolerance 2)", maxd);
+        check(maxd <= 2, buf);
+        snprintf(buf, sizeof buf, "the non-separable modes over colours past their alpha: %d of %d met an error", errs, runs);
+        check(!errs, buf);
+    }
+    /* the pixel seed 301 trapped on: HUE of a faint grey over a colour past its alpha */
+    {
+        static const unsigned s301[4] = { 1, 1, 1, 1 }, d301[4] = { 137, 206, 224, 105 };
+        unsigned q[4] = { 137, 206, 224, 105 };
+        check(core_blend(OGPU_BLEND_HUE, s301, q) == OGPU_OK && q[0] == 137 && q[1] == 206 && q[2] == 224 && q[3] == 106
+              && blend_diff(OGPU_BLEND_HUE, s301, d301) == 0, "seed 301's pixel: HUE of (1, 1, 1, 1) over (137, 206, 224, 105)");
     }
     /* through a path: multiply over a colour, the coverage as the mask */
     {
