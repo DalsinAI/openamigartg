@@ -2571,21 +2571,6 @@ static void grad_run(struct paint *p, ogpu_u8 *dp, int n, unsigned al, int op, i
     p->gx += n * p->inv[0]; p->gy += n * p->inv[3];     /* as n paint_steps (t24 stepped above, or not moving) */
 }
 
-/* One pixel s by SRC or OVER into an ARGB32 (xa 0) or XRGB32 target: put_op's bytes. */
-PX_FN void put_src_over(ogpu_u8 *dp, const struct ch *s, int op, int xa) {
-    unsigned fb;
-    if (op == OGPU_PD_SRC || s->a == 255) {
-        dp[0] = (ogpu_u8)(xa ? 0 : op == OGPU_PD_SRC ? s->a : 255);
-        dp[1] = (ogpu_u8)s->r; dp[2] = (ogpu_u8)s->g; dp[3] = (ogpu_u8)s->b;
-        return;
-    }
-    fb = 255 - s->a;
-    dp[0] = (ogpu_u8)(xa ? 0 : sat8(s->a + mul255(dp[0], fb)));
-    dp[1] = (ogpu_u8)sat8(s->r + mul255(dp[1], fb));
-    dp[2] = (ogpu_u8)sat8(s->g + mul255(dp[2], fb));
-    dp[3] = (ogpu_u8)sat8(s->b + mul255(dp[3], fb));
-}
-
 /* n pixels of a pattern (a picture under a matrix) from an ARGB32 slot,
  * at coverage al, OVER or SRC into an ARGB32 (xa 0) or XRGB32 target:
  * paint_px's colour and put_op's bytes. Where all the texels a pixel
