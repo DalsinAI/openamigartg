@@ -191,7 +191,7 @@ static int op_rand(void) {
 
 static void path_cmd(int tw, int th, int tbpp) {
     unsigned long flags = (unsigned long)op_rand(), paint, wb;
-    int px, py, mx = 0, my = 0, stroke = (int)rn(2);
+    int px = 0, py = 0, mx = 0, my = 0, stroke = (int)rn(2);
     long m[6];
     int w3c = (int)(flags & 255) >= OGPU_BLEND_HUE && (int)(flags & 255) <= OGPU_BLEND_LUMINOSITY;
     if (rn(3) == 0) flags |= OGPU_PATH_EVENODD;

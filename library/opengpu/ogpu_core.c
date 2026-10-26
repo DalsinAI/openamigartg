@@ -1739,14 +1739,14 @@ static const ogpu_w32 bit_of[32] = {
 /* A cell's sum, past 32 bits only when some 65536 lines meet in one cell:
  * even-odd needs only its low bits, so it wraps; non-zero stops at the
  * largest, keeping its sign (its pixel is then full, or nearly). */
-static int cell_add(int v, int d, int eo) {
+PX_FN int cell_add(int v, int d, int eo) {
     if (eo) return (int)((unsigned)v + (unsigned)d);
     if (d > 0 ? v > 0x7FFFFFFF - d : v < -0x7FFFFFFF - d) return d > 0 ? 0x7FFFFFFF : -0x7FFFFFFF;
     return v + d;
 }
 
-/* sub-row j (0 .. 4h - 1), pixel i */
-static void cell(struct rast *r, long i, int j, int dy, long fx0, long fx1) {
+/* sub-row j (0 .. 4h - 1), pixel i (inline: on the 68k a call costs more than it) */
+PX_FN void cell(struct rast *r, long i, int j, int dy, long fx0, long fx1) {
     int *c;
     if (i >= r->w || !dy) return;   /* right of the band: covers nothing */
     c = r->cell + (((long)MUL16(j >> 2, r->w) + i) << 3);
