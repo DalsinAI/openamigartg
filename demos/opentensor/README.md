@@ -16,21 +16,49 @@ The 164-second loop is split into eleven scenes.
 ### Act I — First Light
 
 1. **The Noise** — a star field resolves from darkness.
-2. **The Field** — a subtle Amiga-blue and warm-grey checkerboard landscape.
-3. **The Boing Event** — a red-and-white sphere falls and sends rings across the field.
-4. **Tensor Storm** — additive stars and a geometric tunnel.
+2. **The Field** — a blue enamel checkerboard landscape with luminous bevels, a light pool and distance haze.
+3. **The Boing Event** — a glossy red-and-white sphere falls above a soft contact shadow and planar reflection, sending rings across the field.
+4. **Tensor Storm** — starlight, a bending dimensional grid and drifting optical light.
 5. **First Light** — `OPENTENSOR`, `FIRST LIGHT`, and `AND THUS THE FIRST TENSOR WAS BORN`.
 
 ### Act II — Beyond First Light
 
 6. **The Timecode** — the surviving point becomes a deep broadcast timecode field: `THE NUMBER BECAME THE TIMECODE`.
 7. **Across The Field** — eight luminous tensor streams move above the checkerboard and carry audio-synchronised nodes.
-8. **Form** — nested wire tensors converge, a wireframe Boing form becomes solid, and `AND IT WAS GIVEN FORM` appears.
+8. **Form** — soft luminous tensors converge, a Boing form condenses out of the light, and `AND IT WAS GIVEN FORM` appears.
 9. **Window Breakout** — the universe moves into a real Intuition window, gliding across an Amiga-style desktop while Mesa keeps rendering.
 10. **Beyond First Light** — five orbiting Boing forms surround the tensor core and the full Open stack is named.
 11. **The Stack Is Open** — Mesa, OpenRTG, OpenGPU, AHI and AC090 resolve to one final point before the loop begins again.
 
-The soundtrack is generated in real time as 16-bit stereo PCM and streamed to `ahi.device` using linked double buffers. It is deliberately tracker-like: square arpeggio, triangle bass, saw pad, kick and noise hat. Act II rearranges that same tiny synthesiser rather than streaming a pre-rendered soundtrack.
+The original soundtrack is generated as 16-bit stereo PCM and streamed to
+`ahi.device` using linked double buffers. Version 0.3.0 replaces the harsh
+square/saw loop with a 128 BPM arrangement: A minor / F / C / G chords,
+a bell-like lead, harmonic bass, filtered pads, kick/snare/hat and a cross-fed
+stereo echo. The opening, timecode break and ending change the arrangement.
+Oscillator tables are built once; the audio pump uses integer mixing. Each
+buffer now holds 8192 frames to absorb rendering spikes.
+
+## Visual polish (0.3.1 preview)
+
+- Smooth sphere normals, warm key/cool fill lighting and white specular
+  highlights give the Boing forms a studio-rendered appearance in every act.
+- The Boing Event yields under each landing: the checkerboard dips for a short
+  contact interval, releases the ball into its rebound and carries damped waves
+  outward. The shadow follows the depression; the planar reflection is omitted
+  during contact because the floor is no longer planar. This is a procedural
+  spring-like animation, not a coupled physics solver or runtime ray tracer.
+- The field has bevel accents, a baked light pool and distance haze.
+- 720 mainly white stars move in three depth/speed layers. Soft halos,
+  white-hot centres and sparse optical flares replace the dense coloured dots.
+- Tensor Storm uses a bending dimensional passage, receding rectangular frames
+  and drifting light. The streams and Form use soft-edged luminous ribbons;
+  the solid Boing form slowly condenses out of the light.
+- F1 enables the diagnostic overlay; it starts hidden for the production.
+
+The higher-detail meshes and lighting have a performance cost. See
+[ETHER_RESULT.md](ETHER_RESULT.md) for the current follow-up and
+[POLISH_RESULT.md](POLISH_RESULT.md) for the first preview’s test limits.
+
 
 ## Build
 
@@ -42,7 +70,7 @@ STOVE=~/AmigaChrome/stoves/os32-gcc16 \
 Output:
 
 ```text
-build/opentensor/OpenTensor-Beyond-First-Light-0.2.0.zip
+build/opentensor/OpenTensor-Beyond-First-Light-0.3.1.zip
 ```
 
 ## Run

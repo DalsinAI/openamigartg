@@ -1,8 +1,3 @@
-        dst[i * 2 + 0] = ot_clip16(left);
-        dst[i * 2 + 1] = ot_clip16(right);
-    }
-}
-
 static void ot_audio_request(struct AudioState *a, int n, struct AHIRequest *link)
 {
     struct AHIRequest *r = a->req[n];
@@ -25,11 +20,8 @@ static void ot_audio_close(struct AudioState *a);
 static int ot_audio_open(struct AudioState *a, uint64_t start_sample)
 {
     memset(a, 0, sizeof(*a));
-    a->noise = 0x13579BDFUL;
-    a->last_step = ~0UL;
-    a->kick_age = OT_AUDIO_RATE;
-    a->hat_age = OT_AUDIO_RATE;
     a->sample_cursor = start_sample;
+    ot_score_init(&a->score, start_sample);
 
     a->pcm[0] = (WORD *)AllocVec(OT_AUDIO_WORDS * sizeof(WORD) * 2UL, MEMF_ANY | MEMF_CLEAR);
     if (!a->pcm[0]) goto fail;
@@ -126,6 +118,7 @@ static void ot_mesh_free(struct Mesh *m)
 {
     if (m->v) FreeVec(m->v);
     if (m->c) FreeVec(m->c);
+    if (m->radial) FreeVec(m->radial);
     memset(m, 0, sizeof(*m));
 }
 
@@ -141,31 +134,51 @@ static void ot_put_vertex(struct Mesh *m, int n, float x, float y, float z,
     m->c[n * 4 + 3] = a;
 }
 
+/* Bevelled enamel tiles: dark seams, a cool light pool and distant haze.
+ * All colour work is baked once; the frame loop only submits geometry. */
+static void ot_ground_vertex(struct Mesh *m, int n, float x, float z, int pale)
+{
+    float pool = 1.0f / (1.0f + x*x*0.025f + (z+12.0f)*(z+12.0f)*0.008f);
+    float fog = OT_MIN(0.92f, OT_MAX(0.0f, (-z-8.0f)/45.0f));
+    float r = pale ? 0.48f : 0.035f, g = pale ? 0.58f : 0.09f;
+    float b = pale ? 0.68f : 0.17f;
+    r = r*(0.35f+0.65f*pool)*(1-fog)+0.025f*fog;
+    g = g*(0.40f+0.60f*pool)*(1-fog)+0.045f*fog;
+    b = b*(0.50f+0.50f*pool)*(1-fog)+0.09f*fog;
+    ot_put_vertex(m,n,x,-2.4f,z,r,g,b,1);
+}
+
 static int ot_build_ground(struct Mesh *m)
 {
-    const int nx = 24, nz = 32;
-    const float x0 = -18.0f, z0 = -44.0f, cell = 1.5f;
+    const int nx = 32, nz = 40;
+    const float x0 = -24.0f, z0 = -55.0f, cell = 1.5f;
     int x, z, n = 0;
-    if (!ot_mesh_alloc(m, nx * nz * 6, GL_TRIANGLES)) return 0;
-    for (z = 0; z < nz; z++) {
-        for (x = 0; x < nx; x++) {
-            float xa = x0 + x * cell, xb = xa + cell;
-            float za = z0 + z * cell, zb = za + cell;
-            float r, g, b;
-            if ((x + z) & 1) { r = 0.43f; g = 0.51f; b = 0.62f; }
-            else             { r = 0.70f; g = 0.69f; b = 0.64f; }
-#define GROUND_VERTEX(px,pz) ot_put_vertex(m, n++, (px), -2.4f, (pz), r, g, b, 1.0f)
-            GROUND_VERTEX(xa, za); GROUND_VERTEX(xb, za); GROUND_VERTEX(xb, zb);
-            GROUND_VERTEX(xa, za); GROUND_VERTEX(xb, zb); GROUND_VERTEX(xa, zb);
-#undef GROUND_VERTEX
-        }
+    if (!ot_mesh_alloc(m, nx*nz*12, GL_TRIANGLES)) return 0;
+    for (z=0; z<nz; ++z) for (x=0; x<nx; ++x) {
+        float xa=x0+x*cell, xb=xa+cell, za=z0+z*cell, zb=za+cell;
+        int pale=(x+z)&1;
+#define GV(px,pz) ot_ground_vertex(m,n++,(px),(pz),pale)
+        GV(xa,za); GV(xb,za); GV(xb,zb);
+        GV(xa,za); GV(xb,zb); GV(xa,zb);
+#undef GV
+        /* Thin luminous bevel along two tile edges. */
+#define EDGE(px,pz) ot_put_vertex(m,n++,(px),-2.394f,(pz),0.09f,0.25f,0.34f,1)
+        EDGE(xa,za); EDGE(xb,za); EDGE(xb,za+0.018f);
+        EDGE(xa,za); EDGE(xa+0.018f,zb); EDGE(xa,zb);
+#undef EDGE
+    }
+    m->radial = (uint16_t *)AllocVec((ULONG)m->count * sizeof(uint16_t), MEMF_ANY);
+    if (!m->radial) { ot_mesh_free(m); return 0; }
+    for (n=0;n<m->count;++n) {
+        float dx=m->v[n*3], dz=m->v[n*3+2]+13.0f;
+        m->radial[n]=(uint16_t)OT_MIN(511,(int)(sqrt(dx*dx+dz*dz)*8));
     }
     return 1;
 }
 
 static int ot_build_ball(struct Mesh *m)
 {
-    const int slices = 24, stacks = 16;
+    const int slices = 48, stacks = 24;
     int s, t, n = 0;
     if (!ot_mesh_alloc(m, slices * stacks * 6, GL_TRIANGLES)) return 0;
     for (t = 0; t < stacks; t++) {
@@ -180,7 +193,7 @@ static int ot_build_ball(struct Mesh *m)
             float u1 = (float)(s + 1) / (float)slices;
             float a0 = u0 * OT_TAU, a1 = u1 * OT_TAU;
             float r, g, b;
-            if (((s / 3) + (t / 2)) & 1) { r = 0.94f; g = 0.12f; b = 0.10f; }
+            if (((s / 6) + (t / 3)) & 1) { r = 0.94f; g = 0.12f; b = 0.10f; }
             else                          { r = 0.94f; g = 0.94f; b = 0.90f; }
 #define BALL_VERTEX(rr,ang,yy) ot_put_vertex(m, n++, (rr) * ot_cos(ang), (yy), (rr) * ot_sin(ang), r, g, b, 1.0f)
             BALL_VERTEX(rr0, a0, y0); BALL_VERTEX(rr1, a0, y1); BALL_VERTEX(rr1, a1, y1);
@@ -193,7 +206,7 @@ static int ot_build_ball(struct Mesh *m)
 
 static int ot_build_stars(struct Mesh *m)
 {
-    const int count = 900;
+    const int count = 720;
     uint32_t rng = 0xC001D00DUL;
     int i;
     if (!ot_mesh_alloc(m, count, GL_POINTS)) return 0;
@@ -204,9 +217,14 @@ static int ot_build_stars(struct Mesh *m)
         rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
         y = ((float)(rng & 0xffffU) / 65535.0f - 0.5f) * 35.0f;
         rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
-        z = -3.0f - (float)(rng & 0xffffU) / 65535.0f * 90.0f;
-        q = 0.45f + (float)((rng >> 24) & 255U) / 510.0f;
-        ot_put_vertex(m, i, x, y, z, q * 0.75f, q * 0.86f, q, 1.0f);
+        z = -3.0f - (float)((i*7919)%9000)*0.01f;
+        x *= -z/28.0f; y *= -z/28.0f;
+        q = 0.18f + (float)((rng >> 24) & 255U) / 330.0f;
+        /* Warm giants among the blue-white stars; brightness spans depth. */
+        ot_put_vertex(m, i, x, y, z,
+                      q * ((i % 11) ? 0.90f : 1.0f),
+                      q * ((i % 11) ? 0.94f : 0.84f),
+                      q * ((i % 11) ? 1.0f : 0.63f), 1.0f);
     }
     return 1;
 }
