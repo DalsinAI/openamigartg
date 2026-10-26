@@ -47,7 +47,8 @@ static long rr(long a, long b) { return a + rn(b - a + 1); }
 static ogpu_u8 sbuf[16384];
 /* The non-separable blend modes divide by zero (both copies; on the 68k a
  * trap) where a colour isn't premultiplied (a channel past its alpha): they
- * are only drawn in rounds whose target and paint are premultiplied. */
+ * are only drawn in rounds whose target is premultiplied and stays so, every
+ * path of the round painted with a premultiplied colour and no COMPOSITE. */
 static int premul_round, pure_colours, focus, cmd_no;   /* cmd_no: the command's own path and paint memory */
 static struct OGPUBatch B, P, G;
 static const int fmts[] = { OGPU_FMT_ARGB32, OGPU_FMT_ARGB32, OGPU_FMT_ARGB32, OGPU_FMT_XRGB32, OGPU_FMT_XRGB32,
@@ -193,7 +194,7 @@ static void path_cmd(int tw, int th, int tbpp) {
     unsigned long flags = (unsigned long)op_rand(), paint, wb;
     int px = 0, py = 0, mx = 0, my = 0, stroke = (int)rn(2);
     long m[6];
-    int w3c = (int)(flags & 255) >= OGPU_BLEND_HUE && (int)(flags & 255) <= OGPU_BLEND_LUMINOSITY;
+    int w3c = premul_round;
     if (rn(3) == 0) flags |= OGPU_PATH_EVENODD;
     pure_colours = w3c;
     paint = w3c ? colour_rand() : paint_rand(&flags, tw, th, &px, &py);
@@ -295,17 +296,17 @@ int main(int argc, char **argv) {
         f = focus && rn(8) ? fmts[rn(5)] : fmts[rn(rn(10) ? 13 : 14)];
         bpp = bpp_of(f);
         bpr = (long)tw * bpp + (rn(4) ? 0 : rn(8));
-        premul_round = bpp == 4 && rn(3) == 0;
+        premul_round = bpp == 4 && rn(3) == 0 && mix < 2;
         if (premul_round) premul_fill(TGT, bpr, tw, th, f);
         else fill_rand(TGT, (unsigned long)bpr * th, (int)rn(2));
-        if (bpp != 4) premul_round = rn(3) == 0;                /* no alpha but A8's, which has no colour */
+        if (bpp != 4) premul_round = rn(3) == 0 && mix < 2;     /* no alpha but A8's, which has no colour */
         ogpu_surface(&B, 0, premul_round && bpp == 4 ? TGT : TGT + (rn(6) ? 0 : (unsigned long)rn(4)), (unsigned long)bpr, tw, th, f);
         ogpu_target(&B, 0);
         if (rn(5) == 0) ogpu_clip(&B, (int)rr(-10, tw), (int)rr(-10, th), (int)rr(0, tw), (int)rr(0, th));
         n = (int)rr(1, 3);
         for (k = 0; k < n; k++) {
             cmd_no = k;
-            if (mix == 2 || (mix == 0 && !rn(5))) composite_cmd(tw, th); else path_cmd(tw, th, bpp);
+            if ((mix == 2 || (mix == 0 && !rn(5))) && !premul_round) composite_cmd(tw, th); else path_cmd(tw, th, bpp);
             cmds++;
         }
         memcpy(arena, start, CMP_END); memcpy(arena2, start, CMP_END);
