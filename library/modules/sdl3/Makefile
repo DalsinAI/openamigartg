@@ -224,7 +224,7 @@ $(MODULE_TESTS): $(TEST_DIR)/%.m: $(TEST_DIR)/obj/%.o $(TEST_RUN) $(OUT)/libSDL3
 # The Team's own (tests/sdl3): rendercompare checks the opengpu renderer's
 # pictures against the software renderer's (rendercompare_host.sh runs it on
 # a PC). rendercompare is static, rendercompare.m on the module.
-OWN_TESTS = rendercompare
+OWN_TESTS = rendercompare cursor_lifecycle
 OWNTEST_OBJS = $(addprefix $(TEST_DIR)/obj/,$(addsuffix .o,$(OWN_TESTS)))
 tests: $(addprefix $(TEST_DIR)/,$(OWN_TESTS)) $(addsuffix .m,$(addprefix $(TEST_DIR)/,$(OWN_TESTS)))
 $(OWNTEST_OBJS): $(TEST_DIR)/obj/%.o: $(ROOT)/tests/sdl3/%.c
