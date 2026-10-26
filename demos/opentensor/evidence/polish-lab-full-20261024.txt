@@ -1,0 +1,4 @@
+OpenTensor: renderer virgl (AMD Radeon RX 460 Graphics (radeonsi, polaris11, ACO...), driver virgl, OpenGL 4.3 (Compatibility Profile) Mesa 26.2.4
+OpenTensor: 960x540x32 full-screen OpenRTG direct, AHI 44.1 kHz stereo, sequence 164 seconds
+OpenTensor: 28.4 fps, 0 AHI underruns, final scene THE NOISE
+FULL RC 0
