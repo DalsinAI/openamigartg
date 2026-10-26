@@ -1,0 +1,21 @@
+{
+  "instance": "Instance-32",
+  "destination": "DH1:OpenTensor-Preview",
+  "utc": "2026-10-24T02:46:13.673715+00:00",
+  "files": {
+    "BUILD-INFO.txt": "4211b7065c1806b3dccf90a6e6acc6a8e37b4632a4384c46779c3185355a6457",
+    "Launch": "1760e57ed6d16620e9de353d723bd9b96389508d7090383a186dd1530af65568",
+    "Launch-ActII": "a2ad1001ac5fb0b13ae43c5c6fb4e9446dfae9b3d38a756109fc8098df3e94be",
+    "Launch-ActII.info": "601056e487394a384ad8ac1f07a6c773312fad4245df2246dc15f738d1db38de",
+    "Launch-New-Look": "2c8a05f47f4d2100ee24a32a48f2916f1f5a3e30592e9510de8b12fbed4149f7",
+    "Launch-New-Look.info": "633f770550ba1a465148b0893c1b3ebe9228b20e72154733273ac27a43d041da",
+    "Launch.info": "633f770550ba1a465148b0893c1b3ebe9228b20e72154733273ac27a43d041da",
+    "OpenTensor": "a78acbe4ec58c3fddc46434d1092e7c16727c56a815a0b949f10ae93e257c83a",
+    "OpenTensor.info": "02560ad3586e081082ad57b2d74c2f1d6546119702818f7bb3dc6311f93f6827",
+    "PREVIEW.txt": "1ad46704c7efd05dfbd01c939751f022821743b0d3ae730326c71af6923d84df",
+    "README.txt": "9a54f9c634ae609454bd9ee35303a95120303157847e1644ed9ef4413d7d946e"
+  },
+  "original_binary_sha256_before_and_after": "6e60945ad082e68de91a81f59cb0f1685732b1ea450e20547fe2fa8cb8a8f939",
+  "preview_binary_sha256": "a78acbe4ec58c3fddc46434d1092e7c16727c56a815a0b949f10ae93e257c83a",
+  "live_launch_or_restart": false
+}
