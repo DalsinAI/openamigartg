@@ -856,11 +856,24 @@ PX_FN void sample_bi(const struct ogpu_surface *s, const ogpu_u8 *r0, const ogpu
 #define COMP_CW 32
 static __attribute__((noinline)) void comp_hrow(ogpu_u8 *hb, const ogpu_u8 *srow, const unsigned short *xi, const ogpu_u8 *wxs, int cw, int k0) {
     int k, c;
+    if (k0) {                                       /* R, G and B only, written out */
+        for (k = 0; k < cw; k++, hb += 4) {
+            const ogpu_u8 *q = srow + xoff(xi[k], 4);
+            int wx = wxs[k], r = q[1], g = q[2], b = q[3];
+            if (wx) {
+                r += SMUL16((int)q[5] - r, wx) >> 8;
+                g += SMUL16((int)q[6] - g, wx) >> 8;
+                b += SMUL16((int)q[7] - b, wx) >> 8;
+            }
+            hb[1] = (ogpu_u8)r; hb[2] = (ogpu_u8)g; hb[3] = (ogpu_u8)b;
+        }
+        return;
+    }
     for (k = 0; k < cw; k++, hb += 4) {
         const ogpu_u8 *q = srow + xoff(xi[k], 4);
         int wx = wxs[k];
-        if (!wx) { for (c = k0; c < 4; c++) hb[c] = q[c]; continue; }
-        for (c = k0; c < 4; c++) { int t0 = q[c]; hb[c] = (ogpu_u8)(t0 + (SMUL16((int)q[c + 4] - t0, wx) >> 8)); }
+        if (!wx) { for (c = 0; c < 4; c++) hb[c] = q[c]; continue; }
+        for (c = 0; c < 4; c++) { int t0 = q[c]; hb[c] = (ogpu_u8)(t0 + (SMUL16((int)q[c + 4] - t0, wx) >> 8)); }
     }
 }
 static __attribute__((noinline)) void comp_bilinear(const struct ogpu_surface *s, const struct ogpu_surface *t, ogpu_u8 *drow, int sx, int sy, int sw,
@@ -897,15 +910,28 @@ static __attribute__((noinline)) void comp_bilinear(const struct ogpu_surface *s
             if (sa < 0) { sa = sb == 0 ? 1 : 0; comp_hrow(hb[sa], px_at(s, 0, sy + y0), xi, wxs, cw, k0); tag[sa] = y0; }
             if (wy && sb < 0) { sb = 1 - sa; comp_hrow(hb[sb], px_at(s, 0, sy + y1), xi, wxs, cw, k0); tag[sb] = y1; }
             ha = hb[sa]; hbb = wy ? hb[sb] : ha;
+            if (opaque) {                           /* A 255 (XRGB32's X 0) and R, G, B, written out */
+                ogpu_u8 a0 = (ogpu_u8)(xa ? 0 : 255);
+                if (wy)
+                    for (k = 0, dp = drw; k < cw; k++, dp += 4, ha += 4, hbb += 4) {
+                        int r = ha[1], g = ha[2], b = ha[3];
+                        r += SMUL16((int)hbb[1] - r, (int)wy) >> 8;
+                        g += SMUL16((int)hbb[2] - g, (int)wy) >> 8;
+                        b += SMUL16((int)hbb[3] - b, (int)wy) >> 8;
+                        dp[0] = a0; dp[1] = (ogpu_u8)r; dp[2] = (ogpu_u8)g; dp[3] = (ogpu_u8)b;
+                    }
+                else
+                    for (k = 0, dp = drw; k < cw; k++, dp += 4, ha += 4) { dp[0] = a0; dp[1] = ha[1]; dp[2] = ha[2]; dp[3] = ha[3]; }
+                continue;
+            }
             for (k = 0, dp = drw; k < cw; k++, dp += 4, ha += 4, hbb += 4) {
                 unsigned v[4];
-                for (c = k0; c < 4; c++) {
+                for (c = 0; c < 4; c++) {
                     int t0 = ha[c];
                     if (wy) t0 += SMUL16((int)hbb[c] - t0, (int)wy) >> 8;
                     v[c] = (unsigned)t0;
                 }
-                if (opaque) { dp[0] = (ogpu_u8)(xa ? 0 : 255); dp[1] = (ogpu_u8)v[1]; dp[2] = (ogpu_u8)v[2]; dp[3] = (ogpu_u8)v[3]; }
-                else {                              /* blend11's OVER into ARGB32 or XRGB32 */
+                {                                   /* blend11's OVER into ARGB32 or XRGB32 */
                     unsigned ea = mul255(srcalpha ? v[0] : 255, alpha), ia, r, g, b, oa;
                     if (ea == 255) { dp[0] = (ogpu_u8)(xa ? 0 : 255); dp[1] = (ogpu_u8)v[1]; dp[2] = (ogpu_u8)v[2]; dp[3] = (ogpu_u8)v[3]; continue; }
                     if (!ea) continue;
