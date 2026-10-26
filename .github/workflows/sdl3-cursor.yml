@@ -1,0 +1,22 @@
+name: SDL3 cursor ownership
+on:
+  pull_request:
+    paths:
+      - 'library/modules/sdl3/**'
+      - 'tests/sdl3/**'
+      - '.github/workflows/sdl3-cursor.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'library/modules/sdl3/**'
+      - 'tests/sdl3/**'
+      - '.github/workflows/sdl3-cursor.yml'
+  workflow_dispatch:
+jobs:
+  cursor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise the actual patched system-cursor factory
+        run: python3 tests/sdl3/system_cursor_host.py

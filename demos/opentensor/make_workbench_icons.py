@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import math
+import sys
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -31,6 +32,7 @@ def load_writer(path: Path):
     if spec is None or spec.loader is None:
         raise RuntimeError(f"could not load icon writer: {path}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
