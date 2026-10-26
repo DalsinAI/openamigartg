@@ -2,6 +2,225 @@
     glDisableClientState(GL_VERTEX_ARRAY);
 }
 
+/* Fixed-function curved-surface lighting gives the Boing forms a polished
+ * studio-rendered appearance. This is rasterisation, not runtime ray tracing. */
+static void ot_draw_ball(const struct Mesh *m)
+{
+    static const GLfloat specular[4]={0.95f,0.96f,1.0f,1};
+    glEnable(GL_LIGHTING); glEnable(GL_LIGHT0); glEnable(GL_LIGHT1);
+    glEnable(GL_NORMALIZE); glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT_AND_BACK,GL_AMBIENT_AND_DIFFUSE);
+    glMaterialfv(GL_FRONT_AND_BACK,GL_SPECULAR,specular);
+    glMaterialf(GL_FRONT_AND_BACK,GL_SHININESS,72);
+    glLightModeli(GL_LIGHT_MODEL_COLOR_CONTROL,GL_SEPARATE_SPECULAR_COLOR);
+    glEnableClientState(GL_NORMAL_ARRAY);
+    glNormalPointer(GL_FLOAT,0,m->v); /* Unit sphere positions are normals. */
+    ot_draw_mesh(m);
+    glDisableClientState(GL_NORMAL_ARRAY);
+    glDisable(GL_COLOR_MATERIAL); glDisable(GL_NORMALIZE);
+    glDisable(GL_LIGHT1); glDisable(GL_LIGHT0); glDisable(GL_LIGHTING);
+}
+
+static void ot_studio_lights(void)
+{
+    static const GLfloat key[4]={-0.45f,0.65f,1.0f,0};
+    static const GLfloat fill[4]={0.8f,0.2f,-0.6f,0};
+    static const GLfloat white[4]={1.0f,0.91f,0.82f,1};
+    static const GLfloat blue[4]={0.22f,0.45f,0.8f,1};
+    static const GLfloat ambient[4]={0.10f,0.13f,0.19f,1};
+    glLoadIdentity();
+    glLightfv(GL_LIGHT0,GL_POSITION,key); glLightfv(GL_LIGHT1,GL_POSITION,fill);
+    glLightfv(GL_LIGHT0,GL_DIFFUSE,white); glLightfv(GL_LIGHT0,GL_SPECULAR,white);
+    glLightfv(GL_LIGHT1,GL_DIFFUSE,blue); glLightfv(GL_LIGHT1,GL_SPECULAR,blue);
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT,ambient);
+    glShadeModel(GL_SMOOTH);
+}
+
+/* Original soft optical sprites shared by starlight, mist and Form. */
+static GLuint ot_glow_texture;
+static void ot_glow_begin(void)
+{
+    if (!ot_glow_texture) {
+        unsigned char rgba[32*32*4]; int x,y;
+        for(y=0;y<32;++y) for(x=0;x<32;++x) {
+            float dx=(x-15.5f)/15.5f,dy=(y-15.5f)/15.5f;
+            float a=OT_MAX(0,1-dx*dx-dy*dy); int k=(y*32+x)*4;
+            rgba[k]=rgba[k+1]=rgba[k+2]=255;
+            rgba[k+3]=(unsigned char)(255*a*a*a);
+        }
+        glGenTextures(1,&ot_glow_texture); glBindTexture(GL_TEXTURE_2D,ot_glow_texture);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,32,32,0,GL_RGBA,GL_UNSIGNED_BYTE,rgba);
+    }
+    glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D,ot_glow_texture);
+    glTexEnvi(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_MODULATE);
+}
+
+static void ot_glow_end(void) { glDisable(GL_TEXTURE_2D); }
+
+static void ot_glow_axes(float x,float y,float z,float rx,float ry,float r,float g,float b,float a)
+{
+    glColor4f(r,g,b,a);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0,0); glVertex3f(x-rx,y-ry,z);
+    glTexCoord2f(1,0); glVertex3f(x+rx,y-ry,z);
+    glTexCoord2f(1,1); glVertex3f(x+rx,y+ry,z);
+    glTexCoord2f(0,1); glVertex3f(x-rx,y+ry,z);
+    glEnd();
+}
+
+static void ot_glow(float x,float y,float z,float radius,float r,float g,float b,float a)
+{
+    ot_glow_axes(x,y,z,radius,radius,r,g,b,a);
+}
+
+/* Soft-edged light ribbons, submitted as arrays rather than hundreds of
+ * immediate-mode calls. points contains at most 48 samples. */
+static void ot_light_ribbon(float points[][3],int count,float width,
+                            float r,float g,float b,float alpha)
+{
+    GLfloat v[48*6],uv[48*4]; int i;
+    for(i=0;i<count;++i) {
+        int lo=i?i-1:i, hi=i+1<count?i+1:i;
+        float dx=points[hi][0]-points[lo][0],dy=points[hi][1]-points[lo][1];
+        float inv=width/(float)sqrt(dx*dx+dy*dy+0.0001f);
+        float taper=ot_sin(OT_PI*(float)i/(count-1));
+        float nx=-dy*inv*taper,ny=dx*inv*taper;
+        v[i*6]=points[i][0]+nx; v[i*6+1]=points[i][1]+ny; v[i*6+2]=points[i][2];
+        v[i*6+3]=points[i][0]-nx; v[i*6+4]=points[i][1]-ny; v[i*6+5]=points[i][2];
+        uv[i*4]=0;uv[i*4+1]=0.5f;uv[i*4+2]=1;uv[i*4+3]=0.5f;
+    }
+    glColor4f(r,g,b,alpha);
+    glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    glVertexPointer(3,GL_FLOAT,0,v); glTexCoordPointer(2,GL_FLOAT,0,uv);
+    glDrawArrays(GL_TRIANGLE_STRIP,0,count*2);
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY); glDisableClientState(GL_VERTEX_ARRAY);
+}
+
+/* A short yielding contact interval precedes the ballistic-looking rebound. */
+static float ot_bounce_height(float t,float *press)
+{
+    float q=t-2.2f*(int)(t/2.2f);
+    *press=q<0.45f?ot_sin(OT_PI*q/0.45f):0;
+    if(q<0.45f)return 0;
+    q=(q-0.45f)/1.75f;
+    return 22*q*(1-q);
+}
+
+static void ot_deflect_ground(struct Mesh *m,float t,int active)
+{
+    GLfloat height[512]; int i,k;
+    float press=0; (void)ot_bounce_height(t,&press);
+    for(i=0;i<512;++i) {
+        float r=i*0.125f;
+        float h=active?-0.9f*press/((1+r*r*0.45f)*(1+r*r*0.45f)):0;
+        if(active) for(k=0;k<3;++k) {
+            float age=t-2.2f*((int)(t/2.2f)-k);
+            float d=r-age*7;
+            if(age<0 || age>t)continue;
+            h+=0.28f*OT_MIN(1,age*5)*r/(1+r)*ot_sin(d*2.4f)/
+               ((1+age)*(1+d*d*0.55f));
+        }
+        height[i]=h;
+    }
+    for(i=0;i<m->count;++i)
+        m->v[i*3+1]=((i%12)<6?-2.4f:-2.394f)+height[m->radial[i]];
+}
+
+static void ot_draw_stars(struct Demo *d, float t)
+{
+    int layer, i;
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA,GL_ONE);
+    glDepthMask(GL_FALSE);
+    glEnable(GL_POINT_SMOOTH);
+    for (i=0;i<d->stars.count;++i) {
+        float depth=(float)((i*7919)%9000)*0.01f-t*(0.35f+(i/(d->stars.count/3))*0.40f);
+        depth-=90.0f*(float)((int)(depth/90.0f));
+        if(depth<0) depth+=90;
+        d->stars.v[i*3+2]=-3-depth;
+    }
+    glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_COLOR_ARRAY);
+    glVertexPointer(3,GL_FLOAT,0,d->stars.v); glColorPointer(4,GL_FLOAT,0,d->stars.c);
+    for (layer=0;layer<3;++layer) {
+        glPointSize(1.0f+layer*0.85f);
+        glDrawArrays(GL_POINTS,layer*(d->stars.count/3),d->stars.count/3);
+    }
+    glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_VERTEX_ARRAY);
+    glDisable(GL_POINT_SMOOTH);
+    ot_glow_begin();
+    for(i=0;i<d->stars.count;i+=29) {
+        float x=d->stars.v[i*3],y=d->stars.v[i*3+1],z=d->stars.v[i*3+2];
+        float twinkle=0.65f+0.25f*ot_sin(t*0.6f+i);
+        float radius=0.08f-z*0.009f;
+        ot_glow(x,y,z,radius,0.55f,0.72f,1,twinkle*0.65f);
+        ot_glow(x,y,z,radius*0.18f,1,0.97f,0.88f,0.95f);
+        if(i%87==0) {
+            ot_glow_axes(x,y,z,radius*3.8f,radius*.055f,0.8f,0.9f,1,twinkle*.30f);
+            ot_glow_axes(x,y,z,radius*.055f,radius*2.0f,0.8f,0.9f,1,twinkle*.23f);
+        }
+    }
+    ot_glow_end();
+    glDepthMask(GL_TRUE); glDisable(GL_BLEND);
+}
+
+static void ot_contact_shadow(float bounce,float t)
+{
+    int ring,seg;
+    float radius=1.9f+bounce*0.13f;
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    for(ring=0;ring<5;++ring) {
+        float r0=radius*ring/5.0f,r1=radius*(ring+1)/5.0f;
+        glBegin(GL_TRIANGLE_STRIP);
+        for(seg=0;seg<=48;++seg) {
+            float a=seg*OT_TAU/48;
+            float press; (void)ot_bounce_height(t,&press);
+            glColor4f(0.005f,0.008f,0.02f,(1-ring/5.0f)*0.50f/(1+bounce*0.18f));
+            glVertex3f(r0*ot_cos(a),-2.38f-0.9f*press/((1+r0*r0*0.45f)*(1+r0*r0*0.45f)),-13+r0*ot_sin(a));
+            glColor4f(0.005f,0.008f,0.02f,(1-(ring+1)/5.0f)*0.50f/(1+bounce*0.18f));
+            glVertex3f(r1*ot_cos(a),-2.38f-0.9f*press/((1+r1*r1*0.45f)*(1+r1*r1*0.45f)),-13+r1*ot_sin(a));
+        }
+        glEnd();
+    }
+    glDepthMask(GL_TRUE); glDisable(GL_BLEND);
+}
+
+static void ot_draw_sky(void)
+{
+    glDisable(GL_DEPTH_TEST); glDepthMask(GL_FALSE);
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+    glBegin(GL_QUADS);
+    glColor3f(0.003f,0.005f,0.016f);
+    glVertex2f(-1,1); glVertex2f(1,1);
+    glColor3f(0.035f,0.055f,0.10f);
+    glVertex2f(1,-1); glVertex2f(-1,-1);
+    glEnd();
+    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix();
+    glMatrixMode(GL_MODELVIEW); glDepthMask(GL_TRUE); glEnable(GL_DEPTH_TEST);
+}
+
+/* A deliberately restrained planar reflection, composited over the enamel.
+ * It is a visual approximation, not a scene ray tracer or reflection buffer. */
+static void ot_floor_reflection(struct Demo *d, float t, float bounce)
+{
+    glPushMatrix();
+    glTranslatef(0,-4.62f-bounce,-13);
+    glScalef(2.2f,-2.2f,2.2f);
+    glRotatef(t*95,0.7f,1,0.2f);
+    glDisable(GL_DEPTH_TEST); glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);
+    glBlendColor(0,0,0,0.14f/(1+bounce*0.15f));
+    glBlendFunc(GL_CONSTANT_ALPHA,GL_ONE_MINUS_CONSTANT_ALPHA);
+    ot_draw_ball(&d->ball);
+    glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA); glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE); glEnable(GL_DEPTH_TEST);
+    glPopMatrix();
+}
+
 static const char *ot_scene_name(int scene);
 
 static const UBYTE *ot_glyph(char ch)
@@ -182,7 +401,7 @@ static void ot_scene_intro(struct Demo *d, float t)
     glLoadIdentity();
     glRotatef(t * 1.4f, 0.0f, 0.0f, 1.0f);
     glPointSize(1.0f + t * 0.12f);
-    ot_draw_mesh(&d->stars);
+    ot_draw_stars(d, t);
     if (t > 4.0f) {
         ot_overlay_begin(d);
         ot_draw_text((d->width - ot_text_width("THE NOISE WAS WITHOUT FORM", d->width / 480.0f)) * 0.5f,
@@ -199,59 +418,99 @@ static void ot_scene_field(struct Demo *d, float t)
     glLoadIdentity();
     glRotatef(11.0f + 2.0f * ot_sin(t * 0.3f), 1, 0, 0);
     glTranslatef(0.0f, -0.5f + lift, -5.5f);
+    ot_deflect_ground(&d->ground,0,0);
     ot_draw_mesh(&d->ground);
     glPushMatrix();
     glTranslatef(0.0f, 2.5f, -10.0f);
     glPointSize(1.6f);
-    ot_draw_mesh(&d->stars);
+    ot_draw_stars(d, t);
     glPopMatrix();
 }
 
 static void ot_scene_boing(struct Demo *d, float t)
 {
-    float phase = t * 1.45f;
-    float bounce = ot_absf(ot_sin(phase)) * 5.5f;
-    ot_scene_field(d, t + 5.0f);
+    float press,bounce=ot_bounce_height(t,&press);
+    float centre=-0.2f+bounce-0.9f*press;
+    glLoadIdentity();
+    glRotatef(11.0f+2.0f*ot_sin((t+5)*0.3f),1,0,0);
+    glTranslatef(0,-0.5f+0.15f*ot_sin((t+5)*0.8f),-5.5f);
+    ot_deflect_ground(&d->ground,t,1);
+    ot_draw_mesh(&d->ground);
+    glPushMatrix(); glTranslatef(0,2.5f,-10);ot_draw_stars(d,t);glPopMatrix();
+    /* Fade the planar approximation during contact; the yielding floor is
+     * not planar there. The deforming mesh itself carries the impact waves. */
+    if(press<0.02f)ot_floor_reflection(d,t,bounce);
+    ot_contact_shadow(bounce,t);
     glPushMatrix();
-    glTranslatef(0.0f, -0.7f + bounce, -13.0f);
-    glRotatef(t * 95.0f, 0.7f, 1.0f, 0.2f);
-    glScalef(2.2f, 2.2f, 2.2f);
-    ot_draw_mesh(&d->ball);
-    glPopMatrix();
+    glTranslatef(0,centre,-13); glRotatef(t*95,0.7f,1,0.2f);
+    glScalef(2.2f,2.2f,2.2f);ot_draw_ball(&d->ball);glPopMatrix();
+}
 
-    if (bounce < 0.8f) {
-        int ring, seg;
-        float a = 1.0f - bounce / 0.8f;
-        glDisable(GL_DEPTH_TEST);
-        glColor4f(0.8f, 0.88f, 1.0f, a);
-        glBegin(GL_LINES);
-        for (ring = 0; ring < 4; ring++) {
-            float radius = 1.0f + ring * 1.4f + (float)(t - (int)t) * 1.8f;
-            for (seg = 0; seg < 48; seg++) {
-                float p0 = seg * OT_TAU / 48.0f;
-                float p1 = (seg + 1) * OT_TAU / 48.0f;
-                glVertex3f(radius * ot_cos(p0), -2.32f, -13.0f + radius * ot_sin(p0));
-                glVertex3f(radius * ot_cos(p1), -2.32f, -13.0f + radius * ot_sin(p1));
-            }
+/* Curved grid and receding rectangular frames: original geometry informed
+ * by the supplied Sapphire & Steel reference, not copied footage or sound. */
+static void ot_dimension_grid(float t)
+{
+    GLfloat v[512*3],c[512*4];int n=0,k,e;
+    float corners[24][4][3];
+    for(k=0;k<24;++k) {
+        float z=-4-k*3.5f+(t*2.2f-(int)(t*2.2f/3.5f)*3.5f);
+        float bend=ot_sin(t*.19f)*2.5f;
+        float cx=bend*ot_sin(-z*.055f),cy=0.8f*ot_cos(-z*.08f+t*.12f);
+        float twist=0.17f*ot_sin(-z*.07f+t*.16f);
+        for(e=0;e<4;++e) {
+            float x=(e==0||e==3)?-4.5f:4.5f,y=e<2?-2.8f:2.8f;
+            corners[k][e][0]=cx+x*ot_cos(twist)-y*ot_sin(twist);
+            corners[k][e][1]=cy+x*ot_sin(twist)+y*ot_cos(twist);
+            corners[k][e][2]=z;
         }
-        glEnd();
-        glEnable(GL_DEPTH_TEST);
     }
+    for(k=0;k<24;++k)for(e=0;e<4;++e) {
+        int j,edge;
+        for(edge=0;edge<(k<23?2:1);++edge)for(j=0;j<2;++j) {
+            int kk=k+(edge&&j),ee=edge?e:(e+j)%4;
+            float fade=OT_MIN(1,(-corners[kk][ee][2]-1)*.3f)/(1+kk*.11f);
+            memcpy(v+n*3,corners[kk][ee],3*sizeof(GLfloat));
+            c[n*4]=.35f;c[n*4+1]=.66f;c[n*4+2]=.85f;c[n*4+3]=fade*.45f;++n;
+        }
+    }
+    glEnableClientState(GL_VERTEX_ARRAY);glEnableClientState(GL_COLOR_ARRAY);
+    glVertexPointer(3,GL_FLOAT,0,v);glColorPointer(4,GL_FLOAT,0,c);
+    glLineWidth(3);glDrawArrays(GL_LINES,0,n);
+    glDisableClientState(GL_COLOR_ARRAY);glColor4f(.7f,.86f,1,.30f);
+    glLineWidth(1);glDrawArrays(GL_LINES,0,n);
+    glDisableClientState(GL_VERTEX_ARRAY);
+    ot_glow_begin();
+    for(k=0;k<24;k+=4) {
+        float z=corners[k][1][2];
+        ot_glow(corners[k][1][0],corners[k][1][1],z,.24f-z*.005f,1,.66f,.25f,.6f);
+    }
+    ot_glow_end();
 }
 
 static void ot_scene_tensor(struct Demo *d, float t)
 {
-    glLoadIdentity();
-    glRotatef(t * 12.0f, 0, 0, 1);
-    glTranslatef(0.0f, 0.0f, 1.5f + (float)((int)(t * 4.0f) % 8));
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-    glLineWidth(1.0f);
-    ot_draw_mesh(&d->tunnel);
-    glPointSize(2.0f + ot_absf(ot_sin(t * 2.0f)) * 2.0f);
-    glRotatef(-t * 18.0f, 0.2f, 0.8f, 1.0f);
-    ot_draw_mesh(&d->stars);
-    glDisable(GL_BLEND);
+    int w,i;
+    glLoadIdentity();ot_draw_stars(d,t*0.35f);
+    glDisable(GL_DEPTH_TEST);glDepthMask(GL_FALSE);
+    glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE);
+    ot_dimension_grid(t);ot_glow_begin();
+    /* Slow optical interference and drifting luminous veils replace the
+     * rigid tunnel: an original late-seventies cosmic-title atmosphere. */
+    for(w=0;w<3;++w) {
+        float points[40][3];
+        for(i=0;i<40;++i) {
+            float q=(float)i/39,a=q*OT_TAU*1.15f+t*(0.10f+w*0.009f)+w*0.7f;
+            float r=1.0f+q*(7.5f+0.8f*ot_sin(t*0.19f+w));
+            points[i][0]=r*ot_cos(a)+1.4f*ot_sin(t*0.13f+w);
+            points[i][1]=r*0.65f*ot_sin(a)+0.6f*ot_cos(t*0.17f+w);
+            points[i][2]=-12-q*8;
+        }
+        ot_light_ribbon(points,40,0.35f+w*0.045f,
+                        w&1?0.66f:0.25f,0.35f+w*0.055f,1,0.12f);
+        ot_light_ribbon(points,40,0.045f,0.75f,0.88f,1,0.24f);
+    }
+    ot_glow(0.6f*ot_sin(t*.2f),0.4f*ot_cos(t*.17f),-12,2.4f,0.3f,0.5f,1,0.26f);
+    ot_glow_end();glDisable(GL_BLEND);glDepthMask(GL_TRUE);glEnable(GL_DEPTH_TEST);
 }
 
 static void ot_scene_final(struct Demo *d, float t)
@@ -260,9 +519,9 @@ static void ot_scene_final(struct Demo *d, float t)
     glTranslatef(0.0f, 0.0f, -10.0f);
     glRotatef(t * 22.0f, 0.3f, 1.0f, 0.1f);
     glScalef(2.8f, 2.8f, 2.8f);
-    ot_draw_mesh(&d->ball);
+    ot_draw_ball(&d->ball);
     glLoadIdentity();
     glPointSize(1.5f);
-    ot_draw_mesh(&d->stars);
+    ot_draw_stars(d, t);
     ot_draw_title(d, t);
 }
