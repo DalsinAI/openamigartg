@@ -293,6 +293,9 @@
  *   work address and work bytes: memory the back end may use while it draws
  *   (aligned on 4 bytes, not a surface): at least 32 bytes per pixel of the
  *   target's width, more draws in fewer passes (32 x width x height: one).
+ *   The CPU back end also keeps the path's edges there (16 bytes an edge,
+ *   walked once when they fit) and a bit a pixel: one pass takes about
+ *   33 x width x height and the edges.
  *   The CPU back end resolves the winding rule per quarter of a pixel's
  *   height: where two pieces of a path overlap inside a pixel (a
  *   self-crossing, a stroke's inner join that can't meet, dashes whose caps
