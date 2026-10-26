@@ -11,7 +11,7 @@ OLD_STOVE=${OLD_STOVE:-"$HOME/AmigaChrome/stoves/os32"}
 OLD_SYS="$OLD_STOVE/prefix/m68k-amigaos"
 CC="$P/bin/m68k-amigaos-gcc"
 PYTHON=${PYTHON:-python3}
-VERSION=0.2.0
+VERSION=0.3.1
 PACKAGE="OpenTensor-Beyond-First-Light-$VERSION.zip"
 
 [ -x "$CC" ] || { echo "OpenTensor: missing compiler $CC" >&2; exit 2; }
@@ -90,6 +90,7 @@ GL_DIR=$(dirname "$GL_LIB")
     -fno-delete-null-pointer-checks -noixemul \
     -Wall -Wextra -Wno-unused-parameter \
     -I"$SYS/include" \
+    -I"$HERE/src" \
     -I"$EXTRA_INC" \
     -I"$ROOT/library/modules/gl" \
     "$SOURCE" \
@@ -159,7 +160,9 @@ OpenTensor Beyond First Light $VERSION
 Target: AmigaOS 3.x / AC090 / 68040 + FPU
 Compiler: $("$CC" --version | head -1)
 Graphics: Mesa / GLA / OpenGPU / OpenRTG
-Audio: ahi.device, generated 44.1 kHz signed 16-bit stereo
+Audio: ahi.device, original 128 BPM score, 44.1 kHz signed 16-bit stereo
+Buffering: two linked 8192-frame buffers
+Look: yielding field, optical starlight, dimensional storm, ethereal Form
 Sequence: 164 seconds, 11 scenes
 Workbench: custom 64x64 GlowIcons with classic four-colour fallbacks
 libGL: $GL_LIB

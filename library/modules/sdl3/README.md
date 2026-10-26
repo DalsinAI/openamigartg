@@ -23,6 +23,7 @@ third-party is committed; the Team's work is in:
 | `patches/amigaos3/0003-opengpu-present.patch` | The window framebuffer shown through OpenGPU where it can be, WritePixelArray otherwise. |
 | `patches/amigaos3/0004-timer-signal.patch` | timer.device opened without a reply port, and closed when the program ends: before, each SDL program left a signal behind in its Shell, and after about a dozen runs that Shell could open no windows. |
 | `patches/amigaos3/0005-screensaver.patch` | While SDL holds the screen saver off (`SDL_DisableScreenSaver`, SDL's default while a program runs), OpenBlanker is told every 5 seconds: a CTRL_E to the task of its `OpenBlanker` port, which OpenBlanker 1.2 counts as a key or the mouse. `SDL_VIDEO_ALLOW_SCREENSAVER=1` lets the show come. |
+| `patches/amigaos3/0006-system-cursor-ownership.patch` | System cursor creation returns an unregistered backend cursor. Calling SDL's public cursor factory from the backend registered the same cursor twice, made its `next` point to itself, and hung SDL_SetCursor when selecting an older cursor (observed in OpenLoco). |
 | `src/video/amigaos3/SDL_os3gpu.c`, `.h` | opengpu.library for SDL: opening it, the pixel formats, and a window's present (one copy into the screen's bitmap through the window's visible parts). |
 | `src/SDL_os3callout.h` | The callouts (as SDL2.module's). |
 | `include/SDL_build_config_amigaos3.h` | SDL's configuration for the Amiga. |
@@ -31,6 +32,12 @@ third-party is committed; the Team's work is in:
 | `../../../tests/sdl3` | The runner for SDL's own tests; `nomodule.c` and the stub's host test, `stub_nomodule.c` (no SDL3.module); `rendercompare.c`, and `rendercompare_host.sh` with `render_host/`, which run it on a PC. |
 
 ## What is built
+
+The cursor ownership regression runs on a host with
+`python3 tests/sdl3/system_cursor_host.py`. The native `cursor_lifecycle.m`
+test creates custom and system cursors, selects older cursors, and destroys
+them, for 30 rounds before `SDL_Quit`. It must complete with return code 0;
+the broken backend can loop indefinitely while selecting an older cursor.
 
 `library/modules/sdl3/build.sh [OUT_DIR]` (default `build/`), with the GCC 16
 stove:

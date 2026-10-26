@@ -12,6 +12,8 @@ static void ot_render(struct Demo *d, float t)
         glClearColor(0.008f, 0.012f, 0.028f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     ot_set_perspective(d);
+    ot_studio_lights();
+    ot_draw_sky();
 
     switch (scene) {
     case 0: ot_scene_intro(d, local); break;
@@ -189,6 +191,9 @@ static void ot_close(struct Demo *d)
 {
     ot_audio_close(&d->audio);
     if (d->breakout_active) ot_breakout_close(d);
+    if (d->context && ot_glow_texture) {
+        glDeleteTextures(1,&ot_glow_texture);ot_glow_texture=0;
+    }
     if (d->context) gla_make_current(NULL, NULL);
     if (d->buffer) gla_buffer_destroy(d->buffer);
     if (d->context) gla_context_destroy(d->context);
@@ -235,7 +240,7 @@ int main(int argc, char **argv)
     d.height = 540;
     d.depth = 32;
     d.vsync = 1;
-    d.overlay = 1;
+    d.overlay = 0;
     d.jump_request = OT_JUMP_NONE;
 
     for (i = 1; i < argc; i++) {

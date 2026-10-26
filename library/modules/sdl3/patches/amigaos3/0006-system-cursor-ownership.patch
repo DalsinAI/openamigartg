@@ -1,0 +1,37 @@
+SDL3_68k Amiga backend: return an unregistered system cursor to SDL.
+Avoid double-list insertion and the SDL_SetCursor infinite loop.
+AmigaChrome Team, 2026.
+
+--- a/src/video/amigaos3/SDL_os3mouse.c
++++ b/src/video/amigaos3/SDL_os3mouse.c
+@@ -151,10 +151,27 @@
+ 
+ static SDL_Cursor *OS3_CreateSystemCursor(SDL_SystemCursor id)
+ {
++    SDL_Surface *surface;
++    SDL_Cursor *cursor;
++    int x, y;
+     (void)id;
+-    return SDL_CreateCursor(default_cdata,default_cmask,
+-                            DEFAULT_CWIDTH,DEFAULT_CHEIGHT,
+-                            DEFAULT_CHOTX,DEFAULT_CHOTY);
++    /* The public SDL_CreateSystemCursor links our result into mouse->cursors.
++       Calling SDL_CreateCursor here links it first, so the second insertion
++       sets cursor->next to itself and later SDL_SetCursor loops forever. */
++    surface=SDL_CreateSurface(DEFAULT_CWIDTH,DEFAULT_CHEIGHT,SDL_PIXELFORMAT_ARGB8888);
++    if (!surface) return NULL;
++    for (y=0;y<DEFAULT_CHEIGHT;y++) {
++        Uint32 *row=(Uint32 *)((Uint8 *)surface->pixels+y*surface->pitch);
++        for (x=0;x<DEFAULT_CWIDTH;x++) {
++            const int at=y*(DEFAULT_CWIDTH/8)+x/8;
++            const Uint8 bit=(Uint8)(0x80u>>(x&7));
++            row[x]=(default_cdata[at]&bit) ? 0xff000000u :
++                   (default_cmask[at]&bit) ? 0xffffffffu : 0;
++        }
++    }
++    cursor=OS3_CreateCursor(surface,DEFAULT_CHOTX,DEFAULT_CHOTY);
++    SDL_DestroySurface(surface);
++    return cursor;
+ }
+ 
+ static bool OS3_ShowCursor(SDL_Cursor *cursor)
