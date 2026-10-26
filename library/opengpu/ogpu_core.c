@@ -2542,6 +2542,56 @@ PX_FN void put_src_over(ogpu_u8 *dp, const struct ch *s, int op, int xa) {
     dp[3] = (ogpu_u8)sat8(s->b + mul255(dp[3], fb));
 }
 
+/* (c0 (65536 - w) + c1 w + 32768) / 65536, rounded down (grad_colour's
+ * mix of a channel, 0 <= w < 65536), with one 16-bit multiply */
+PX_FN unsigned lerp16(unsigned c0, unsigned c1, unsigned long w) {
+    return c1 >= c0 ? c0 + ((MUL16(c1 - c0, w) + 0x8000UL) >> 16) : c0 - ((MUL16(c0 - c1, w) + 0x7FFFUL) >> 16);
+}
+
+/* A LINEAR gradient's colour at the pixel (paint_px's, from p->t24),
+ * the stops' interval taken from grad_colour's cache while t stays in it. */
+PX_FN void grad_linear(struct paint *p, struct ch *o) {
+    long t = clampl(p->t24 >> 8, 0x3FFFFFFFL);
+    unsigned long w;
+    if (p->spread == OGPU_SPREAD_REPEAT) t &= 0xFFFF;
+    else if (p->spread == OGPU_SPREAD_REFLECT) { t &= 0x1FFFF; if (t > 0x10000) t = 0x20000 - t; }
+    else t = t < 0 ? 0 : t > 0x10000 ? 0x10000 : t;
+    if (t < p->lo || t >= p->hi || !p->rc) { grad_colour(p, t, o); return; }
+    w = (((unsigned long)(t - p->lo) * p->rc) & 0xFFFFFFFFUL) >> 16;
+    o->a = lerp16(p->c0.a, p->c1.a, w); o->r = lerp16(p->c0.r, p->c1.r, w);
+    o->g = lerp16(p->c0.g, p->c1.g, w); o->b = lerp16(p->c0.b, p->c1.b, w);
+}
+
+/* n pixels of a LINEAR gradient at coverage al, OVER or SRC, into an
+ * ARGB32 (xa 0) or XRGB32 target from dp: paint_px and put_op's bytes,
+ * worked out inline; one colour for the run where t doesn't change along
+ * the row (a gradient top to bottom) (Team 5, 25 Oct 2026). */
+static void grad_run(struct paint *p, ogpu_u8 *dp, int n, unsigned al, int op, int xa) {
+    struct ch s;
+    unsigned fb;
+    int k;
+    if (!p->dt24) {
+        grad_linear(p, &s);
+        if (al != 255) { s.a = mul255(s.a, al); s.r = mul255(s.r, al); s.g = mul255(s.g, al); s.b = mul255(s.b, al); }
+        solid_run(dp, n, &s, op, xa);
+    } else
+        for (k = 0; k < n; k++, dp += 4, p->t24 += p->dt24) {
+            grad_linear(p, &s);
+            if (al != 255) { s.a = mul255(s.a, al); s.r = mul255(s.r, al); s.g = mul255(s.g, al); s.b = mul255(s.b, al); }
+            if (op == OGPU_PD_SRC || s.a == 255) {
+                dp[0] = (ogpu_u8)(xa ? 0 : op == OGPU_PD_SRC ? s.a : 255);
+                dp[1] = (ogpu_u8)s.r; dp[2] = (ogpu_u8)s.g; dp[3] = (ogpu_u8)s.b;
+                continue;
+            }
+            fb = 255 - s.a;
+            dp[0] = (ogpu_u8)(xa ? 0 : sat8(s.a + mul255(dp[0], fb)));
+            dp[1] = (ogpu_u8)sat8(s.r + mul255(dp[1], fb));
+            dp[2] = (ogpu_u8)sat8(s.g + mul255(dp[2], fb));
+            dp[3] = (ogpu_u8)sat8(s.b + mul255(dp[3], fb));
+        }
+    p->gx += n * p->inv[0]; p->gy += n * p->inv[3];     /* as n paint_steps (t24 stepped above, or not moving) */
+}
+
 /* The sweep's place in a pixel row, and what it draws with. */
 struct prun {
     ogpu_u8 *dp;                /* pixel x on the target */
@@ -2574,6 +2624,12 @@ BIG_FN void put_run(struct prun *r, int n, unsigned al) {
                 return;
             }
             for (k = 0; k < n; k++, dp += r->dbpp) put_op(dp, r->f, &s, r->op);
+            return;
+        }
+        if (p->kind == 2 && p->gk == OGPU_GRAD_LINEAR && !p->none && (r->f == OGPU_FMT_ARGB32 || r->f == OGPU_FMT_XRGB32)
+            && (r->op == OGPU_PD_OVER || r->op == OGPU_PD_SRC)) {
+            grad_run(p, r->dp, n, al, r->op, r->f == OGPU_FMT_XRGB32);
+            r->x += n; r->dp += (long)n * 4;
             return;
         }
     }
