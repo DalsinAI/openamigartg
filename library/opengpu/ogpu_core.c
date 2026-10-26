@@ -2506,6 +2506,21 @@ static void solid_run(ogpu_u8 *dp, int n, const struct ch *s, int op, int xa) {
     }
 }
 
+/* One pixel s by SRC or OVER into an ARGB32 (xa 0) or XRGB32 target: put_op's bytes. */
+PX_FN void put_src_over(ogpu_u8 *dp, const struct ch *s, int op, int xa) {
+    unsigned fb;
+    if (op == OGPU_PD_SRC || s->a == 255) {
+        dp[0] = (ogpu_u8)(xa ? 0 : op == OGPU_PD_SRC ? s->a : 255);
+        dp[1] = (ogpu_u8)s->r; dp[2] = (ogpu_u8)s->g; dp[3] = (ogpu_u8)s->b;
+        return;
+    }
+    fb = 255 - s->a;
+    dp[0] = (ogpu_u8)(xa ? 0 : sat8(s->a + mul255(dp[0], fb)));
+    dp[1] = (ogpu_u8)sat8(s->r + mul255(dp[1], fb));
+    dp[2] = (ogpu_u8)sat8(s->g + mul255(dp[2], fb));
+    dp[3] = (ogpu_u8)sat8(s->b + mul255(dp[3], fb));
+}
+
 /* The sweep's place in a pixel row, and what it draws with. */
 struct prun {
     ogpu_u8 *dp;                /* pixel x on the target */
@@ -2588,7 +2603,7 @@ OP_FN op_path(struct ogpu_core *c, const ogpu_u8 *a, int stroke) {
     ogpu_u32 waddr = rd32(a + 52), wbytes = rd32(a + 56);
     const struct ogpu_surface *t = &c->slot[c->target], *m = 0;
     int op = (int)(fl & 255), evenodd = (fl & OGPU_PATH_EVENODD) != 0, mox = hi_s(mxy), moy = lo_s(mxy);
-    int rx0, ry0, rx1, ry1, w, h, bh, band, i, j, dbpp = bytes_per_pixel(t->format), r, bounded = !unbounded(op), tw;
+    int rx0, ry0, rx1, ry1, w, h, bh, band, i, j, dbpp = bytes_per_pixel(t->format), r, bounded = !unbounded(op), tw, colour;
     long minx = 0x7FFFFFFFL, miny = 0x7FFFFFFFL, maxx = -0x7FFFFFFFL, maxy = -0x7FFFFFFFL, at, x, y, ex, k;
     ogpu_u32 rowb, len;
     struct pctx pc;
@@ -2698,6 +2713,7 @@ OP_FN op_path(struct ogpu_core *c, const ogpu_u8 *a, int stroke) {
     }
     rs.cell = (int *)(void *)cells;
     pr.f = t->format; pr.dbpp = dbpp; pr.op = op; pr.bounded = bounded; pr.mox = mox; pr.m = m; pr.pt = &pt;
+    colour = !m && !pt.kind && (t->format == OGPU_FMT_ARGB32 || t->format == OGPU_FMT_XRGB32) && (op == OGPU_PD_OVER || op == OGPU_PD_SRC);
     for (band = ry0; band < ry1; band += bh) {
         rs.h = ry1 - band < bh ? ry1 - band : bh;
         rs.ox = (long)rx0 * 256; rs.oy = (long)band * 256;
@@ -2734,6 +2750,15 @@ OP_FN op_path(struct ogpu_core *c, const ogpu_u8 *a, int stroke) {
                     for (q = 0; q < OGPU_SUBROWS; q++) acc[q] += cv[q];
                     al = path_cov(acc, cv + 4, evenodd);
                     n = 1;
+                    if (colour) {                   /* a colour's edge pixel, without put_run's call */
+                        if (al || !bounded) {
+                            struct ch s = pt.col;
+                            if (al != 255) { s.a = mul255(s.a, al); s.r = mul255(s.r, al); s.g = mul255(s.g, al); s.b = mul255(s.b, al); }
+                            put_src_over(pr.dp, &s, op, t->format == OGPU_FMT_XRGB32);
+                        }
+                        pr.dp += 4; pr.x++;
+                        continue;
+                    }
                 }
                 put_run(&pr, n, al);
             }
