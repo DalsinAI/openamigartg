@@ -1777,8 +1777,8 @@ static int unseen(const ogpu_w32 *s, int i, int w) {
     return (at < w ? at : w) - i;
 }
 
-/* the part of a line within row j, from xa to xb (0 .. w * 256), climbing dy */
-static void row_piece(struct rast *r, int j, long xa, long xb, int dy) {
+/* the part of a line within row j, from xa to xb (0 .. w * 256), climbing dy (inline: once a sub-row an edge crosses) */
+PX_FN void row_piece(struct rast *r, int j, long xa, long xb, int dy) {
     long ia = xa >> 8, ib = xb >> 8, i, step, x_from, x_to, dx;
     int done = 0, share, last;
     if (ia == ib) { cell(r, ia, j, dy, xa - (ia << 8), xb - (ia << 8)); return; }
