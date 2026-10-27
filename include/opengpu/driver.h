@@ -29,7 +29,11 @@ struct OGPUDriver {
     const char   *name;             /* "ACRTG.gpu on the Cradle" */
     /* OGPU_FULL, OGPU_PARTIAL or OGPU_NONE for an opcode into a format, on
      * the surface at `address` (a back end may reach only some memory, such
-     * as one board's video RAM); address 0 asks about any memory. */
+     * as one board's video RAM); address 0 asks about any memory. With
+     * OGPU_FULL or OGPU_PARTIAL (never with OGPU_NONE), OGPU_ONGPU_BIT
+     * (stream.h) when the hardware draws that opcode on a graphics chip,
+     * not a CPU: opengpu.library 0.21 passes it on in OGPU_Query's answer,
+     * and an earlier one leaves it out of OGPU_ANSWER and OGPU_BACKEND. */
     int  (*supports)(int op, int format, unsigned long address);
     /* Queue a batch; *fence is set to a number that grows with each batch.
      * Returns OGPU_OK, or an error when the batch was refused whole
