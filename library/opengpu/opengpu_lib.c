@@ -50,6 +50,11 @@
  * OGPU_Wait(OGPU_FENCE_ALL) waits for every batch submitted so far, and a
  * fence too old to keep its result (OGPU_ERR_EXPIRED) is waited for as the
  * newest one is, where 0.19 returned at once.
+ * 0.21: OGPU_Query says where the driver draws: OGPU_ONGPU_BIT (stream.h) in
+ * its answer when the driver's supports() gave it, that is when the hardware
+ * draws the opcode on a graphics chip, not a CPU (ACRTG.gpu 1.5: the Cradle
+ * draws on the PC's GPU). The CPU back end never gives it. The driver's
+ * answers are read through OGPU_ANSWER, so the bit changes nothing else.
  * Built bare by library/build.sh.
  */
 #include <exec/types.h>
@@ -79,7 +84,7 @@
 
 #define REG(r, decl) register decl __asm(#r)   /* bebbo gcc: an argument in a register */
 #define LIB_VERSION 0
-#define LIB_REVISION 20
+#define LIB_REVISION 21
 #define RESULTS 16                              /* the last batches' results, by fence */
 #define MAX_DRIVERS 8                           /* files looked at in LIBS:OpenGPU/ */
 #define ON_CPU 0                                /* dfence[] for a batch the CPU ran */
@@ -128,9 +133,9 @@ int start(void) { return -1; }
 const ULONG ogpu_ogfx_at = offsetof(struct OpenGPUBase, ogfx);
 
 static const char lib_name[] = "opengpu.library";
-static const char lib_id[] = "opengpu.library 0.20 (24.10.2026) OpenGPU, AmigaChrome Team\r\n";
+static const char lib_id[] = "opengpu.library 0.21 (27.10.2026) OpenGPU, AmigaChrome Team\r\n";
 /* For C:Version, which looks for "$VER:" in the file. */
-static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.20 (24.10.2026) OpenGPU, AmigaChrome Team";
+static const char lib_ver[] __attribute__((used)) = "\0$VER: opengpu.library 0.21 (27.10.2026) OpenGPU, AmigaChrome Team";
 static const char cpu_name[] = "CPU";
 static const char dos_name[] = "dos.library";
 static const char drv_dir[] = "LIBS:OpenGPU";
@@ -392,14 +397,14 @@ static int driver_try(struct OpenGPUBase *base, const char *name, int rom)
         for (op = 0; op < 256; op++) {
             base->drv_ok[op] = 0;
             for (f = 1; f < OGPU_FMT_COUNT && !base->drv_ok[op]; f++)
-                if (d->supports(op, f, 0) != OGPU_NONE) base->drv_ok[op] = 1;
+                if (OGPU_ANSWER(d->supports(op, f, 0)) != OGPU_NONE) base->drv_ok[op] = 1;
         }
         base->drv_ok[OGPU_OP_NOP] = 1;
         /* 0.19: a format is the driver's if it takes SURFACE in it (the 3D
          * state commands answer for any format, so they can't say). */
         base->drv_fmt[0] = 0;
         for (f = 1; f < OGPU_FMT_COUNT; f++)
-            base->drv_fmt[f] = d->supports(OGPU_OP_SURFACE, f, 0) != OGPU_NONE;
+            base->drv_fmt[f] = OGPU_ANSWER(d->supports(OGPU_OP_SURFACE, f, 0)) != OGPU_NONE;
     }
     return 1;
 }
@@ -481,15 +486,17 @@ static int driver_takes(struct OpenGPUBase *base, const UBYTE *s, ULONG words)
 static ULONG OGPU_Query(REG(d0, ULONG op), REG(d1, ULONG format), REG(a6, struct OpenGPUBase *base))
 {
     EXEC(base);
-    int answer = -1;
+    int answer = OGPU_NONE;
     drivers_load(base);
     if (base->drv) {
         ObtainSemaphore(&base->drv_lock);
-        /* The driver's answer holds for what it carries out; the rest runs here. */
+        /* The driver's answer holds for what it carries out; the rest runs here.
+         * 0.21: with the driver's OGPU_ONGPU_BIT when it gave one. */
         if (base->drv) answer = base->drv->supports((int)op, (int)format, 0);
         ReleaseSemaphore(&base->drv_lock);
     }
-    if (answer > OGPU_NONE) return (ULONG)answer | (1UL << 8);
+    if (OGPU_ANSWER(answer) > OGPU_NONE)
+        return (ULONG)OGPU_ANSWER(answer) | (1UL << 8) | ((ULONG)answer & OGPU_ONGPU_BIT);
     return (ULONG)ogpu_core_supports((int)op, (int)format) | (OGPU_BACKEND_CPU << 8);
 }
 

@@ -467,5 +467,9 @@
 #define OGPU_NONE               0
 #define OGPU_PARTIAL            1
 #define OGPU_FULL               2
+/* With OGPU_FULL or OGPU_PARTIAL: the back end draws it on a graphics chip,
+ * not a CPU (a driver's supports(), driver.h; opengpu.library 0.21's
+ * OGPU_Query, read with opengpu.h's OGPU_ONGPU). */
+#define OGPU_ONGPU_BIT          0x10000UL
 
 #endif

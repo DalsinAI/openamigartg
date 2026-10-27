@@ -310,7 +310,9 @@ The `glA...` forms (`glASwapBuffers()` and the rest) pass the program's
   GLUT-style helpers.
 - **opengpu.library** (`include/opengpu/`, `proto/opengpu.h`,
   `sfd/opengpu_lib.sfd`): `OGPU_Query` (what a back end does, per operation
-  and pixel format), `OGPU_Submit` and `OGPU_Wait` (a command stream and its
+  and pixel format; from opengpu.library 0.21 also whether it draws it on a
+  graphics chip, `OGPU_ONGPU(answer)`, which ACRTG.gpu 1.5 says when the
+  Cradle draws on the PC's GPU), `OGPU_Submit` and `OGPU_Wait` (a command stream and its
   fence), `OGPU_BackEndName`, `OGPU_ModuleOpen` and `OGPU_ModuleClose`, and
   OpenGfx's calls. From opengpu.library 0.7, `OGFX_RegisterLook` and
   `OGFX_UnregisterLook` (`gfx.h`) let a program draw the system's look on

@@ -105,8 +105,8 @@ int main(int argc, char **argv)
     for (i = 0; i < 4; i++)
         if ((name = OGPU_BackEndName(i)) != NULL) printf("  back end %d: %s\n", i, name);
     q = OGPU_Query(OGPU_OP_COMPOSITE, OGPU_FMT_ARGB32);
-    printf("  COMPOSITE into ARGB32: %s, back end %d\n", OGPU_ANSWER(q) == OGPU_FULL ? "full" : OGPU_ANSWER(q) == OGPU_PARTIAL ? "partly" : "no",
-           OGPU_BACKEND(q));
+    printf("  COMPOSITE into ARGB32: %s, back end %d, %s\n", OGPU_ANSWER(q) == OGPU_FULL ? "full" : OGPU_ANSWER(q) == OGPU_PARTIAL ? "partly" : "no",
+           OGPU_BACKEND(q), OGPU_ONGPU(q) ? "on a GPU" : "on a CPU (or not said: opengpu.library before 0.21, a driver before ACRTG.gpu 1.5)");
     q = OGPU_Query(OGPU_OP_VIRGL, 0);
     printf("  virgl (Mesa on the GPU): %s\n", OGPU_ANSWER(q) == OGPU_FULL ? "yes" : "no");
 
