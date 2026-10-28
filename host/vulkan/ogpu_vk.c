@@ -53,6 +53,11 @@
 #include <unistd.h>
 #define OGPU_VK_MMAP 1
 #endif
+#if (defined(__x86_64__) || defined(__i386__)) && defined(__GNUC__)
+#include <cpuid.h>
+#include <x86intrin.h>
+#define OGPU_VK_TSC 1
+#endif
 #include "ogpu_vk.h"
 #ifdef OGPU_WITH_3D
 #include "../../library/opengpu/ogpu_3d.h"
@@ -123,6 +128,11 @@ struct ogpu_vk {
      * of one kind): its side (0 none, 1 the core, 2 the GPU), kind and start */
     int st_side, st_kind;
     double st_t0;
+    /* Their clock (clock_ns): the TSC's nanoseconds a tick, where it keeps
+     * one rate (invariant) and was measured against the system's clock; 0
+     * for the system's. An HPET host's clock is a system call, the TSC a
+     * read of a register, some 10 ns. */
+    double tsc_ns;
     int est_3d;                 /* 3D work in the open command buffer: not weighed */
     struct vk_entry *list;      /* the composite list being gathered (LIST_MAX entries) */
     int list_n;
@@ -570,6 +580,15 @@ static double now_ns(void) {
 
 static void weigh(double *scale, double taken, double reckoned);
 
+/* The routing's clock, in nanoseconds (tsc_ns) */
+static double clock_ns(const struct ogpu_vk *vk) {
+#ifdef OGPU_VK_TSC
+    if (vk->tsc_ns > 0) return (double)__rdtsc() * vk->tsc_ns;
+#endif
+    (void)vk;
+    return now_ns();
+}
+
 /* The timed stretch so far, up to t, to its side's account */
 static void stretch_add(struct ogpu_vk *vk, double t) {
     if (vk->st_side == 1) vk->core_us[vk->st_kind] += (t - vk->st_t0) / 1000;
@@ -577,11 +596,11 @@ static void stretch_add(struct ogpu_vk *vk, double t) {
 }
 /* The stretch ends; or ends and a new one begins, with one read of the clock */
 static void stretch_end(struct ogpu_vk *vk) {
-    if (vk->st_side) stretch_add(vk, now_ns());
+    if (vk->st_side) stretch_add(vk, clock_ns(vk));
     vk->st_side = 0;
 }
 static void stretch_begin(struct ogpu_vk *vk, int side, int kind) {
-    double t = now_ns();
+    double t = clock_ns(vk);
     if (vk->st_side) stretch_add(vk, t);
     vk->st_side = side;
     vk->st_kind = kind;
@@ -594,15 +613,15 @@ static void flush(struct ogpu_vk *vk) {
     double t0, t1, waited;
     /* A GPU stretch open (the list or the buffer full, mid-stretch): what it
      * recorded so far is this buffer's; it goes on from after the wait */
-    double t_in = vk->st_side == 2 && (vk->list_n || vk->recording) ? now_ns() : 0;
+    double t_in = vk->st_side == 2 && (vk->list_n || vk->recording) ? clock_ns(vk) : 0;
     if (t_in) {
         stretch_add(vk, t_in);
         vk->st_t0 = t_in;
     }
     if (vk->list_n) {
-        double r0 = t_in ? t_in : now_ns();
+        double r0 = t_in ? t_in : clock_ns(vk);
         list_send(vk);
-        t1 = now_ns();
+        t1 = clock_ns(vk);
         vk->gpu_rec_us += (t1 - r0) / 1000;
         if (t_in) vk->st_t0 = t1;
     }
@@ -618,7 +637,7 @@ static void flush(struct ogpu_vk *vk) {
 #endif
         return;
     }
-    t0 = t_in ? vk->st_t0 : now_ns();
+    t0 = t_in ? vk->st_t0 : clock_ns(vk);
     mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT;
     vkCmdPipelineBarrier(vk->cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, 0, 0, 0);
@@ -638,7 +657,7 @@ static void flush(struct ogpu_vk *vk) {
     vk->bound = 0;
     vk->arena_used = 0;
     vk->stats.submits++;
-    t1 = now_ns();
+    t1 = clock_ns(vk);
     waited = t1 - t0;
     if (t_in) vk->st_t0 = t1;
     vk->wait_ns += waited;
@@ -652,7 +671,7 @@ static void flush(struct ogpu_vk *vk) {
     vk->est_3d = 0;
 #ifdef OGPU_WITH_3D
     /* staged rows back to memory, now the GPU has drawn them */
-    if (vk->rec) ogpu3d_rec_done(vk->rec, now_ns() - t0);
+    if (vk->rec) ogpu3d_rec_done(vk->rec, clock_ns(vk) - t0);
 #endif
 }
 
@@ -1382,12 +1401,20 @@ static int route_gpu(struct ogpu_vk *vk, int op, const ogpu_u8 *a, const ogpu_u8
 
 /* A side's scale moved an eighth of the way to what its last work took
  * over what was reckoned; nothing for work too small to tell from the
- * clock's noise. Held within a sixteenth and sixteen times. */
+ * clock's noise. Held within a sixteenth and sixteen times. One weighing
+ * counts as at most twice or half the scale: on daletop's RX 460 about
+ * one submit in fifteen waited five to twelve times its reckoning (the
+ * host's other GPU work), where the rest took about one, and each such
+ * stray pushed the GPU's scale up by more than one, sending work the GPU
+ * does in half the core's time back to the core. Work that keeps taking
+ * longer still gets there, an eighth a weighing. */
 #define WEIGH_MIN_US 20
 static void weigh(double *scale, double taken, double reckoned) {
     double r;
     if (reckoned < WEIGH_MIN_US) return;
     r = taken / reckoned;
+    if (r > *scale * 2) r = *scale * 2;
+    if (r < *scale / 2) r = *scale / 2;
     if (r < 1.0 / 16) r = 1.0 / 16;
     if (r > 16) r = 16;
     *scale += (r - *scale) / 8;
@@ -2290,7 +2317,21 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
         const char *r = getenv("OGPU_VK_ROUTE");
         vk->route = !strcmp(r, "gpu") ? OGPU_VK_ROUTE_GPU : !strcmp(r, "core") ? OGPU_VK_ROUTE_CORE : OGPU_VK_ROUTE_COST;
     }
-    if (vk->route == OGPU_VK_ROUTE_COST) measure_trip(vk);
+    if (vk->route == OGPU_VK_ROUTE_COST) {
+#ifdef OGPU_VK_TSC
+        /* the TSC's rate against the system's clock, over the round trips */
+        unsigned int ea, eb, ec, ed;
+        int inv = __get_cpuid(0x80000007, &ea, &eb, &ec, &ed) && (ed >> 8 & 1);
+        unsigned long long c0 = inv ? __rdtsc() : 0, c1;
+        double n0 = now_ns(), n1;
+#endif
+        measure_trip(vk);
+#ifdef OGPU_VK_TSC
+        n1 = now_ns();
+        c1 = inv ? __rdtsc() : 0;
+        if (inv && c1 > c0 && n1 - n0 >= 100000) vk->tsc_ns = (n1 - n0) / (double)(c1 - c0);
+#endif
+    }
     core_afresh(vk);
     vk->core.map = core_map;
     vk->core.fence = core_fence;
