@@ -12,8 +12,19 @@
  * the host reaches (Fast RAM on the Amiga), which virgl maps, and PUT and
  * GET move pixels between the two, turning units round on a big-endian
  * Amiga: a texture's by its format's channel or pixel size, a buffer's by
- * 32 bits (floats). Everything is done by the time the block returns, so
- * nothing is ever busy and fences are already signalled.
+ * 32 bits (floats).
+ *
+ * Batching (design A of amigachrome's Design-VIRGL-Transport): each block
+ * stops the 68k for a round trip, so the commands whose answer nothing waits
+ * for (PUT, SUBMIT, RES_UNREF) are queued, in order, and run together in one
+ * block of at most BATCH_CMDS commands carrying at most BATCH_BYTES of data.
+ * A queued PUT or SUBMIT names a copy of its data, taken when it is queued,
+ * because Mesa writes the resource or its command buffer again at once. The
+ * queue runs before any command whose answer is needed (a create, a GET, the
+ * caps), before a frame is presented, in fence_wait (glFinish, queries), and
+ * when it is full. So everything is done by the time anything can look, and
+ * nothing is ever busy. GLA_VIRGL_BATCH (ENV: on the Amiga) sets the
+ * commands in a block: 0 or 1 is one each, as before; unset is BATCH_CMDS.
  *
  * Written for openamigamesa's GLA core (8 October 2026), after virgl's own
  * winsys interface (virgl_winsys.h); Mesa's vtest winsys was the reference
@@ -22,6 +33,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "pipe/p_defines.h"
@@ -63,7 +75,12 @@
 #define NEW_RES_HANDLE(w, res) ((w)->next_handle++)
 #endif
 #define CTX_ID (w->ctx_id)
-#define BLK_WORDS 64
+/* A block's caps (Dale, 27 October 2026): how long one block may stop the
+ * 68k. 64 commands at about 8 us of host time each, or 64 KB of data. */
+#define BATCH_CMDS 64
+#define BATCH_BYTES (64u * 1024u)
+#define CMD_WORDS 16                            /* the longest command: PUT or GET */
+#define BLK_WORDS (BATCH_CMDS * CMD_WORDS)
 
 struct gv_ws {
     struct virgl_winsys base;
@@ -71,6 +88,10 @@ struct gv_ws {
     struct gla_virgl_transport t;
     uint32_t *blk;              /* the request block, in memory the host reaches */
     unsigned at;                /* words in it */
+    unsigned cmds;              /* commands in it */
+    unsigned batch;             /* commands a block may hold (GLA_VIRGL_BATCH) */
+    uint8_t *data;              /* the queued commands' copies, in memory the host reaches */
+    unsigned data_at;           /* bytes of it in use */
     uint32_t next_handle;
     uint32_t ctx_id;
     uint32_t host_flags;        /* HELLO's: ACV_HOST_ */
@@ -102,8 +123,6 @@ static struct gv_ws *gv(struct virgl_winsys *w) { return (struct gv_ws *)w; }
 
 /* ---- request blocks ---- */
 
-static void blk_begin(struct gv_ws *w) { w->at = 0; }
-
 /* A command; returns where its result word is. */
 static unsigned blk_cmd(struct gv_ws *w, unsigned cmd, unsigned n, const uint32_t *args)
 {
@@ -111,18 +130,62 @@ static unsigned blk_cmd(struct gv_ws *w, unsigned cmd, unsigned n, const uint32_
     w->blk[w->at++] = util_cpu_to_be32(ACV_HDR(cmd, n + 2));
     w->blk[w->at++] = 0;
     for (i = 0; i < n; i++) w->blk[w->at++] = util_cpu_to_be32(args[i]);
+    w->cmds++;
     return here + 1;
 }
 
 static int32_t blk_result(struct gv_ws *w, unsigned at) { return (int32_t)util_be32_to_cpu(w->blk[at]); }
 static uint32_t blk_word(struct gv_ws *w, unsigned at) { return util_be32_to_cpu(w->blk[at]); }
 
+/* Run the block; its results stay in it until the next command. */
 static int blk_run(struct gv_ws *w)
 {
-    int r = w->t.run(w->t.user, w->blk, w->at * 4);
+    int r = w->at ? w->t.run(w->t.user, w->blk, w->at * 4) : 0;
     w->at = 0;
+    w->cmds = 0;
+    w->data_at = 0;
     return r;
 }
+
+/* Run what is queued. The queued commands answer 0 or an error, and nothing
+ * waits for them: the first error, or the transport's, comes back here. */
+static int q_flush(struct gv_ws *w)
+{
+    unsigned at = 0, words = w->at;
+    int rc = blk_run(w);
+    while (!rc && at + 2 <= words) {
+        unsigned len = ACV_HDR_WORDS(blk_word(w, at));
+        if (blk_result(w, at + 1) < 0) rc = blk_result(w, at + 1);
+        if (len < 2) break;
+        at += len;
+    }
+    return rc;
+}
+
+/* A command whose answer is needed now: everything queued runs first, in
+ * order, then this block holds only what the caller puts in it. */
+static void blk_begin(struct gv_ws *w) { q_flush(w); }
+
+/* Room for one more queued command of `words` words with `bytes` of copies;
+ * when there is none, what is queued runs first. */
+static void q_room(struct gv_ws *w, unsigned words, unsigned bytes)
+{
+    if (w->cmds + 1 > w->batch || w->at + words > BLK_WORDS || w->data_at + bytes > BATCH_BYTES)
+        q_flush(w);
+}
+
+/* A copy of src for a queued command (q_room made the room): its address. */
+static uint32_t q_copy(struct gv_ws *w, const void *src, uint32_t bytes)
+{
+    uint8_t *p = w->data + w->data_at;
+    memcpy(p, src, bytes);
+    w->data_at += (bytes + 3) & ~3u;
+    return w->t.addr(w->t.user, p);
+}
+
+/* Whether a command with `bytes` of data is queued (else it runs at once,
+ * after the queue, naming the data where it is). */
+static int q_takes(struct gv_ws *w, uint32_t bytes) { return w->batch > 1 && bytes <= BATCH_BYTES; }
 
 /* ---- byte order ---- */
 
@@ -166,11 +229,21 @@ static int transfer(struct gv_ws *w, struct virgl_hw_res *res, const struct pipe
     int rc;
     a[0] = res->res_handle; a[1] = CTX_ID; a[2] = level; a[3] = stride; a[4] = layer_stride;
     a[5] = box->x; a[6] = box->y; a[7] = box->z; a[8] = box->width; a[9] = box->height; a[10] = box->depth;
-    a[11] = w->t.addr(w->t.user, res->ptr + buf_offset);
     a[12] = transfer_size(res, box, stride, layer_stride);
     a[13] = unit;
     if (buf_offset + a[12] > res->size) a[12] = res->size > buf_offset ? res->size - buf_offset : 0;
     mtx_lock(&w->mutex);
+    if (!get && q_takes(w, a[12])) {
+        /* a PUT is queued with a copy of the box's bytes as they are now */
+        if (a[12]) {                            /* no bytes: the host would do nothing */
+            q_room(w, CMD_WORDS, (a[12] + 3) & ~3u);
+            a[11] = q_copy(w, res->ptr + buf_offset, a[12]);
+            blk_cmd(w, ACV_PUT, 14, a);
+        }
+        mtx_unlock(&w->mutex);
+        return 0;
+    }
+    a[11] = w->t.addr(w->t.user, res->ptr + buf_offset);
     blk_begin(w);
     r = blk_cmd(w, get ? ACV_GET : ACV_PUT, 14, a);
     rc = blk_run(w);
@@ -195,9 +268,15 @@ static void res_destroy(struct gv_ws *w, struct virgl_hw_res *res)
 {
     uint32_t a[1] = { res->res_handle };
     mtx_lock(&w->mutex);
-    blk_begin(w);
-    blk_cmd(w, ACV_RES_UNREF, 1, a);
-    blk_run(w);
+    if (q_takes(w, 0)) {
+        /* queued after the commands that use it; queued copies don't need res->ptr */
+        q_room(w, 3, 0);
+        blk_cmd(w, ACV_RES_UNREF, 1, a);
+    } else {
+        blk_begin(w);
+        blk_cmd(w, ACV_RES_UNREF, 1, a);
+        blk_run(w);
+    }
     mtx_unlock(&w->mutex);
     if (res->dt) w->sws->displaytarget_destroy(w->sws, res->dt);
     if (res->ptr) w->t.free(w->t.user, res->ptr);
@@ -344,17 +423,26 @@ static int gv_submit_cmd(struct virgl_winsys *vws, struct virgl_cmd_buf *_cb, st
     struct gv_cmd_buf *cb = (struct gv_cmd_buf *)_cb;
     int rc = 0;
     if (cb->base.cdw) {
-        uint32_t a[3];
+        uint32_t a[3], bytes = cb->base.cdw * 4;
         unsigned r;
-        a[0] = CTX_ID; a[1] = w->t.addr(w->t.user, cb->base.buf); a[2] = cb->base.cdw;
+        a[0] = CTX_ID; a[2] = cb->base.cdw;
         mtx_lock(&w->mutex);
-        blk_begin(w);
-        r = blk_cmd(w, ACV_SUBMIT, 3, a);
-        rc = blk_run(w);
-        if (!rc) rc = blk_result(w, r);
+        if (q_takes(w, bytes)) {
+            /* queued with a copy: Mesa writes this buffer again as soon as we return */
+            q_room(w, 5, bytes);
+            a[1] = q_copy(w, cb->base.buf, bytes);
+            blk_cmd(w, ACV_SUBMIT, 3, a);
+        } else {
+            a[1] = w->t.addr(w->t.user, cb->base.buf);
+            blk_begin(w);
+            r = blk_cmd(w, ACV_SUBMIT, 3, a);
+            rc = blk_run(w);
+            if (!rc) rc = blk_result(w, r);
+        }
         mtx_unlock(&w->mutex);
     }
-    if (fence && !rc) *fence = new_fence();     /* done already: the block has returned */
+    /* done when anything can look: fence_wait runs the queue */
+    if (fence && !rc) *fence = new_fence();
     release_all(cb);
     cb->base.cdw = 0;
     return rc;
@@ -416,7 +504,17 @@ static int gv_get_caps(struct virgl_winsys *vws, struct virgl_drm_caps *caps)
 }
 
 static struct pipe_fence_handle *gv_cs_create_fence(struct virgl_winsys *vws, int fd) { (void)vws; (void)fd; return new_fence(); }
-static bool gv_fence_wait(struct virgl_winsys *vws, struct pipe_fence_handle *f, uint64_t timeout) { (void)vws; (void)f; (void)timeout; return true; }
+/* A fence is done when the block that holds its commands has run: run the
+ * queue (glFinish, glClientWaitSync, a query's result). */
+static bool gv_fence_wait(struct virgl_winsys *vws, struct pipe_fence_handle *f, uint64_t timeout)
+{
+    struct gv_ws *w = gv(vws);
+    (void)f; (void)timeout;
+    mtx_lock(&w->mutex);
+    q_flush(w);
+    mtx_unlock(&w->mutex);
+    return true;
+}
 static void gv_fence_reference(struct virgl_winsys *vws, struct pipe_fence_handle **dst, struct pipe_fence_handle *src)
 {
     struct gv_fence *old = (struct gv_fence *)*dst, *s = (struct gv_fence *)src;
@@ -441,6 +539,11 @@ static void gv_flush_frontbuffer(struct virgl_winsys *vws, struct virgl_cmd_buf 
     void *map;
     (void)cb;
     if (!res->dt) return;
+    /* the frame's draws run before anything shows it (the direct present is
+     * another block, from openrtg.library) */
+    mtx_lock(&w->mutex);
+    q_flush(w);
+    mtx_unlock(&w->mutex);
     gla_counts.frames++;
     gla_counts.direct_state = !(w->host_flags & ACV_HOST_PRESENT) ? GLA_DIRECT_NO_HOST
                             : !pv ? GLA_DIRECT_NO_HOOK : GLA_DIRECT_REFUSED;
@@ -486,6 +589,7 @@ static void gv_destroy(struct virgl_winsys *vws)
     blk_cmd(w, ACV_CTX_DESTROY, 1, a);
     blk_run(w);
     w->t.free(w->t.user, w->blk);
+    if (w->data) w->t.free(w->t.user, w->data);
     mtx_destroy(&w->mutex);
     FREE(w);
 }
@@ -496,6 +600,7 @@ struct virgl_winsys *gla_virgl_winsys_create(struct sw_winsys *sws, const struct
     static const char name[] = "GLA";
     uint32_t a[3];
     unsigned rh, rc;
+    const char *batch = getenv("GLA_VIRGL_BATCH");
     char *nm;
     if (!w) return NULL;
     w->sws = sws;
@@ -504,6 +609,14 @@ struct virgl_winsys *gla_virgl_winsys_create(struct sw_winsys *sws, const struct
     w->ctx_id = NEW_CTX_ID(w);
     (void)mtx_init(&w->mutex, mtx_plain);
     if (!(w->blk = w->t.alloc(w->t.user, BLK_WORDS * 4 + 64))) { FREE(w); return NULL; }
+    /* commands a block: GLA_VIRGL_BATCH, 1 to BATCH_CMDS (0 is 1); one each if
+     * there is no memory for the copies */
+    w->batch = BATCH_CMDS;
+    if (batch && *batch) {
+        long n = strtol(batch, NULL, 10);
+        w->batch = n < 1 ? 1 : n > BATCH_CMDS ? BATCH_CMDS : (unsigned)n;
+    }
+    if (w->batch > 1 && !(w->data = w->t.alloc(w->t.user, BATCH_BYTES))) w->batch = 1;
     nm = (char *)(w->blk + BLK_WORDS);
     memcpy(nm, name, sizeof name);
     blk_begin(w);
@@ -513,6 +626,7 @@ struct virgl_winsys *gla_virgl_winsys_create(struct sw_winsys *sws, const struct
     rc = blk_cmd(w, ACV_CTX_CREATE, 3, a);
     if (blk_run(w) || blk_result(w, rh) != ACV_PROTOCOL || blk_result(w, rc) != 0) {
         w->t.free(w->t.user, w->blk);
+        if (w->data) w->t.free(w->t.user, w->data);
         FREE(w);
         return NULL;
     }
