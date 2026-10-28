@@ -121,6 +121,17 @@ struct ogpu_vk {
     double gpu_scale, core_scale[OGPU_VK_COST_KINDS];   /* the core's by kind of work (K_) */
     double gpu_est, gpu_rec_us, core_est[OGPU_VK_COST_KINDS], core_us[OGPU_VK_COST_KINDS];
     int gpu_unweighed;          /* runs since the GPU's last weighing */
+    /* The GPU's scale for work after the core drew in the same run, since
+     * the last submit, and its runs since its last weighing: a GPU list
+     * after the core's fill of the same window waited some 2000 us on
+     * daletop (memory the CPU had just written), where the fill and the
+     * list together took 700 on the GPU. Weighed with the rest, it taught
+     * the GPU's scale that it was slow, and the fill went to the core
+     * too; weighed apart, the run still starts on the GPU, and work that
+     * would follow the core's goes there only where it pays */
+    double gpu_mix_scale;
+    int mix_unweighed;
+    int core_drew, buf_mixed;   /* the core drew since the last submit; the open buffer's GPU work followed it */
     /* The commands routed by cost are timed a stretch at a time, not one by
      * one: where the clock is a system call (an HPET host's: some 3.4 us a
      * read on daletop) two reads a command cost as much as a sprite. A
@@ -664,9 +675,11 @@ static void flush(struct ogpu_vk *vk) {
     /* What routing reckoned this buffer's commands and its round trip would
      * take, against what recording them, the submit and the wait took. */
     if (vk->gpu_est > 0 && !vk->est_3d && !vk->lost_now) {
-        weigh(&vk->gpu_scale, vk->gpu_rec_us + waited / 1000, vk->gpu_est + vk->trip);
-        vk->gpu_unweighed = 0;
+        weigh(vk->buf_mixed ? &vk->gpu_mix_scale : &vk->gpu_scale, vk->gpu_rec_us + waited / 1000, vk->gpu_est + vk->trip);
+        if (vk->buf_mixed) vk->mix_unweighed = 0;
+        else vk->gpu_unweighed = 0;
     }
+    vk->core_drew = vk->buf_mixed = 0;
     vk->gpu_est = vk->gpu_rec_us = 0;
     vk->est_3d = 0;
 #ifdef OGPU_WITH_3D
@@ -1245,12 +1258,12 @@ static int gpu_yuv(struct ogpu_vk *vk, const ogpu_u8 *a) {
  * command buffer. Measured on daletop's AMD RX 460 (RADV, video RAM mapped)
  * and its host by amigachrome's tests/gpu/test_opengpu_2d_bench.sh, 17
  * October 2026; a Pi 5 (V3DV) gets its own figures with GPU-5. */
-enum { K_FILL, K_COPY, K_BITS, K_PIXELS, K_COMP, K_COMPV, K_BLEND, K_BILINEAR, K_YUV, K_LINE, K_COUNT };
+enum { K_FILL, K_COPY, K_BITS, K_PIXELS, K_COMP, K_COMPV, K_BLEND, K_BILINEAR, K_YUV, K_LINE, K_PATTERN, K_COUNT };
 typedef char k_count_is_ogpu_vk_cost_kinds[K_COUNT == OGPU_VK_COST_KINDS ? 1 : -1];
 static const struct { double core, gpu, chain; } k_cost[K_COUNT] = {
     { 0.13, 0.19, 5 },      /* FILL, INVERT: a byte (SetRast 1920x1080 32-bit: 1.0 ms core, 1.5 ms GPU) */
     { 0.5, 0.42, 5 },       /* COPY: a byte (a 640x480 32-bit window back on screen: 0.52 ms core, 0.5 ms GPU) */
-    { 2, 0.5, 5 },          /* TEMPLATE, PATTERN: a pixel (a 300x200 area pattern: 0.11 ms core) */
+    { 2, 0.5, 5 },          /* TEMPLATE: a pixel (text: many small ones, whose calls cost more than their pixels) */
     { 3, 1.8, 5 },          /* PIXELS: a pixel, with its upload */
     { 6, 2, 40 },           /* COMPOSITE nearest, MASK, with the source's upload; chained dispatches cost about 40 us */
     { 6, 0.6, 40 },         /* COMPOSITE nearest from video RAM (no upload; 100 32x32 sprites in one list: 0.27 ms) */
@@ -1258,6 +1271,8 @@ static const struct { double core, gpu, chain; } k_cost[K_COUNT] = {
     { 17.5, 1.1, 40 },      /* bilinear COMPOSITE and COMPOSITE_AFFINE (a 640x480 stretch: 5.4 ms core, 0.34 ms GPU) */
     { 6, 1, 5 },            /* YUV (a 640x480 I420 frame: 1.9 ms core, 0.3 ms GPU) */
     { 7, 1400, 5 },         /* LINE, a pixel of its length: one GPU thread walks it, 140 us a line of 100 */
+    { 2, 0.5, 5 },          /* PATTERN: a pixel (a 300x200 area pattern: 0.11 ms core); weighed apart from
+                             * TEMPLATE, whose text taught the core a scale of 3 and sent 8-bit areas to the GPU */
 };
 
 static double now_us(void) {
@@ -1290,7 +1305,7 @@ static double work(const struct ogpu_vk *vk, int op, const ogpu_u8 *a, int *kind
     case OGPU_OP_TEMPLATE:
         *kind = K_BITS; return area(vk, hi_s(rd32(a + 12)), lo_s(rd32(a + 12)), hi_u(rd32(a + 16)), lo_u(rd32(a + 16)));
     case OGPU_OP_PATTERN:
-        *kind = K_BITS; return area(vk, hi_s(rd32(a + 8)), lo_s(rd32(a + 8)), hi_u(rd32(a + 12)), lo_u(rd32(a + 12)));
+        *kind = K_PATTERN; return area(vk, hi_s(rd32(a + 8)), lo_s(rd32(a + 8)), hi_u(rd32(a + 12)), lo_u(rd32(a + 12)));
     case OGPU_OP_MASK:
         *kind = K_COMP; return area(vk, hi_s(rd32(a + 8)), lo_s(rd32(a + 8)), hi_u(rd32(a + 12)), lo_u(rd32(a + 12)));
     case OGPU_OP_PIXELS:
@@ -1376,25 +1391,29 @@ static void run_ahead(const struct ogpu_vk *vk, const ogpu_u8 *stream, long at, 
  * frames on the GPU. */
 #define ROUTE_MARGIN 1.2
 static int route_gpu(struct ogpu_vk *vk, int op, const ogpu_u8 *a, const ogpu_u8 *stream, long at, long words, int *kind) {
-    double n, core, gpu, g1, c1;
+    double n, core, gpu, g1, c1, gs;
     int go;
     if (vk->route == OGPU_VK_ROUTE_GPU) return 1;
     if (vk->route == OGPU_VK_ROUTE_CORE) return 0;
+    gs = vk->core_drew ? vk->gpu_mix_scale : vk->gpu_scale;
     n = work(vk, op, a, kind);
     c1 = n * k_cost[*kind].core / 1000;
     g1 = n * k_cost[*kind].gpu / 1000;
     if (!vk->recording && !vk->list_n && vk->list && listable((ogpu_u32)op)) {
         run_ahead(vk, stream, at, words, &core, &gpu);
-        go = (gpu + vk->trip) * vk->gpu_scale * ROUTE_MARGIN < core;
+        go = (gpu + vk->trip) * gs * ROUTE_MARGIN < core;
         g1 += 2;
     } else if (vk->recording || vk->list_n) {
         /* joining the composite list costs no dispatch of its own */
         g1 += vk->list_n && (op == OGPU_OP_FILL || op == OGPU_OP_INVERT || op == OGPU_OP_COMPOSITE || op == OGPU_OP_COMPOSITE_AFFINE
                              || op == OGPU_OP_FILL_BLEND) ? 2 : k_cost[*kind].chain;
-        go = g1 * vk->gpu_scale < c1 * vk->core_scale[*kind] + vk->trip * vk->gpu_scale;
+        go = g1 * gs < c1 * vk->core_scale[*kind] + vk->trip * gs;
     } else
-        go = (g1 + vk->trip) * vk->gpu_scale * ROUTE_MARGIN < c1 * vk->core_scale[*kind];
-    if (go) vk->gpu_est += g1;
+        go = (g1 + vk->trip) * gs * ROUTE_MARGIN < c1 * vk->core_scale[*kind];
+    if (go) {
+        vk->gpu_est += g1;
+        vk->buf_mixed |= vk->core_drew;
+    }
     else vk->core_est[*kind] += c1;
     return go;
 }
@@ -1469,6 +1488,7 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
     vk->last_error = OGPU_OK;
     vk->error_word = 0;
     vk->lost_now = 0;
+    vk->core_drew = 0;                  /* a run starts by its own costs (gpu_mix_scale) */
 #ifdef OGPU_WITH_3D
     ogpu3d_rec_cpu_wrote(vk->rec);      /* the 68k ran since the last run */
 #endif
@@ -1542,6 +1562,7 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
             if (routed == 1 && (vk->st_side != 1 || vk->st_kind != kind)) stretch_begin(vk, 1, kind);
             done += ogpu_core_run(&vk->core, stream + at * 4, len);
             if (op >= OGPU_OP_FILL && op < OGPU_OP_FENCE) {
+                vk->core_drew = 1;
                 if (vk->card && reads_card(vk, op, stream + at * 4 + 4)) vk->stats.card_core++;   /* slowly */
                 vk->stats.cpu++;
                 vk->stats.why[why >= 0 ? why : OGPU_VK_WHY_REFUSED]++;
@@ -1571,6 +1592,10 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
     if (vk->route == OGPU_VK_ROUTE_COST && ++vk->gpu_unweighed >= 256) {
         vk->gpu_scale += (1 - vk->gpu_scale) / 8;
         vk->gpu_unweighed = 0;
+    }
+    if (vk->route == OGPU_VK_ROUTE_COST && ++vk->mix_unweighed >= 256) {
+        vk->gpu_mix_scale += (1 - vk->gpu_mix_scale) / 8;
+        vk->mix_unweighed = 0;
     }
     if (vk->lost_now && vk->last_error == OGPU_OK) { vk->last_error = OGPU_ERR_DEVICE; vk->error_word = 0; }
     return done;
@@ -2311,7 +2336,7 @@ struct ogpu_vk *ogpu_vk_create(const struct ogpu_vk_config *cfg, char *err, int 
 
     vk->list = malloc(LIST_MAX * sizeof *vk->list);    /* none: every command is its own dispatch */
     vk->route = vk->cfg.route;
-    vk->gpu_scale = 1;
+    vk->gpu_scale = vk->gpu_mix_scale = 1;
     for (q = 0; q < K_COUNT; q++) vk->core_scale[q] = 1;
     if (vk->route == OGPU_VK_ROUTE_COST && getenv("OGPU_VK_ROUTE")) {
         const char *r = getenv("OGPU_VK_ROUTE");
