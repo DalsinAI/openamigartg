@@ -1,0 +1,26 @@
+translate: compare a cached translate's key over the elements in use, as it
+is hashed. translate_cache_find hashed the key's elements in use but
+compared the whole struct translate_key with memcmp: 920 bytes on the 68k
+(38 elements of 24 bytes), all of them on every hit. With 0011, u_vbuf
+translates every draw on a big-endian virgl, so AssaultCube looked up the
+cache once or twice a draw, and GCC's inline byte loop for that memcmp was
+the hottest guest block: 4.5 to 5% of the emulation thread (Team 5, W156's
+and W159b's profiles, 27 and 28 October 2026). A key's elements past
+nr_elements are unused, and nr_elements itself is compared.
+--- a/src/gallium/auxiliary/translate/translate_cache.c
++++ b/src/gallium/auxiliary/translate/translate_cache.c
+@@ -91,10 +91,13 @@
+                                         struct translate_key *key)
+ {
+    unsigned hash_key = create_key(key);
++   /* Compare the part of the key the hash covers (its elements in use), not
++    * the whole of it with every unused element: that was 920 bytes a lookup,
++    * one or two lookups a draw when u_vbuf translates every draw. */
+    struct translate *translate = (struct translate*)
+       cso_hash_find_data_from_template(&cache->hash,
+                                        hash_key,
+-                                       key, sizeof(*key));
++                                       key, translate_hash_key_size(key));
+ 
+    if (!translate) {
+       /* create/insert */

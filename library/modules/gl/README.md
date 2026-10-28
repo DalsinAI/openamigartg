@@ -43,7 +43,9 @@ deals with byte order in these places:
   - 0001-0006 are the AmigaOS port. It was openamigamesa's until
     8 October 2026; it moved here with the one-library design, and
     openamigamesa keeps OpenDemos.
-  - 0007-0010 are for virgl.
+  - 0007-0011 are for virgl.
+  - 0012 is for speed on the 68k: u_vbuf's translate cache compares a
+    key's elements in use, not all 920 bytes of it, on every draw.
 
 ## GL.module and libGL.a
 
