@@ -86,7 +86,7 @@ struct ogpu_vk_config {
      * (cost, gpu or core) when it is set. Results are the same every way. */
     int route;
 };
-#define OGPU_VK_COST_KINDS 10       /* ogpu_vk_stats' core_scale */
+#define OGPU_VK_COST_KINDS 11       /* ogpu_vk_stats' core_scale */
 #define OGPU_VK_ROUTE_COST 0
 #define OGPU_VK_ROUTE_GPU  1
 #define OGPU_VK_ROUTE_CORE 2
@@ -159,9 +159,9 @@ struct ogpu_vk_stats {
     double wait_ms;         /* time spent waiting for the GPU (every submit) */
     /* Routing by cost: what each side's work has lately taken over what
      * was reckoned for it (1: as reckoned; the reckoning is scaled by it),
-     * the core's by kind of work: fills, copies, templates and patterns,
-     * pixels, composites, composites from video RAM, blends, bilinear,
-     * YUV, lines */
+     * the core's by kind of work: fills, copies, templates, pixels,
+     * composites, composites from video RAM, blends, bilinear, YUV, lines,
+     * patterns */
     double gpu_scale, core_scale[OGPU_VK_COST_KINDS];
     /* Why each 2D drawing command of cpu ran on the core (they add up to
      * cpu): OGPU_VK_WHY_ below. And of those, by opcode: core_op[op - 0x10]
