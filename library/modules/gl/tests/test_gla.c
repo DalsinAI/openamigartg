@@ -261,7 +261,8 @@ static int scene_rewrites(void)
     for (y = 0; y < 256; y++)
         for (x = 0; x < 256; x++) {
             GLubyte *px = big + (y * 256 + x) * 4;
-            px[0] = (GLubyte)x; px[1] = (GLubyte)y; px[2] = (GLubyte)((x ^ y) * 4); px[3] = 255;
+            /* smooth, so a texel a GPU rounds the other way is within 8 */
+            px[0] = (GLubyte)x; px[1] = (GLubyte)y; px[2] = (GLubyte)((x + y) / 2); px[3] = 255;
         }
     pGenVertexArrays(1, &vao);
     pBindVertexArray(vao);
@@ -563,6 +564,7 @@ int main(int argc, char **argv)
          * before batching), then batched, as GL.module runs */
         for (pass = 0; pass < passes; pass++) {
             const char *tag = passes == 2 && !pass ? "virgl-1" : "virgl";
+            struct gla_stats st;
 #if !defined(__amigaos__)
             if (passes == 2 && !pass) setenv("GLA_VIRGL_BATCH", "1", 1);
             else unsetenv("GLA_VIRGL_BATCH");
@@ -574,79 +576,89 @@ int main(int argc, char **argv)
                 printf("gla: virgl: no display\n");
                 fails++;
                 break;
-            } else {
-                struct gla_stats st;
-                gla_get_stats(NULL, 1);
-                if ((r = run_scenes(d, got, gpu, dir, tag, NULL)) < 0) return 1;
-                fails += r;
-                for (i = 0; i < NSCENES; i++) {
-                    int c = closeness(gpu[i], soft[i]);
-                    printf("%s: %s's picture is %d.%d%% softpipe's\n", scenes[i].name, tag, c / 10, c % 10);
-                    if (c < 990) fails++;
-                }
-                gla_get_stats(&st, 1);
-                if (!st.frames || st.direct || st.readback != st.frames || st.direct_state != GLA_DIRECT_NO_HOOK) {
-                    printf("gla: virgl read back %lu of %lu frames\n", st.readback, st.frames);
+            }
+            gla_get_stats(NULL, 1);
+            if ((r = run_scenes(d, got, gpu, dir, tag, NULL)) < 0) return 1;
+            fails += r;
+            for (i = 0; i < NSCENES; i++) {
+                int c = closeness(gpu[i], soft[i]);
+                printf("%s: %s's picture is %d.%d%% softpipe's\n", scenes[i].name, tag, c / 10, c % 10);
+                if (c < 990) fails++;
+            }
+            gla_get_stats(&st, 1);
+            if (!st.frames || st.direct || st.readback != st.frames || st.direct_state != GLA_DIRECT_NO_HOOK) {
+                printf("gla: virgl read back %lu of %lu frames\n", st.readback, st.frames);
+                fails++;
+            }
+            gla_display_destroy(d);
+#if !defined(__amigaos__)
+            /* counted once the display is gone, so whatever was still queued
+             * (the last contexts' deletes) has reached the host */
+            blocks[pass] = t_blocks;
+            cmds[pass] = t_cmds;
+            acvirgl_stats(host, &he[pass]);
+            printf("gla: %s: %lu blocks for %lu commands, at most %u a block, %lu over the caps\n",
+                   tag, t_blocks, t_cmds, t_most, t_over);
+            if (t_over) fails++;
+            if (!pass) {
+                memcpy(gpu1, gpu, sizeof gpu);
+                if (t_most > 2) fails++;            /* HELLO and CTX_CREATE share one */
+                continue;
+            }
+            for (i = 0; i < NSCENES; i++)
+                if (memcmp(gpu[i], gpu1[i], sizeof gpu[i])) {
+                    printf("%s: batched, virgl's picture isn't the one of one command a block\n", scenes[i].name);
                     fails++;
                 }
-#if !defined(__amigaos__)
-                blocks[pass] = t_blocks;
-                cmds[pass] = t_cmds;
-                acvirgl_stats(host, &he[pass]);
-                printf("gla: %s: %lu blocks for %lu commands, at most %u a block, %lu over the caps\n",
-                       tag, t_blocks, t_cmds, t_most, t_over);
-                if (t_over) fails++;
-                if (!pass) {
-                    memcpy(gpu1, gpu, sizeof gpu);
-                    if (t_most > 2) fails++;            /* HELLO and CTX_CREATE share one */
-                } else {
-                    for (i = 0; i < NSCENES; i++)
-                        if (memcmp(gpu[i], gpu1[i], sizeof gpu[i])) {
-                            printf("%s: batched, virgl's picture isn't the one of one command a block\n", scenes[i].name);
-                            fails++;
-                        }
-                    /* the same submits and puts reach the host, in fewer blocks */
+            /* the same submits and puts reach the host, in fewer blocks */
 #define HD(k, f) ((unsigned long long)(he[k].f - hs[k].f))
-                    printf("gla: on the host, one a block: %llu submits (%llu words), %llu puts (%llu bytes); batched: %llu (%llu), %llu (%llu)\n",
-                           HD(0, submits), HD(0, submit_words), HD(0, puts), HD(0, put_bytes),
-                           HD(1, submits), HD(1, submit_words), HD(1, puts), HD(1, put_bytes));
-                    if (HD(0, submits) != HD(1, submits) || HD(0, submit_words) != HD(1, submit_words) ||
-                        HD(0, puts) != HD(1, puts) || HD(0, put_bytes) != HD(1, put_bytes)) {
-                        printf("gla: batched, the host didn't get the same submits and puts\n");
-                        fails++;
-                    }
-                    if (he[1].errors != hs[0].errors) {
-                        printf("gla: virgl: %llu errors on the host\n", (unsigned long long)(he[1].errors - hs[0].errors));
-                        fails++;
-                    }
+            printf("gla: on the host, one a block: %llu submits (%llu words), %llu puts (%llu bytes); batched: %llu (%llu), %llu (%llu)\n",
+                   HD(0, submits), HD(0, submit_words), HD(0, puts), HD(0, put_bytes),
+                   HD(1, submits), HD(1, submit_words), HD(1, puts), HD(1, put_bytes));
+            if (HD(0, submits) != HD(1, submits) || HD(0, submit_words) != HD(1, submit_words) ||
+                HD(0, puts) != HD(1, puts) || HD(0, put_bytes) != HD(1, put_bytes) || HD(0, gets) != HD(1, gets)) {
+                printf("gla: batched, the host didn't get the same submits, puts and gets\n");
+                fails++;
+            }
+            if (he[1].errors != hs[0].errors) {
+                printf("gla: virgl: %llu errors on the host\n", (unsigned long long)(he[1].errors - hs[0].errors));
+                fails++;
+            }
 #undef HD
-                    if (blocks[1] * 2 > blocks[0] || cmds[1] != cmds[0]) {
-                        printf("gla: batched, %lu blocks for %lu commands, against %lu for %lu\n", blocks[1], cmds[1], blocks[0], cmds[0]);
+            if (blocks[1] * 2 > blocks[0] || cmds[1] != cmds[0]) {
+                printf("gla: batched, %lu blocks for %lu commands, against %lu for %lu\n", blocks[1], cmds[1], blocks[0], cmds[0]);
+                fails++;
+            }
+#endif
+        }
+#if !defined(__amigaos__)
+        /* The same scenes again, batched, the host writing each frame
+         * straight into the screen (ACV_PRESENT): the pictures byte for byte
+         * the read-back ones, and nothing read back. */
+        if (passes == 2) {
+            unsigned long direct[NSCENES];
+            struct gla_stats st;
+            if (!(screen = t_alloc(NULL, W * H * 4))) return 1;
+            if (!(d = gla_display_create_virgl(&t))) {
+                printf("gla: virgl: no display\n");
+                fails++;
+            } else {
+                gla_get_stats(NULL, 1);
+                if ((r = run_scenes(d, direct, NULL, dir, "virgl-direct", present_direct)) < 0) return 1;
+                fails += r;
+                for (i = 0; i < NSCENES; i++)
+                    if (direct[i] != got[i]) {
+                        printf("%s: the direct present's picture %08lx, read back %08lx\n", scenes[i].name, direct[i], got[i]);
                         fails++;
                     }
-                    /* The same scenes again, the host writing each frame straight
-                     * into the screen (ACV_PRESENT): the pictures byte for byte the
-                     * read-back ones, and nothing read back. */
-                    {
-                        unsigned long direct[NSCENES];
-                        if (!(screen = t_alloc(NULL, W * H * 4))) return 1;
-                        if ((r = run_scenes(d, direct, NULL, dir, "virgl-direct", present_direct)) < 0) return 1;
-                        fails += r;
-                        for (i = 0; i < NSCENES; i++)
-                            if (direct[i] != got[i]) {
-                                printf("%s: the direct present's picture %08lx, read back %08lx\n", scenes[i].name, direct[i], got[i]);
-                                fails++;
-                            }
-                        gla_get_stats(&st, 1);
-                        printf("gla: virgl direct: %lu frames, %lu straight in (%lu pixels), %lu read back\n",
-                               st.frames, st.direct, st.direct_pixels, st.readback);
-                        if (!st.frames || st.direct != st.frames || st.readback || st.direct_state != GLA_DIRECT_ON) fails++;
-                    }
-                }
-#endif
+                gla_get_stats(&st, 1);
+                printf("gla: virgl direct: %lu frames, %lu straight in (%lu pixels), %lu read back\n",
+                       st.frames, st.direct, st.direct_pixels, st.readback);
+                if (!st.frames || st.direct != st.frames || st.readback || st.direct_state != GLA_DIRECT_ON) fails++;
                 gla_display_destroy(d);
             }
         }
+#endif
     }
 #endif
     printf(fails ? "gla: %d failed\n" : "gla: all tests passed\n", fails);
