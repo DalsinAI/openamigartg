@@ -146,6 +146,9 @@ SHIM= SYSLIBS="-lstdc++ -lm -lpthread -ldl" PROGOBJS=
 # The host's half of virgl (ACVirgl over virglrenderer), for the tests on this machine.
 HOSTV=
 case $NAME in host) cc -O2 -c "$REPO/host/virgl/acvirgl.c" -o acvirgl.o && HOSTV="acvirgl.o -DGLA_TEST_VIRGL" ;; esac
+# Mesa finds libdrm on a PC that has its headers and then calls it (drmGetCap
+# in u_screen.c): link it there.
+case $NAME in host) if grep -q HAVE_LIBDRM "$B/compile_commands.json"; then SYSLIBS="$SYSLIBS $(pkg-config --libs libdrm 2>/dev/null || echo -ldrm)"; fi ;; esac
 case $NAME in *amigaos*)
     eval "$CC $FLAGS -O2 -c $TOP/mesa/amigaos/posix_shim.c -o posix_shim.o"
     # virgl's transport: OGPU_OP_VIRGL batches through opengpu.library
