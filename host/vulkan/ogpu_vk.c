@@ -116,6 +116,13 @@ struct ogpu_vk {
     double gpu_scale, core_scale[OGPU_VK_COST_KINDS];   /* the core's by kind of work (K_) */
     double gpu_est, gpu_rec_us, core_est[OGPU_VK_COST_KINDS], core_us[OGPU_VK_COST_KINDS];
     int gpu_unweighed;          /* runs since the GPU's last weighing */
+    /* The commands routed by cost are timed a stretch at a time, not one by
+     * one: where the clock is a system call (an HPET host's: some 3.4 us a
+     * read on daletop) two reads a command cost as much as a sprite. A
+     * stretch is the commands in a row that went the same way (the core's
+     * of one kind): its side (0 none, 1 the core, 2 the GPU), kind and start */
+    int st_side, st_kind;
+    double st_t0;
     int est_3d;                 /* 3D work in the open command buffer: not weighed */
     struct vk_entry *list;      /* the composite list being gathered (LIST_MAX entries) */
     int list_n;
@@ -563,14 +570,41 @@ static double now_ns(void) {
 
 static void weigh(double *scale, double taken, double reckoned);
 
+/* The timed stretch so far, up to t, to its side's account */
+static void stretch_add(struct ogpu_vk *vk, double t) {
+    if (vk->st_side == 1) vk->core_us[vk->st_kind] += (t - vk->st_t0) / 1000;
+    else if (vk->st_side == 2) vk->gpu_rec_us += (t - vk->st_t0) / 1000;
+}
+/* The stretch ends; or ends and a new one begins, with one read of the clock */
+static void stretch_end(struct ogpu_vk *vk) {
+    if (vk->st_side) stretch_add(vk, now_ns());
+    vk->st_side = 0;
+}
+static void stretch_begin(struct ogpu_vk *vk, int side, int kind) {
+    double t = now_ns();
+    if (vk->st_side) stretch_add(vk, t);
+    vk->st_side = side;
+    vk->st_kind = kind;
+    vk->st_t0 = t;
+}
+
 static void flush(struct ogpu_vk *vk) {
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
     VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER };
-    double t0, waited;
+    double t0, t1, waited;
+    /* A GPU stretch open (the list or the buffer full, mid-stretch): what it
+     * recorded so far is this buffer's; it goes on from after the wait */
+    double t_in = vk->st_side == 2 && (vk->list_n || vk->recording) ? now_ns() : 0;
+    if (t_in) {
+        stretch_add(vk, t_in);
+        vk->st_t0 = t_in;
+    }
     if (vk->list_n) {
-        double r0 = now_ns();
+        double r0 = t_in ? t_in : now_ns();
         list_send(vk);
-        vk->gpu_rec_us += (now_ns() - r0) / 1000;
+        t1 = now_ns();
+        vk->gpu_rec_us += (t1 - r0) / 1000;
+        if (t_in) vk->st_t0 = t1;
     }
 #ifdef OGPU_WITH_3D
     if (vk->rec) ogpu3d_rec_close(vk->rec);         /* the open group's dispatch */
@@ -584,7 +618,7 @@ static void flush(struct ogpu_vk *vk) {
 #endif
         return;
     }
-    t0 = now_ns();
+    t0 = t_in ? vk->st_t0 : now_ns();
     mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT;
     vkCmdPipelineBarrier(vk->cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, 0, 0, 0);
@@ -604,7 +638,9 @@ static void flush(struct ogpu_vk *vk) {
     vk->bound = 0;
     vk->arena_used = 0;
     vk->stats.submits++;
-    waited = now_ns() - t0;
+    t1 = now_ns();
+    waited = t1 - t0;
+    if (t_in) vk->st_t0 = t1;
     vk->wait_ns += waited;
     /* What routing reckoned this buffer's commands and its round trip would
      * take, against what recording them, the submit and the wait took. */
@@ -1447,7 +1483,7 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
         /* why it would run on the core (ogpu_vk_stats' why[]); -1: the GPU command's own checks */
         int why = vk->failed ? OGPU_VK_WHY_LOST : !gpu_op(op) ? OGPU_VK_WHY_OP : !drawable ? OGPU_VK_WHY_TARGET : -1;
         ogpu_u32 dst;
-        double t0 = 0;
+        int draws = op != OGPU_OP_SURFACE && op != OGPU_OP_TARGET && op != OGPU_OP_CLIP && op != OGPU_OP_NOP;
         if (drawable && gpu_target(vk, &dst)) {
             routed = vk->route == OGPU_VK_ROUTE_COST ? 2 : 0;
             if (vk->card && vk->route != OGPU_VK_ROUTE_CORE && reads_card(vk, op, stream + at * 4 + 4)) {
@@ -1463,17 +1499,21 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
         } else if (drawable) {
             why = OGPU_VK_WHY_TARGET;   /* outside video RAM, or not aligned to its pixels, or INDEX8 */
         }
-        if (routed == 2) t0 = now_ns();
+        /* the timed stretch: a drawing command not routed by cost ends it; one
+         * routed the other way, or to the core as another kind, starts the next */
+        if (draws && vk->st_side && !routed) stretch_end(vk);
+        if (routed == 2 && vk->st_side != 2) stretch_begin(vk, 2, kind);
         if (drawable && gpu_draw(vk, op, stream + at * 4 + 4)) {
             done++;
-            if (routed == 2) vk->gpu_rec_us += (now_ns() - t0) / 1000;
         } else {
-            /* State commands change no pixels; anything else waits for the GPU. */
-            if (op != OGPU_OP_SURFACE && op != OGPU_OP_TARGET && op != OGPU_OP_CLIP && op != OGPU_OP_NOP)
+            /* State commands change no pixels; anything else waits for the GPU
+             * (the GPU's stretch ends first: the wait is weighed as the submit's) */
+            if (draws) {
+                if (vk->st_side == 2) stretch_end(vk);
                 flush(vk);
-            if (routed) t0 = now_ns();
+            }
+            if (routed == 1 && (vk->st_side != 1 || vk->st_kind != kind)) stretch_begin(vk, 1, kind);
             done += ogpu_core_run(&vk->core, stream + at * 4, len);
-            if (routed == 1) vk->core_us[kind] += (now_ns() - t0) / 1000;
             if (op >= OGPU_OP_FILL && op < OGPU_OP_FENCE) {
                 if (vk->card && reads_card(vk, op, stream + at * 4 + 4)) vk->stats.card_core++;   /* slowly */
                 vk->stats.cpu++;
@@ -1490,6 +1530,7 @@ long ogpu_vk_run(struct ogpu_vk *vk, const ogpu_u8 *stream, long words) {
         }
         at += len;
     }
+    stretch_end(vk);
     flush(vk);
     /* The core's reckoning against its time, kind by kind, once there is
      * enough of it; and a GPU not weighed for a long while (everything went
