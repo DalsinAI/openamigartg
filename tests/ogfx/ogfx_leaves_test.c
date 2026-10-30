@@ -110,6 +110,37 @@ static uint32_t ref_copy(uint8_t *mem0, const struct ogfx_chunky_copy *r, uint32
     return (uint32_t)r->width * (uint32_t)r->height;
 }
 
+/* ogfx_scale_copy: a 64 x 16 source scaled into a 256 x 64 destination */
+#define SW 64
+#define SH 16
+#define DW 256
+#define DH 64
+static uint8_t sc_src[SW * 4 * SH], sc_a[DW * 4 * DH], sc_b[DW * 4 * DH];
+static uint8_t sp_src[8][SW / 8 * SH], sp_a[8][DW / 8 * DH], sp_b[8][DW / 8 * DH];
+static uint32_t sp_sptr[8], sp_aptr[8];
+
+static uint32_t ref_scale(const struct ogfx_scale_copy *r, const uint32_t *sptr)
+{
+    uint32_t n = 0, f = r->factor, bpp = r->bytes_per_pixel;
+    for (int32_t y = 0; y < DH; y++)
+        for (int32_t x = 0; x < DW; x++) {
+            if (x < r->dx || y < r->dy || x >= r->dx + r->width * (int32_t)f || y >= r->dy + r->height * (int32_t)f) continue;
+            if (x < r->cx0 || y < r->cy0 || x > r->cx1 || y > r->cy1) continue;
+            int32_t sx = r->sx + (x - r->dx) / (int32_t)f, sy = r->sy + (y - r->dy) / (int32_t)f;
+            n++;
+            if (bpp)
+                memcpy(&sc_b[(uint32_t)y * r->dst_bytes_per_row + (uint32_t)x * bpp], &sc_src[(uint32_t)sy * r->src_bytes_per_row + (uint32_t)sx * bpp], bpp);
+            else
+                for (uint32_t p = 0; p < r->depth; p++) {
+                    if (sp_aptr[p] == 0 || sp_aptr[p] == 0xffffffffu) continue;
+                    uint32_t b = sptr[p] == 0 ? 0 : sptr[p] == 0xffffffffu ? 1 : sp_src[p][(uint32_t)sy * (SW / 8) + (uint32_t)sx / 8] >> (7 - (sx & 7)) & 1;
+                    uint8_t *d = &sp_b[p][(uint32_t)y * (DW / 8) + (uint32_t)x / 8], bit = (uint8_t)(0x80 >> (x & 7));
+                    if (b) *d |= bit; else *d &= (uint8_t)~bit;
+                }
+        }
+    return n;
+}
+
 static int failures, checks;
 static void check(int ok, const char *what, int i)
 {
@@ -224,6 +255,45 @@ int main(void)
         uint32_t want = ref_copy(chunky_b, &r, base), got = ogfx_chunky_copy(&r);
         check(got == want, "chunky copy: pixels copied", i);
         check(!memcmp(chunky_a, chunky_b, sizeof chunky_a), "chunky copy: the bytes", i);
+    }
+    for (int i = 0; i < 3000; i++) {          /* scaled copies, chunky and planar */
+        struct ogfx_scale_copy r;
+        int planar = rnd() % 3 == 0;
+        uint32_t bpp = planar ? 0 : 1 + rnd() % 4, f = 1 + rnd() % 4;
+        for (uint32_t k = 0; k < sizeof sc_src; k++) sc_src[k] = (uint8_t)rnd();
+        for (uint32_t k = 0; k < sizeof sc_a; k++) sc_a[k] = sc_b[k] = (uint8_t)rnd();
+        for (int p = 0; p < 8; p++) {
+            for (uint32_t k = 0; k < sizeof sp_src[0]; k++) sp_src[p][k] = (uint8_t)rnd();
+            for (uint32_t k = 0; k < sizeof sp_a[0]; k++) sp_a[p][k] = sp_b[p][k] = (uint8_t)rnd();
+            sp_sptr[p] = (uint32_t)(uintptr_t)sp_src[p];
+            sp_aptr[p] = (uint32_t)(uintptr_t)sp_a[p];
+        }
+        if (rnd() % 6 == 0) sp_sptr[rnd() % 8] = 0;
+        if (rnd() % 6 == 0) sp_sptr[rnd() % 8] = 0xffffffffu;
+        if (rnd() % 6 == 0) sp_aptr[rnd() % 8] = 0;
+        if (rnd() % 6 == 0) sp_aptr[rnd() % 8] = 0xffffffffu;
+        r.bytes_per_pixel = bpp; r.depth = 1 + rnd() % 8; r.factor = f;
+        r.src = planar ? (uint32_t)(uintptr_t)sp_sptr : (uint32_t)(uintptr_t)sc_src;
+        r.dst = planar ? (uint32_t)(uintptr_t)sp_aptr : (uint32_t)(uintptr_t)sc_a;
+        r.src_bytes_per_row = planar ? SW / 8 : SW * bpp; r.dst_bytes_per_row = planar ? DW / 8 : DW * bpp;
+        r.width = 1 + (int32_t)(rnd() % SW); if (r.width * (int32_t)f > DW) r.width = DW / (int32_t)f;
+        r.height = 1 + (int32_t)(rnd() % SH);
+        r.sx = (int32_t)(rnd() % (SW - (uint32_t)r.width + 1)); r.sy = (int32_t)(rnd() % (SH - (uint32_t)r.height + 1));
+        r.dx = (int32_t)(rnd() % (DW - (uint32_t)r.width * f + 1)); r.dy = (int32_t)(rnd() % (DH - (uint32_t)r.height * f + 1));
+        r.cx0 = (int32_t)(rnd() % DW); r.cx1 = r.cx0 + (int32_t)(rnd() % (DW - (uint32_t)r.cx0));
+        r.cy0 = (int32_t)(rnd() % DH); r.cy1 = r.cy0 + (int32_t)(rnd() % (DH - (uint32_t)r.cy0));
+        if (rnd() % 4 == 0) { r.cx0 = r.cy0 = 0; r.cx1 = DW - 1; r.cy1 = DH - 1; }
+        uint32_t want = ref_scale(&r, sp_sptr), got = ogfx_scale_copy(&r);
+        check(got == want, "scale copy: pixels written", i);
+        check(planar ? !memcmp(sp_a, sp_b, sizeof sp_a) : !memcmp(sc_a, sc_b, sizeof sc_a), "scale copy: the bytes", i);
+    }
+    {                                          /* blocks that draw nothing */
+        struct ogfx_scale_copy r = { (uint32_t)(uintptr_t)sc_src, SW, (uint32_t)(uintptr_t)sc_a, DW, 1, 0, 0, 0, 4, 4, 0, 0, 5, 0, 0, DW - 1, DH - 1 };
+        check(ogfx_scale_copy(&r) == 0, "scale copy: factor 5", 0);
+        r.factor = 2; r.cx1 = -1;
+        check(ogfx_scale_copy(&r) == 0, "scale copy: an empty clip", 0);
+        r.cx1 = DW - 1; r.width = 0;
+        check(ogfx_scale_copy(&r) == 0, "scale copy: no width", 0);
     }
     printf("%s %d of %d checks\n", failures ? "FAIL" : "ok  ", checks - failures, checks);
     return failures != 0;

@@ -80,9 +80,30 @@ struct ogfx_planar_blit {
     uint32_t same_bitmap;      /* non-zero only when src and dst are same BitMap */
 };
 
+/* A rectangle copied N times the size, nearest neighbour (old apps scaled
+ * whole, amigachrome-guest docs/design/old-apps-scale.md): source pixel
+ * (sx + i, sy + j) fills the N x N block at (dx + i*N, dy + j*N). Only the
+ * part of the copy inside the destination clip (inclusive) is written, so a
+ * caller can cut it by a layer's ClipRects. Chunky (bytes_per_pixel 1 to 4)
+ * or planar (bytes_per_pixel 0: src and dst are the address of depth plane
+ * pointers, Planes[]; a 0 or -1 destination plane is skipped, a 0 or -1
+ * source plane reads as all 0 or all 1). Source and destination must be
+ * different memory. Returns the destination pixels written. */
+struct ogfx_scale_copy {
+    uint32_t src, src_bytes_per_row;
+    uint32_t dst, dst_bytes_per_row;
+    uint32_t bytes_per_pixel;  /* 1 to 4 chunky, 0 planar */
+    uint32_t depth;            /* planar: 1 to 8 */
+    int32_t sx, sy, width, height;  /* the source rectangle */
+    int32_t dx, dy;            /* where its scaled copy's top left lands */
+    uint32_t factor;           /* 1 to 4 */
+    int32_t cx0, cy0, cx1, cy1;     /* the destination clip */
+};
+
 uint32_t ogfx_planar_rect(const struct ogfx_planar_rect *r);
 uint32_t ogfx_chunky_rect(const struct ogfx_chunky_rect *r);
 uint32_t ogfx_chunky_copy(const struct ogfx_chunky_copy *r);
 uint32_t ogfx_planar_blit(const struct ogfx_planar_blit *r);
+uint32_t ogfx_scale_copy(const struct ogfx_scale_copy *r);
 
 #endif

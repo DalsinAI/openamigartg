@@ -203,3 +203,68 @@ AC_MAGIC_KEEP uint32_t AC_MAGIC_BODY(ogfx_planar_blit)(const struct ogfx_planar_
 
     return planes;
 }
+
+/* ---- ogfx_scale_copy: old apps scaled whole ---- */
+static uint32_t ogfx_planar_bit(uint32_t plane, uint32_t bpr, int32_t x, int32_t y)
+{
+    if (!plane) return 0;
+    if (plane == 0xffffffffu) return 1;
+    return ((const uint8_t *)(uintptr_t)plane)[(uint32_t)y * bpr + ((uint32_t)x >> 3)] >> (7 - (x & 7)) & 1u;
+}
+
+AC_MAGIC(ogfx_scale_copy, AC_MAGIC_OGFX_SCALE_COPY)
+AC_MAGIC_KEEP uint32_t AC_MAGIC_BODY(ogfx_scale_copy)(const struct ogfx_scale_copy *r)
+{
+    uint32_t bpp = r->bytes_per_pixel, n = r->factor, sbpr = r->src_bytes_per_row, dbpr = r->dst_bytes_per_row;
+    int32_t sx = r->sx, sy = r->sy, w = r->width, h = r->height, dx = r->dx, dy = r->dy;
+    int32_t x0 = dx, y0 = dy, x1, y1, x, y;
+    if (bpp > 4 || n < 1 || n > 4 || sx < 0 || sy < 0 || dx < 0 || dy < 0 || w <= 0 || h <= 0 ||
+        r->cx0 < 0 || r->cy0 < 0 || r->cx1 < r->cx0 || r->cy1 < r->cy0 || (!bpp && (!r->depth || r->depth > 8)))
+        return 0;
+    x1 = dx + w * (int32_t)n - 1;
+    y1 = dy + h * (int32_t)n - 1;
+    if (x0 < r->cx0) x0 = r->cx0;
+    if (y0 < r->cy0) y0 = r->cy0;
+    if (x1 > r->cx1) x1 = r->cx1;
+    if (y1 > r->cy1) y1 = r->cy1;
+    if (x1 < x0 || y1 < y0) return 0;
+
+    if (bpp) {
+        /* a row is made once, then copied to the rows of its block that are inside the clip */
+        int32_t made = -1;
+        uint8_t *prev = 0;
+        for (y = y0; y <= y1; y++) {
+            int32_t srow = sy + (y - dy) / (int32_t)n;
+            uint8_t *d = (uint8_t *)(uintptr_t)(r->dst + (uint32_t)y * dbpr + (uint32_t)x0 * bpp);
+            if (srow == made) {
+                ogfx_move(d, prev, (uint32_t)(x1 - x0 + 1) * bpp);
+            } else {
+                const uint8_t *s = (const uint8_t *)(uintptr_t)(r->src + (uint32_t)srow * sbpr);
+                uint8_t *o = d;
+                for (x = x0; x <= x1; x++) {
+                    const uint8_t *p = s + (uint32_t)(sx + (x - dx) / (int32_t)n) * bpp;
+                    uint32_t k;
+                    for (k = 0; k < bpp; k++) *o++ = p[k];
+                }
+                made = srow;
+            }
+            prev = d;
+        }
+    } else {
+        uint32_t pl;
+        for (pl = 0; pl < r->depth; pl++) {
+            uint32_t sp = ((const uint32_t *)(uintptr_t)r->src)[pl], dp = ((const uint32_t *)(uintptr_t)r->dst)[pl];
+            if (!dp || dp == 0xffffffffu) continue;
+            for (y = y0; y <= y1; y++) {
+                int32_t srow = sy + (y - dy) / (int32_t)n;
+                uint8_t *drow = (uint8_t *)(uintptr_t)(dp + (uint32_t)y * dbpr);
+                for (x = x0; x <= x1; x++) {
+                    uint8_t bit = (uint8_t)(0x80u >> (x & 7));
+                    if (ogfx_planar_bit(sp, sbpr, sx + (x - dx) / (int32_t)n, srow)) drow[(uint32_t)x >> 3] |= bit;
+                    else drow[(uint32_t)x >> 3] &= (uint8_t)~bit;
+                }
+            }
+        }
+    }
+    return (uint32_t)(x1 - x0 + 1) * (uint32_t)(y1 - y0 + 1);
+}
