@@ -26,7 +26,7 @@ for build in "-O0 -m68040" "-O2 -m68040"; do
         -c "$gfx/ogfx_leaves.c" -o "$tmp/leaves.o"
     und=$("${prefix}nm" -u "$tmp/leaves.o" | tr -d ' U' | grep -v '^__mulsi3$' | tr -d '\n' || true)   # libgcc's 32-bit multiply, which -lgcc links (a 68000 build needed it)
     [ -z "$und" ] || { echo "FAIL $build: the leaves call $und"; fail=1; }
-    for f in "ogfx_planar_rect 00010100" "ogfx_chunky_rect 00010101" "ogfx_chunky_copy 00010102"; do
+    for f in "ogfx_planar_rect 00010100" "ogfx_chunky_rect 00010101" "ogfx_chunky_copy 00010102" "ogfx_scale_copy 00010104"; do
         set -- $f
         # the tag: BRA.S *+12, 'ACMF', version 1, the id, then JMP
         addr=$("${prefix}nm" "$tmp/leaves.o" | awk -v s="${ulp}$1" '$3 == s { print $1 }')

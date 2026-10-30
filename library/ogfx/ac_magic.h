@@ -93,6 +93,10 @@
  * on standard planar bitmaps, source/destination minterm and plane mask;
  * the destination planes involved. */
 #define AC_MAGIC_OGFX_PLANAR_BLIT 0x00010103
+/* uint32_t ogfx_scale_copy(const struct ogfx_scale_copy *): a rectangle
+ * copied 1 to 4 times the size, nearest neighbour, chunky or planar, within
+ * a destination clip; the destination pixels written. */
+#define AC_MAGIC_OGFX_SCALE_COPY 0x00010104
 
 #define AC_MAGIC_STR_(x) #x
 #define AC_MAGIC_STR(x) AC_MAGIC_STR_(x)
